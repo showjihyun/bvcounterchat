@@ -16,6 +16,7 @@
 
 | 작업 | 먼저 읽을 파일 |
 |---|---|
+| **팀에 새로 합류** | `docs/ONBOARDING.md` — 첫 주 가이드. 여기부터 읽는다 |
 | **모든 개발 작업 시작·완료** | `harness/progress.md` — 진행 원장, 갱신 의무 |
 | 하네스 전체 조망 | `harness/README.md` |
 | 스펙 인터뷰 | `harness/specs/interview/question-bank.md` |
