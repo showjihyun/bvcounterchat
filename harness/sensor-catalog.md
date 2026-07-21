@@ -8,9 +8,10 @@
 > 위임하며 표를 복제하지 않는다.
 >
 > 아래 표의 상태는 **지금 실제로 존재하는 것만** ✅로 표기한다.
-> 2026-07-21 기준 가동 중인 Sensor는 **4개**다 — 스펙 동결 게이트,
-> 결정론적 검증(lint·typecheck·test), 독립 평가 에이전트, PR 리뷰 게이트.
-> ADR은 0001~0010 전부 승인 상태다.
+> 아래 Sensors 표에 ✅는 7행이지만, **기계가 머지를 막는 것은 3개**다 —
+> 스펙 동결 게이트 · lint/typecheck · 단위·통합 테스트. 테스트-코드 동행 검사는
+> 경고일 뿐이고, evaluator·PR 리뷰 게이트·트랙 B rubric은 규율로 지켜진다.
+> (숫자만 적으면 다음 개정에서 어긋나므로 세는 기준을 함께 둔다.)
 >
 > "규칙이 문서에 쓰여 있다"와 "규칙이 강제된다"는 다르다는 것이 이 표의
 > 요점이다. ⚠️가 붙은 항목은 **규율로만 지켜진다** — 우회를 막는 장치가 없다.
@@ -21,7 +22,7 @@
 |---|---|---|---|
 | CLAUDE.md (헌법) | — | 세션 시작 시 로드 | ✅ |
 | harness/specs/requirements.md | — | 작업 착수 시 참조 | ✅ (v1.0, 🟡 0개) |
-| harness/adr/ | — | 아키텍처 관련 작업 시 | ✅ (0001~0009 존재 — 0001·0002·0003·0006·0008·0009 승인, 0004·0005·0007은 아직 제안) |
+| harness/adr/ | — | 아키텍처 관련 작업 시 | ✅ ADR-0001~0010 — 승인 상태의 정본은 `harness/adr/README.md` 상태표다(여기 복제하지 않는다) |
 | plan mode 승인 (3스텝 이상 작업 전) | — | 작업 착수 전 | ✅ (CLAUDE.md 최상위 규칙) |
 
 ## Sensors (feedback)
@@ -29,7 +30,7 @@
 | 이름 | 실행 | 배치 | 강제 수단 | 상태 |
 |---|---|---|---|---|
 | 트래젝토리 로그 | Comp | 세션 종료(Stop) | hook (.claude/hooks) | ⬜미구축 |
-| 스펙 동결 게이트 (🟡 존재 시 구현 차단) | Comp | 구현 파일 수정 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_spec_freeze.py` exit 2 + `.github/workflows/ci.yml` | ✅ **2026-07-21 구축.** 판정 로직은 스크립트 1개에 있고 hook·CI가 **같은 코드**를 호출한다 — 로컬과 CI가 다르게 판정하는 게이트는 신뢰를 잃으므로 정규식을 CI에 따로 두지 않았다. `--selftest`가 게이트 자신을 검증하며 CI 첫 스텝으로 돈다. 차단 대상 디렉토리는 스크립트 상단 `BLOCKED_TOP_DIRS` — **스캐폴딩에서 실제 레이아웃이 정해지면 갱신 필요**(빠뜨린 디렉토리 = 게이트의 구멍). CI는 git 저장소 초기화 후 활성 |
+| 스펙 동결 게이트 (🟡 존재 시 구현 차단) | Comp | 구현 파일 수정 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_spec_freeze.py` exit 2 + `.github/workflows/ci.yml` | ✅ **2026-07-21 구축.** 판정 로직은 스크립트 1개에 있고 hook·CI가 **같은 코드**를 호출한다 — 로컬과 CI가 다르게 판정하는 게이트는 신뢰를 잃으므로 정규식을 CI에 따로 두지 않았다. `--selftest`가 게이트 자신을 검증하며 CI 첫 스텝으로 돈다. 차단 대상 디렉토리는 스크립트 상단 `BLOCKED_TOP_DIRS` — ADR-0010으로 레이아웃이 확정되어 **갱신 불요**로 판정됐다(`progress.md` 18). CI는 활성 상태이며 PR #1~#3이 그 위에서 돌았다. ⚠️ 레이아웃을 바꾸는 ADR은 반드시 이 집합의 갱신을 동반해야 한다 |
 | 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | ⬜미구축 — `.claude/settings.json`은 **존재하지만** `permissions`에 `deny` 3건(시크릿)만 있고 golden ask 항목이 없다. 등재: `progress.md` 17g |
 | 파일 수정 후 빠른 검사 | Comp | 수정 직후(PostToolUse) | hook → `scripts/check.sh --fast` | ⬜미구축 — **스크립트는 있으나 호출자가 없다.** `.claude/settings.json`에 PostToolUse hook 미등록 |
 | lint / typecheck | Comp | 로컬 `npm run check` + CI | eslint + `tsc --noEmit` | ✅ **2026-07-21 구축.** `scripts/check.sh`가 로컬·CI 공통 진입점. `src/shared` 전용 규칙(환경 중립·결정론)도 lint로 강제 |

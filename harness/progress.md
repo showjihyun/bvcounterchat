@@ -12,7 +12,7 @@
 | 순번 | 작업 | 관련 RQ/ADR | 상태 | 참조 파일 | 비고 |
 |---|---|---|---|---|---|
 | 1 | 요구사항 EARS 정규화 (`docs/req/` → RQ-01~95) | 전체 RQ | ✅ | `harness/specs/requirements.md` | **v1.0으로 갱신(2026-07-21)** — Deep Interview 완료로 RQ-90~95 🟡→✅ 확정, RQ-03·RQ-04·RQ-81 개정(항목 15 참고). 🟡 잔존 0건 |
-| 2 | ADR 초안 0000~0009 | ADR-0001~0009 | ✅ | `harness/adr/`, `harness/adr/README.md` | 10개 파일(0000 템플릿 포함) 전부 작성 완료. **9건 전부 승인**(2026-07-21). 0004·0005·0007은 RQ-90/92/94 확정 후 항목 16에서 전환 완료 |
+| 2 | ADR 초안 0000~0009 | ADR-0001~0009 | ✅ | `harness/adr/`, `harness/adr/README.md` | 초안 9건 + 템플릿 작성 완료. 0004·0005·0007은 RQ-90/92/94 확정 후 항목 16에서 승인 전환. **현재 ADR은 0010(레이아웃) 포함 10건 전부 승인** — 상태의 정본은 `harness/adr/README.md` 상태표다 |
 | 3 | TDD 워크플로우 문서 | — | ✅ | `harness/workflow/tdd.md` | Red→Green→독립평가 파이프라인 명세. 실행 스킬·에이전트 정의는 미스캐폴딩 |
 | 4 | 리뷰 게이트 워크플로우 문서 | — | ✅ | `harness/workflow/review-gate.md` | reviewer(Opus) APPROVE를 머지 필요조건으로 명세. 실행 스킬 미스캐폴딩 |
 | 5 | FE(클라이언트·HUD·3D) 워크플로우 문서 | RQ-50~55, RQ-42, RQ-70/71 | ✅ | `harness/workflow/fe.md` | netcode→game state→scene→HUD 레이어 분리 규칙. ADR-0001/0003/0007 참조 |
