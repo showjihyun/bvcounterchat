@@ -94,8 +94,10 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 - **PASS** → 구현 커밋 확인, 원장(`progress.md`) ✅ 갱신, PR 준비
   (스펙 변경이 있으면 같은 PR에 포함).
   **골든 원장 갱신을 사용자에게 요청한다** — 해당 GA 케이스의 `verify`를 실제
-  테스트 경로로, `status`를 `todo`→`done`으로. 에이전트가 직접 쓰지 않는다:
-  골든 파일 수정은 사람 승인 게이트다(`harness/evals/README.md`). 갱신하지 않으면
+  테스트 경로로, `status`를 `todo`→`done`으로. 에이전트가 직접 쓰지 않는다 —
+  정답은 사람이 쓴다(`harness/evals/README.md`).
+  ⚠️ `.claude/settings.json`에 `harness/evals/golden/**` ask 게이트는 **아직 없다**.
+  지금은 규율로만 지켜진다. 갱신하지 않으면
   원장이 영구히 todo로 남아 다음 RQ의 커버리지 대조가 신뢰할 수 없는 원장 위에서
   이뤄진다.
   **머지 전에 `review-gate` 스킬을 호출한다** — reviewer APPROVE가 머지의 필요조건이다.
@@ -122,7 +124,7 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 
 ## 테스트 시나리오
 
-1. **정상**: "RQ-03 구현해줘" → Phase 0 전제조건 통과(RQ-03은 GA-03·GA-21이
+1. **정상**: "RQ-03 구현해줘" → Phase 0 전제조건 통과(RQ-03은 GA-02·GA-21이
    매핑돼 있다) → test-writer가 **매핑된 GA 케이스 전부**를 덮는 실패 테스트
    작성 + 테스트 커밋 → coder가 최소 구현으로 Green →
    evaluator PASS → PR 준비 → `review-gate` 호출.

@@ -102,9 +102,11 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
 
 ## Phase 3: 독립 평가 — evaluator (별도 세션, opus)
 
-`Agent(subagent_type: "evaluator", model: "opus")` 호출. 프롬프트에는
-**RQ-ID와 `_workspace/{RQ-ID}/` 경로만** 전달한다 — coder의 대화 내용·설명을
-전달하지 않는다 (평가자는 파일과 코드만 본다). 검증 항목은
+`Agent(subagent_type: "evaluator", model: "opus")` 호출. 프롬프트에 전달할 것은 **RQ-ID, `_workspace/{RQ-ID}/` 경로, 그리고 테스트 약화
+감지의 diff 기준점(`01_test-writer_red.md`에 기록된 테스트 커밋 SHA)**뿐이다.
+기준점이 없으면 evaluator의 인자 없는 `git diff`가 coder 커밋 후 항상 빈 출력을
+내어 테스트 약화 검사가 조용히 무력화된다.
+coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과 코드만 본다). 검증 항목은
 `harness/agent-roster.md`의 evaluator 스펙을 따른다.
 산출: `_workspace/{RQ-ID}/03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거)
 
