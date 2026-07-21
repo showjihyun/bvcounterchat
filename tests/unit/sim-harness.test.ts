@@ -83,4 +83,61 @@ describe('SimHarness (원장 17e §4)', () => {
     h.advanceMs(WEAPON.RELOAD_MS)
     expect(reloaded).toBe(true)
   })
+
+  /**
+   * 회귀 테스트 (PR #4 blocker 대응, 계약 §4 「전진 단위 불변식」).
+   *
+   * `advanceTicks(10)`이 clock을 한 번에 옮기고 `scheduler.advanceTo`를 1회만
+   * 부르면, 마감 틱 3의 콜백이 실행되는 시점에 이미 clock.tick이 최종
+   * 목표(10)여서 콜백이 "미래"를 관측하는 버그가 있었다. 이 아래 세 테스트가
+   * 그 회귀를 고정한다 — 통과만 확인하는 테스트가 아니라, 불변식 자체
+   * ("콜백이 관측하는 tick == 자신의 마감 틱", "벌크·틱별 두 경로의 연쇄
+   * 예약 마감시한이 같다")를 직접 단언한다.
+   */
+  it('회귀(PR #4): advanceTicks(n) 한 번으로 여러 콜백이 실행돼도, 각 콜백이 관측한 clock.tick은 자신의 마감 틱과 같다 (최종 틱이 아니라)', () => {
+    const h = createSimHarness()
+    const observedTicks: number[] = []
+    h.scheduler.scheduleAt(3, () => observedTicks.push(h.clock.tick))
+    h.scheduler.scheduleAt(7, () => observedTicks.push(h.clock.tick))
+    h.advanceTicks(10)
+    expect(observedTicks).toEqual([3, 7])
+    expect(h.clock.tick).toBe(10) // 최종 틱은 10이 맞다 — 콜백이 그걸 조기에 보면 안 된다는 것이 요점
+  })
+
+  it('회귀(PR #4): 벌크 advanceTicks(n) 한 번과 advanceTicks(1) 반복이 연쇄 예약(scheduleIn)의 마감 틱을 같게 낸다', () => {
+    const runScenario = (driver: (h: ReturnType<typeof createSimHarness>) => void): number => {
+      const h = createSimHarness()
+      let chainDeadlineTick = -1
+      h.scheduler.scheduleAt(3, () => {
+        h.scheduler.scheduleIn(WEAPON.RELOAD_MS, () => {
+          chainDeadlineTick = h.clock.tick
+        })
+      })
+      driver(h)
+      return chainDeadlineTick
+    }
+
+    const bulkResult = runScenario((h) => h.advanceTicks(70))
+    const stepwiseResult = runScenario((h) => {
+      for (let i = 0; i < 70; i++) h.advanceTicks(1)
+    })
+
+    // 두 경로를 서로 비교한다 — 상수(WEAPON.RELOAD_MS)가 바뀌어도 이 불변식은
+    // 유지되어야 하므로 하드코딩한 값이 아니라 두 경로의 결과를 맞댄다.
+    expect(bulkResult).toBe(stepwiseResult)
+    // 두 경로가 "같은 값으로 함께 틀렸을" 가능성까지 배제하기 위해, 그 공통값이
+    // 실제로 옳은 계산식(마감 틱 3 + RELOAD_MS 환산 틱)과도 일치하는지 확인한다.
+    expect(bulkResult).toBe(3 + msToTicks(WEAPON.RELOAD_MS))
+  })
+
+  it('회귀(PR #4): advanceMs(ms)도 같은 불변식을 만족한다 — 콜백이 관측한 clock.tick이 마감 틱과 같다', () => {
+    const h = createSimHarness()
+    let observedTick = -1
+    h.scheduler.scheduleAt(3, () => {
+      observedTick = h.clock.tick
+    })
+    h.advanceMs(WEAPON.RELOAD_MS) // 2000ms → 60틱, 마감 3은 그 안에 있다
+    expect(observedTick).toBe(3)
+    expect(h.clock.tick).toBe(msToTicks(WEAPON.RELOAD_MS)) // 최종 틱은 60
+  })
 })
