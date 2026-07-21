@@ -1,8 +1,10 @@
 # TDD 워크플로우 명세 — Red → Green → 독립 평가
 
-> **구현 상태**: 이 문서는 스펙이다. 실행 가능한 스킬(`.claude/skills/tdd-workflow/SKILL.md`)과
-> 에이전트 정의(`.claude/agents/{test-writer,coder,evaluator}.md`)는 아직 스캐폴딩되지
-> 않았다 — 이 문서가 그 구현체의 명세다. 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
+> **구현 상태**: ✅ 2026-07-21 스캐폴딩 완료. 실행체는
+> `.claude/skills/tdd-workflow/SKILL.md`(오케스트레이터)와
+> `.claude/agents/{test-writer,coder,evaluator}.md`다.
+> 이 문서는 그 명세이며, 둘 사이에 차이가 생기면 **실행체를 이 문서에 맞춘다**.
+> 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
 
 스펙(RQ) 1건을 별도 에이전트 세션 3개로 구현·검증하는 오케스트레이터.
 
@@ -31,6 +33,12 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
      "결정론 규칙" 참조. 없으면 test-writer가 쓸 하네스가 없으므로 선행 작업.
    - `scripts/check.sh`에 실제 테스트 명령이 채워져 있다 (`npm run check`로 확인 —
      Phase 0 통과 전 확인 필수)
+   - 대상 RQ에 매핑된 GA-* 골든 케이스가 존재한다
+     (`harness/evals/golden/track-a-product.jsonl`). 없으면 중단하고 사용자에게
+     신설을 요청한다 — 정답은 사람이 쓴다(`harness/evals/README.md`).
+     ※ `requirements.md`의 RQ 44건 중 현재 매핑된 것은 19건이므로, 다수 RQ가
+     여기서 한 번 멈춘다. 의도된 정책이다 — 검증 기준 없이 구현하지 않는다.
+   - ADR-0010(프로젝트 레이아웃)이 승인 상태다 — 구현 파일의 배치를 규정한다
    - 대상 RQ가 ✅ 확정 상태다 (`harness/specs/requirements.md`). 🟡 PENDING이면
      Deep Interview가 먼저 — 스펙 동결 게이트가 `src/`·`tests/` 수정을 차단한다
      (`harness/sensor-catalog.md`)
@@ -72,7 +80,9 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
 ## Phase 1: Red — test-writer (별도 세션, sonnet)
 
 `Agent(subagent_type: "test-writer", model: "sonnet")` 호출. 프롬프트에 포함:
-- RQ-ID + EARS 문장 전문 (`requirements.md`에서 인용)
+- RQ-ID + EARS 문장 전문 (`harness/specs/requirements.md`에서 인용)
+- 매핑된 GA-* 골든 케이스 전문 (`harness/evals/golden/track-a-product.jsonl`에서
+  인용) — Phase 0에서 존재를 확인한 그 케이스들
 - 관련 ADR 요약 (해당 RQ가 네트코드/물리/히트판정에 걸리면 ADR-0003/0004/0005)
 - ADR-0008(테스트 전략) 요약 — 테스트 레벨·더블 허용 범위
 - 위 "결정론 규칙" 전문
@@ -94,9 +104,11 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
 
 ## Phase 3: 독립 평가 — evaluator (별도 세션, opus)
 
-`Agent(subagent_type: "evaluator", model: "opus")` 호출. 프롬프트에는
-**RQ-ID와 `_workspace/{RQ-ID}/` 경로만** 전달한다 — coder의 대화 내용·설명을
-전달하지 않는다 (평가자는 파일과 코드만 본다). 검증 항목은
+`Agent(subagent_type: "evaluator", model: "opus")` 호출. 프롬프트에 전달할 것은 **RQ-ID, `_workspace/{RQ-ID}/` 경로, 그리고 테스트 약화
+감지의 diff 기준점(`01_test-writer_red.md`에 기록된 테스트 커밋 SHA)**뿐이다.
+기준점이 없으면 evaluator의 인자 없는 `git diff`가 coder 커밋 후 항상 빈 출력을
+내어 테스트 약화 검사가 조용히 무력화된다.
+coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과 코드만 본다). 검증 항목은
 `harness/agent-roster.md`의 evaluator 스펙을 따른다.
 산출: `_workspace/{RQ-ID}/03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거)
 

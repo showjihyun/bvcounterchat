@@ -18,7 +18,11 @@
 이상했던 세션의 입력을 여기 새 케이스로 추가한다.
 정답(then/rubric)은 반드시 사람이 쓴다 — 에이전트가 자기 정답을 쓰게 하지 않는다.
 
-강제 수단: `.claude/settings.json` permissions가 `harness/evals/golden/**` 수정을
-승인(ask) 게이트로 막는다 — 에이전트가 초안을 쓰더라도 사람 승인을 거친다.
-**현재 이 프로젝트에는 `.claude/settings.json` 자체가 아직 없다** — 하네스
-구축(스택 세팅) 시 이 ask 게이트를 반드시 함께 넣을 것 (`harness/sensor-catalog.md` 참조).
+강제 수단(계획): `.claude/settings.json` permissions가 `harness/evals/golden/**`
+수정을 승인(ask) 게이트로 막는다 — 에이전트가 초안을 쓰더라도 사람 승인을 거친다.
+
+⚠️ **현재 이 ask 게이트는 없다.** `.claude/settings.json`은 존재하지만
+`permissions`에 `deny` 3건(시크릿 파일)만 있고 골든 파일 항목이 없다 —
+**지금 이 규칙은 규율로만 지켜진다.** 등재: `harness/progress.md` 항목 17g.
+파이프라인 실전(RQ 구현) 전에 넣는 편이 낫다 — 에이전트가 자기 정답을 쓰는
+것을 막는 장치이기 때문이다.
