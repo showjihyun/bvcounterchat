@@ -33,6 +33,12 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
      "결정론 규칙" 참조. 없으면 test-writer가 쓸 하네스가 없으므로 선행 작업.
    - `scripts/check.sh`에 실제 테스트 명령이 채워져 있다 (`npm run check`로 확인 —
      Phase 0 통과 전 확인 필수)
+   - 대상 RQ에 매핑된 GA-* 골든 케이스가 존재한다
+     (`harness/evals/golden/track-a-product.jsonl`). 없으면 중단하고 사용자에게
+     신설을 요청한다 — 정답은 사람이 쓴다(`harness/evals/README.md`).
+     ※ `requirements.md`의 RQ 44건 중 현재 매핑된 것은 19건이므로, 다수 RQ가
+     여기서 한 번 멈춘다. 의도된 정책이다 — 검증 기준 없이 구현하지 않는다.
+   - ADR-0010(프로젝트 레이아웃)이 승인 상태다 — 구현 파일의 배치를 규정한다
    - 대상 RQ가 ✅ 확정 상태다 (`harness/specs/requirements.md`). 🟡 PENDING이면
      Deep Interview가 먼저 — 스펙 동결 게이트가 `src/`·`tests/` 수정을 차단한다
      (`harness/sensor-catalog.md`)

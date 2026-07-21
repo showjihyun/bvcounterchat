@@ -27,17 +27,19 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 
 ## Phase 0: 전제조건·컨텍스트 확인
 
-**하나라도 미충족이면 파이프라인을 시작하지 않고 사용자에게 보고한다.**
+**전제조건의 정본은 `harness/workflow/tdd.md` Phase 0이다.** 그 목록을 읽고
+전부 확인하라 — 여기에 복제하지 않는다. 같은 목록을 두 곳에 두면 반드시 갈라지고,
+실제로 이 스킬의 초안이 명세의 "결정론적 시뮬레이션 하네스 존재" 항목을 누락한 채
+머지될 뻔했다 (2026-07-21 PR #2 리뷰에서 blocker로 검출).
 
-1. git 저장소가 초기화되어 있다 (커밋 순서 = M3 측정의 전제)
-2. 대상 RQ가 ✅ 확정 상태다. 🟡면 Deep Interview가 먼저 —
-   스펙 동결 게이트(`npm run gate`)가 구현 수정을 물리적으로 차단한다
-3. 관련 ADR이 승인 상태다 (전송 ADR-0002, 넷코드 ADR-0003, 테스트 ADR-0008,
-   레이아웃 ADR-0010은 항상 확인)
-4. `npm run check`가 통과한다 (착수 시점이 Green이어야 회귀를 식별할 수 있다)
-5. 대상 RQ에 매핑된 GA-* 골든 케이스가 존재한다
-   (`harness/evals/golden/track-a-product.jsonl`). 없으면 사용자에게 신설을 요청 —
-   정답은 사람이 쓴다
+**하나라도 미충족이면 파이프라인을 시작하지 않고 사용자에게 보고한다.**
+특히 다음 둘은 현재 저장소에서 미충족일 수 있으니 실측하라:
+- 결정론적 시뮬레이션 하네스(고정 틱 + fake timer)가 존재하는가.
+  없으면 test-writer가 "틱을 수동 전진"시킬 대상이 없어 실타이머 의존 테스트가
+  나온다 — 파이프라인을 시작하지 말고 **하네스 구축을 선행 작업으로 보고**한다.
+- 대상 RQ에 매핑된 GA-* 골든 케이스가 존재하는가
+  (`harness/evals/golden/track-a-product.jsonl`). 없으면 중단하고 사용자에게 신설을
+  요청한다 — 정답은 사람이 쓴다(`harness/evals/README.md`).
 
 **실행 모드 판별**
 - `_workspace/{RQ-ID}/` 없음 → 초기 실행 (Phase 1부터)
@@ -78,15 +80,25 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 
 `Agent(subagent_type: "evaluator", model: "opus")`.
 
-프롬프트에는 **RQ-ID와 `_workspace/{RQ-ID}/` 경로만** 전달한다.
-coder의 대화·설명·"이렇게 구현한 이유"를 전달하지 않는다 — 평가자는 파일과
-코드만 본다. 산출: `03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거).
+프롬프트에 전달할 것은 **RQ-ID, `_workspace/{RQ-ID}/` 경로, 그리고 테스트 약화
+감지의 diff 기준점(test-writer가 `01_test-writer_red.md`에 남긴 테스트 커밋 SHA)**
+뿐이다. coder의 대화·설명·"이렇게 구현한 이유"는 전달하지 않는다 — 평가자는
+파일과 코드만 본다.
+
+기준점을 빼먹으면 evaluator의 인자 없는 `git diff`가 항상 빈 출력을 내고
+(coder가 이미 커밋했으므로 워킹트리가 깨끗하다) 테스트 약화 검사가 조용히
+무력화된다. 산출: `03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거).
 
 ## Phase 4: 종합
 
 - **PASS** → 구현 커밋 확인, 원장(`progress.md`) ✅ 갱신, PR 준비
-  (스펙 변경이 있으면 같은 PR에 포함). **머지 전에 `review-gate` 스킬을
-  호출한다** — reviewer APPROVE가 머지의 필요조건이다.
+  (스펙 변경이 있으면 같은 PR에 포함).
+  **골든 원장 갱신을 사용자에게 요청한다** — 해당 GA 케이스의 `verify`를 실제
+  테스트 경로로, `status`를 `todo`→`done`으로. 에이전트가 직접 쓰지 않는다:
+  골든 파일 수정은 사람 승인 게이트다(`harness/evals/README.md`). 갱신하지 않으면
+  원장이 영구히 todo로 남아 다음 RQ의 커버리지 대조가 신뢰할 수 없는 원장 위에서
+  이뤄진다.
+  **머지 전에 `review-gate` 스킬을 호출한다** — reviewer APPROVE가 머지의 필요조건이다.
 - **FAIL** → 보고서를 입력으로 coder 1회 재호출(Phase 2) → evaluator
   재평가(Phase 3). **다시 FAIL이면 자동 반복을 멈추고** 보고서를 첨부해 사용자에게
   보고한다. 테스트 약화로 우회하지 않는다.
@@ -110,9 +122,12 @@ coder의 대화·설명·"이렇게 구현한 이유"를 전달하지 않는다 
 
 ## 테스트 시나리오
 
-1. **정상**: "RQ-03 구현해줘" → Phase 0 전제조건 통과 → test-writer가 GA-21
-   기반 실패 테스트 작성 + 테스트 커밋 → coder가 최소 구현으로 Green →
+1. **정상**: "RQ-03 구현해줘" → Phase 0 전제조건 통과(RQ-03은 GA-03·GA-21이
+   매핑돼 있다) → test-writer가 **매핑된 GA 케이스 전부**를 덮는 실패 테스트
+   작성 + 테스트 커밋 → coder가 최소 구현으로 Green →
    evaluator PASS → PR 준비 → `review-gate` 호출.
    트랙 B GB-02 rubric(테스트 커밋 선행, 완료 주장에 테스트 출력 포함)을 충족해야 한다.
-2. **에러**: coder가 통과를 위해 테스트 기대값을 수정 → evaluator가 검증 항목 5
-   (테스트 약화 감지)에서 `git diff`로 적발 → FAIL 보고 → 사용자 개입.
+2. **에러**: coder가 통과를 위해 테스트 기대값을 수정 → evaluator가 검증 항목 5에서
+   `git diff <테스트커밋SHA>..HEAD -- tests/`로 적발 → FAIL 보고 → 사용자 개입.
+   **이 시나리오는 Phase 3이 기준점을 전달해야만 재현된다** — 기준점 없이는
+   빈 diff로 통과한다.
