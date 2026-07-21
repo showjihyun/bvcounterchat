@@ -57,10 +57,19 @@ def count_pending(spec_path: Path = SPEC) -> int:
 
 
 def is_implementation_path(path_str: str) -> bool:
-    """이 경로가 구현 산출물인가. 경로 구분자·상대/절대 표기에 무관하게 판정."""
+    """이 경로가 구현 산출물인가. 경로 구분자·상대/절대 표기에 무관하게 판정.
+
+    백슬래시를 슬래시로 먼저 정규화한다. `Path`는 POSIX에서 `\\`를 구분자가
+    아니라 파일명 문자로 보기 때문에, 정규화 없이는 `src\\game\\tick.ts`가
+    Windows에서는 차단되고 Linux(CI)에서는 통과한다 — hook과 CI가 같은 코드를
+    쓰는 의미가 사라진다. (2026-07-21 CI selftest가 이 divergence를 검출)
+
+    POSIX에서 백슬래시가 든 정상 파일명을 오판할 수 있으나, 그 방향의 오류는
+    "막지 말아야 할 것을 막는" 쪽이라 게이트로서 안전한 실패다.
+    """
     if not path_str:
         return False
-    p = Path(path_str)
+    p = Path(path_str.replace("\\", "/"))
     try:
         rel = p.resolve().relative_to(ROOT) if p.is_absolute() else p
     except (ValueError, OSError):
