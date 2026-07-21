@@ -1,0 +1,30 @@
+# 시크릿 — CLAUDE.md 금지 항목. 커밋되면 히스토리에서 지우기 어렵다.
+.env
+.env.*
+secrets/
+
+# 의존성·빌드 산출물
+node_modules/
+dist/
+build/
+coverage/
+.eslintcache
+*.tsbuildinfo
+
+# 에이전트 파이프라인 산출물 (TDD Red/Green/평가 보고서)
+# 감사 추적용 로컬 기록이며 저장소에 남기지 않는다 — harness/workflow/tdd.md
+_workspace/
+_workspace_prev/
+.harness/logs/
+
+# 3D 에셋 원본 (Blender 등) — 빌드 입력이 아닌 작업 파일
+# glTF 산출물(.glb)은 커밋한다. ADR-0007 참조.
+*.blend
+*.blend[0-9]*
+
+# 도구·OS
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.log

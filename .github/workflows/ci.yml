@@ -1,0 +1,59 @@
+# PR 게이트.
+# 원칙: 머지 게이트는 결정론적 센서만 담는다. 느린·추론적 검사(리뷰 게이트)는
+# 게이트 밖에 둔다 — 게이트가 느려지면 우회하고 싶어지고, 우회되는 게이트는
+# 없는 것과 같다.
+#
+# 현재 활성 게이트: 스펙 동결 1건.
+# lint·typecheck·test는 프로젝트 스캐폴딩(로드맵 1단계) 이후 추가한다 —
+# 지금은 검증할 코드가 없어 넣어봐야 항상 통과하는 장식이 된다.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # three-dot diff의 merge-base 계산에 전체 이력이 필요하다.
+          # 얕은 클론이면 "no merge base" 에러로 게이트가 오작동한다.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 게이트 자신이 고장 났는지 먼저 본다. 고장 난 센서는 없는 센서보다
+      # 나쁘다 — 통과하고 있다고 착각하게 만들기 때문이다.
+      - name: 게이트 자체 검증
+        run: python .claude/hooks/gate_spec_freeze.py --selftest
+
+      # requirements.md에 🟡 PENDING이 남아 있는데 구현(src/tests 등)이
+      # 변경됐으면 머지를 막는다. 판정 로직은 hook과 동일한 스크립트를 쓴다
+      # — grep 정규식을 여기 따로 두면 언젠가 hook과 어긋나고, 로컬과 CI가
+      # 다르게 판정하는 게이트는 신뢰를 잃는다.
+      - name: 스펙 동결 게이트
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | python .claude/hooks/gate_spec_freeze.py --check-paths
+
+      # 아래는 경고만 — 머지를 막지 않는다. 드리프트 지표(M2·M3)의 관측
+      # 지점이며, 반복되면 그때 하드 게이트로 승격한다.
+      - name: 스펙-코드 동행 검사 (M2, 경고)
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if echo "$CHANGED" | grep -qE '^(src/|client/|server/|shared/)' \
+             && ! echo "$CHANGED" | grep -qE '^harness/(specs/|adr/)'; then
+            echo "::warning::코드 변경에 스펙/ADR 변경이 없습니다. 스펙에 이미 있는 항목이면 PR 설명에 RQ-ID를 명시하세요."
+          fi
+
+      - name: 테스트-코드 동행 검사 (M3 프록시, 경고)
+        run: |
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if echo "$CHANGED" | grep -qE '^(src/|client/|server/|shared/)' \
+             && ! echo "$CHANGED" | grep -qE '(^tests?/|\.(test|spec)\.)'; then
+            echo "::warning::구현 변경에 테스트 변경이 없습니다. TDD 위반인지 확인하고, ADR-0008의 예외(문서·설정·순수 스타일)에 해당하면 PR 설명에 사유를 적으세요."
+          fi

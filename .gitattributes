@@ -1,0 +1,15 @@
+* text=auto
+
+# CI(Linux)에서 실행되는 파일은 개발자의 autocrlf 설정과 무관하게 LF로 고정.
+# CRLF로 체크아웃되면 shebang 뒤에 \r이 붙어 "bad interpreter"로 죽는다.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 3D 에셋·텍스처는 바이너리 — 줄바꿈 변환이 파일을 손상시킨다 (ADR-0007)
+*.glb  binary
+*.gltf binary
+*.png  binary
+*.jpg  binary
+*.webp binary
