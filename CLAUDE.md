@@ -16,6 +16,7 @@
 
 | 작업 | 먼저 읽을 파일 |
 |---|---|
+| **팀에 새로 합류** | `docs/ONBOARDING.md` — 첫 주 가이드. 여기부터 읽는다 |
 | **모든 개발 작업 시작·완료** | `harness/progress.md` — 진행 원장, 갱신 의무 |
 | 하네스 전체 조망 | `harness/README.md` |
 | 스펙 인터뷰 | `harness/specs/interview/question-bank.md` |
@@ -72,7 +73,9 @@
 
 ## 명령어·컨벤션
 
-- 커밋: `feat|fix|chore|test|docs(scope): 설명` · 브랜치: `feat/<RQ-ID>-<설명>`
+- 커밋: `feat|fix|chore|test|docs(scope): 설명`
+- 브랜치: `<타입>/<설명>` — RQ 구현이면 `feat/<RQ-ID>-<설명>`
+  (예: `feat/RQ-04-persistent-room`, `chore/tdd-pipeline`, `docs/onboarding`)
 - 검증 일괄: `npm run check` (= `scripts/check.sh` — 게이트 → lint → typecheck → test)
 - 개별: `npm run lint` · `npm run typecheck` · `npm test` · `npm run build`
 - 스펙 동결 상태 확인: `npm run gate`
