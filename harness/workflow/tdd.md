@@ -29,7 +29,7 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
    - ADR-0002(전송)·ADR-0003(네트코드)·ADR-0008(테스트 전략)이 승인 상태다
    - 결정론적 시뮬레이션 하네스(고정 틱 + fake timer)가 존재한다 — 아래
      "결정론 규칙" 참조. 없으면 test-writer가 쓸 하네스가 없으므로 선행 작업.
-   - `scripts/check.sh`에 실제 테스트 명령이 채워져 있다 (현재 미존재 —
+   - `scripts/check.sh`에 실제 테스트 명령이 채워져 있다 (`npm run check`로 확인 —
      Phase 0 통과 전 확인 필수)
    - 대상 RQ가 ✅ 확정 상태다 (`harness/specs/requirements.md`). 🟡 PENDING이면
      Deep Interview가 먼저 — 스펙 동결 게이트가 `src/`·`tests/` 수정을 차단한다

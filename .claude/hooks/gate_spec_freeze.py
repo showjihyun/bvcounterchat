@@ -28,8 +28,10 @@ import sys
 from pathlib import Path
 
 # 구현 산출물로 간주하는 최상위 디렉토리.
-# 프로젝트 스캐폴딩(로드맵 1단계)에서 실제 레이아웃이 정해지면 여기를 갱신한다.
-# 넓게 잡는 쪽이 안전하다 — 빠뜨린 디렉토리는 게이트에 뚫린 구멍이 된다.
+# ADR-0010(단일 패키지 + src/{client,server,shared})으로 레이아웃이 확정되어
+# 실제로는 src/ 와 tests/ 만 존재한다. 나머지는 오탐 없는 여유분이다 —
+# 레이아웃이 바뀌었는데 여기를 빠뜨리면 게이트에 조용히 구멍이 뚫린다.
+# 레이아웃을 바꾸는 ADR은 반드시 이 집합의 갱신을 동반해야 한다.
 BLOCKED_TOP_DIRS = {
     "src", "tests", "test", "__tests__",
     "client", "server", "shared", "packages",
@@ -55,10 +57,19 @@ def count_pending(spec_path: Path = SPEC) -> int:
 
 
 def is_implementation_path(path_str: str) -> bool:
-    """이 경로가 구현 산출물인가. 경로 구분자·상대/절대 표기에 무관하게 판정."""
+    """이 경로가 구현 산출물인가. 경로 구분자·상대/절대 표기에 무관하게 판정.
+
+    백슬래시를 슬래시로 먼저 정규화한다. `Path`는 POSIX에서 `\\`를 구분자가
+    아니라 파일명 문자로 보기 때문에, 정규화 없이는 `src\\game\\tick.ts`가
+    Windows에서는 차단되고 Linux(CI)에서는 통과한다 — hook과 CI가 같은 코드를
+    쓰는 의미가 사라진다. (2026-07-21 CI selftest가 이 divergence를 검출)
+
+    POSIX에서 백슬래시가 든 정상 파일명을 오판할 수 있으나, 그 방향의 오류는
+    "막지 말아야 할 것을 막는" 쪽이라 게이트로서 안전한 실패다.
+    """
     if not path_str:
         return False
-    p = Path(path_str)
+    p = Path(path_str.replace("\\", "/"))
     try:
         rel = p.resolve().relative_to(ROOT) if p.is_absolute() else p
     except (ValueError, OSError):

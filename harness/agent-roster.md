@@ -1,8 +1,12 @@
 # 에이전트 로스터 — TDD·리뷰 파이프라인
 
-> **구현 상태**: 이 문서는 스펙이다. `.claude/agents/{test-writer,coder,evaluator,reviewer}.md`
-> 파일은 아직 스캐폴딩되지 않았다 — 이 문서가 그 구현체의 명세다. 파이프라인
-> 오케스트레이션은 `harness/workflow/tdd.md`·`harness/workflow/review-gate.md` 참조.
+> **구현 상태** (2026-07-21):
+> - ✅ `reviewer` — `.claude/agents/reviewer.md` 스캐폴딩 완료.
+>   오케스트레이터는 `.claude/skills/review-gate/SKILL.md`.
+> - ⬜ `test-writer`·`coder`·`evaluator` — 아직 미구축. 로드맵 2단계(서버) 착수 시 필요하다.
+>
+> 이 문서는 네 에이전트 전체의 명세이며, 실행체와 차이가 생기면 **실행체를 이 문서에 맞춘다**.
+> 파이프라인 오케스트레이션은 `harness/workflow/tdd.md`·`harness/workflow/review-gate.md` 참조.
 
 4개 에이전트가 RQ 1건을 4개의 격리된 세션으로 구현·검증·리뷰한다. 격리가
 핵심이다 — 한 세션이 다른 세션의 판단 근거(대화·의도 설명)를 보면 그 세션의
@@ -158,14 +162,18 @@ evaluator는 "테스트가 스펙을 검증하는가"를 보고, reviewer는 **"
   지적은 minor로만 남긴다.
 - 아부 금지. 문제가 없으면 "APPROVE" 한 줄로 충분하다.
 
-**검토 항목**: `review-gate.md`의 검토 항목 표를 그대로 수행 — 스코프 이탈,
-ADR 모순, 서버 권위 위반(RQ-61, blocker), 렌더 루프 내 할당, 테스트 약화,
-문서 동행.
+**검토 항목**: `harness/workflow/review-gate.md`의 검토 항목 표를 그대로 수행한다.
+**여기에 목록을 복제하지 않는다** — 같은 목록을 두 곳에 두면 반드시 갈라지고,
+갈라진 순간 "실행체를 명세에 맞춘다"는 규칙이 근거 있는 검사를 삭제하라는
+지시로 둔갑한다. (2026-07-21 PR #1 재리뷰에서 실제로 이 사고가 났다 —
+`review-gate.md`에서 고친 불일치가 이 문서로 옮겨왔었다.)
 
 **입력/출력**
 - 입력: 리뷰 대상 diff, 변경 파일 목록, 관련 RQ/ADR 번호 목록 (대화 없음)
-- 출력: `_workspace/review/{브랜치명}.md` — 판정(APPROVE/REQUEST_CHANGES),
-  지적마다 심각도(blocker/major/minor)·근거 인용·수정 방법
+- 출력: `_workspace/review/{브랜치명의 `/`를 `-`로 치환}.md` — 판정
+  (APPROVE/REQUEST_CHANGES), 지적마다 심각도(blocker/major/minor)·근거 인용·수정 방법.
+  브랜치명이 `feat/<RQ-ID>-<설명>` 형태라 치환하지 않으면 중첩 디렉토리가 되어
+  재리뷰 시 이전 보고서를 찾지 못한다
 
 **금지사항**: 파일 수정, 구현 세션 대화 열람.
 
