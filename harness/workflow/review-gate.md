@@ -1,8 +1,10 @@
 # 리뷰 게이트 — 머지 전 독립 리뷰 명세
 
-> **구현 상태**: 이 문서는 스펙이다. 실행 가능한 스킬(`.claude/skills/review-gate/SKILL.md`)과
-> reviewer 에이전트 정의(`.claude/agents/reviewer.md`)는 아직 스캐폴딩되지 않았다 —
-> 이 문서가 그 구현체의 명세다. 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
+> **구현 상태**: ✅ 2026-07-21 스캐폴딩 완료. 실행체는
+> `.claude/skills/review-gate/SKILL.md`(오케스트레이터)와
+> `.claude/agents/reviewer.md`(reviewer 정의)다. 이 문서는 그 명세이며,
+> 둘 사이에 차이가 생기면 **실행체를 이 문서에 맞춘다**.
+> 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
 
 솔로 체제의 리뷰 게이트. GitHub은 자기 PR을 자기가 승인할 수 없으므로,
 사람 리뷰 대신 **격리된 세션의 reviewer 에이전트(Opus) APPROVE**를 머지의

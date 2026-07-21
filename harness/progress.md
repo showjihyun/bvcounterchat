@@ -36,6 +36,7 @@
 | 16 | ADR-0004·0005·0007을 "제안"→"승인"으로 전환 | ADR-0004, ADR-0005, ADR-0007 | ✅ | `harness/adr/` | **완료(2026-07-21)**. 세 ADR 모두 승인 전환 + 확정값 본문 반영(0004 이동 파라미터표·공중가속 미허용, 0005 무기 수치·되감기 200ms·`headshot` 플래그, 0007 맵 수치·스프레이 아틀라스). `adr/README.md` 상태표 9건 전부 승인으로 갱신. 단서: 승인 ≠ 전면 검증 — Rapier 30Hz 실측(0004), 히트박스 치수(0005)는 잔존 사항으로 각 `## 결과`에 명시 |
 | 17 | **스펙 동결 게이트 구축 (hook + CI)** | 전 RQ (드리프트 방지) | ✅ | `.claude/hooks/gate_spec_freeze.py`, `.claude/settings.json`, `.github/workflows/ci.yml` | **완료(2026-07-21) — 하네스 최초의 실동작 Sensor.** 🟡 존재 시 구현 디렉토리 수정을 PreToolUse exit 2로 차단, CI에서 동일 스크립트로 PR 차단. 판정 로직 단일화(hook·CI가 같은 코드 호출). `--selftest` 내장, CI 첫 스텝으로 실행. 4개 시나리오 실측 검증(구현 차단 / 문서 통과 / CI 실패 / 문서전용 PR 통과). 구축 중 cp949 인코딩 크래시 버그 1건 발견·수정. **후속 필수**: 스캐폴딩에서 레이아웃 확정 시 `BLOCKED_TOP_DIRS` 갱신, git init 후 CI 활성 |
 
+| 17b | **리뷰 게이트 스캐폴딩 (skill + reviewer 에이전트)** | 전 PR (추론적 게이트) | ✅ | `.claude/skills/review-gate/SKILL.md`, `.claude/agents/reviewer.md` | **완료(2026-07-21)**. `harness/workflow/review-gate.md` 명세를 실행체로 구현. reviewer=opus, 검토 항목 10건. CI(결정론)와 reviewer(추론)의 이중 게이트 완성. **미완**: GitHub 브랜치 보호 status check 미설정 — 현재는 규율로만 강제 |
 ---
 
 ## 3. 로드맵 (`docs/req/07_Roadmap.md` 10단계, v1 = **전체 10단계** — 질문 34 확정)
