@@ -9,6 +9,10 @@ import { WEAPON } from '@shared/constants'
  * `setTimeout`을 틱 기반 마감시한으로 대체한다. 조기 실행 금지·건너뛴 만료
  * 유실 금지·콜백 예외 격리가 이 스케줄러의 존재 이유이므로 세 가지 모두
  * 직접 검증한다.
+ *
+ * 이미 지난 마감시한(`scheduleAt`에 현재 틱 이하, `scheduleIn(0)`)은 오류가
+ * 아니라 정상 사용이다 — 다만 예약 시점에 즉시 실행하지 않고 `advanceTo`가
+ * 유일한 실행 지점이라는 규칙은 유지된다(계약 §3 보강).
  */
 describe('TickScheduler (원장 17e §3)', () => {
   it('마감 틱 이전에는 콜백이 실행되지 않는다 (조기 실행 금지)', () => {
@@ -18,6 +22,58 @@ describe('TickScheduler (원장 17e §3)', () => {
       fired = true
     })
     scheduler.advanceTo(4)
+    expect(fired).toBe(false)
+    scheduler.advanceTo(5)
+    expect(fired).toBe(true)
+  })
+
+  it('scheduleAt에 현재 틱 이하(이미 지난 마감시한)를 넘겨도 예약 시점에는 던지지 않는다', () => {
+    const clock = createClock()
+    clock.advance(5)
+    const scheduler = createScheduler(clock)
+    expect(() => scheduler.scheduleAt(5, () => {})).not.toThrow() // 현재 틱과 동일
+    expect(() => scheduler.scheduleAt(2, () => {})).not.toThrow() // 이미 지난 틱
+    expect(() => scheduler.scheduleAt(0, () => {})).not.toThrow() // 훨씬 과거
+  })
+
+  it('scheduleIn(0)은 정상 사용이며 던지지 않는다 — "현재 틱 마감"을 의미한다', () => {
+    const scheduler = createScheduler(createClock())
+    expect(() => scheduler.scheduleIn(0, () => {})).not.toThrow()
+  })
+
+  it('이미 지난 마감시한 예약은 예약 시점에 즉시 실행되지 않고, 다음 advanceTo 호출에서 실행된다', () => {
+    const clock = createClock()
+    clock.advance(5)
+    const scheduler = createScheduler(clock)
+    let fired = false
+    scheduler.scheduleAt(2, () => {
+      fired = true
+    }) // 이미 지난 틱(2 < 5) — advanceTo가 유일한 실행 지점이라는 규칙은 유지된다
+    expect(fired).toBe(false)
+    scheduler.advanceTo(5)
+    expect(fired).toBe(true)
+  })
+
+  it('scheduleIn(0)으로 예약한 콜백도 예약 시점에는 실행되지 않고, 다음 advanceTo 호출에서 실행된다', () => {
+    const clock = createClock()
+    const scheduler = createScheduler(clock)
+    let fired = false
+    scheduler.scheduleIn(0, () => {
+      fired = true
+    })
+    expect(fired).toBe(false)
+    scheduler.advanceTo(clock.tick)
+    expect(fired).toBe(true)
+  })
+
+  it('scheduleAt(현재 틱)은 예약 시점 이후 첫 advanceTo(현재 틱) 호출에서 실행된다', () => {
+    const clock = createClock()
+    clock.advance(5)
+    const scheduler = createScheduler(clock)
+    let fired = false
+    scheduler.scheduleAt(5, () => {
+      fired = true
+    })
     expect(fired).toBe(false)
     scheduler.advanceTo(5)
     expect(fired).toBe(true)
@@ -138,6 +194,38 @@ describe('TickScheduler (원장 17e §3)', () => {
     expect(fired).toBe(false)
     scheduler.advanceTo(70)
     expect(fired).toBe(true)
+  })
+
+  it('scheduleAt의 tick이 음수·비정수·NaN이면 던진다', () => {
+    const scheduler = createScheduler(createClock())
+    expect(() => scheduler.scheduleAt(-1, () => {})).toThrow()
+    expect(() => scheduler.scheduleAt(1.5, () => {})).toThrow()
+    expect(() => scheduler.scheduleAt(NaN, () => {})).toThrow()
+  })
+
+  it('scheduleIn의 delayMs가 음수·비정수·NaN이면 던진다', () => {
+    const scheduler = createScheduler(createClock())
+    expect(() => scheduler.scheduleIn(-1, () => {})).toThrow()
+    expect(() => scheduler.scheduleIn(1.5, () => {})).toThrow()
+    expect(() => scheduler.scheduleIn(NaN, () => {})).toThrow()
+  })
+
+  it('scheduleAt·scheduleIn의 잘못된 인자에 대한 에러는 RangeError 또는 TypeError다', () => {
+    const scheduler = createScheduler(createClock())
+    const captureError = (fn: () => void): unknown => {
+      try {
+        fn()
+        return undefined
+      } catch (e) {
+        return e
+      }
+    }
+
+    const atError = captureError(() => scheduler.scheduleAt(-1, () => {}))
+    const inError = captureError(() => scheduler.scheduleIn(-1, () => {}))
+
+    expect(atError instanceof RangeError || atError instanceof TypeError).toBe(true)
+    expect(inError instanceof RangeError || inError instanceof TypeError).toBe(true)
   })
 
   it('setTimeout을 쓰지 않는다', () => {
