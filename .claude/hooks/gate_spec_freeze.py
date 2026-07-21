@@ -28,8 +28,10 @@ import sys
 from pathlib import Path
 
 # 구현 산출물로 간주하는 최상위 디렉토리.
-# 프로젝트 스캐폴딩(로드맵 1단계)에서 실제 레이아웃이 정해지면 여기를 갱신한다.
-# 넓게 잡는 쪽이 안전하다 — 빠뜨린 디렉토리는 게이트에 뚫린 구멍이 된다.
+# ADR-0010(단일 패키지 + src/{client,server,shared})으로 레이아웃이 확정되어
+# 실제로는 src/ 와 tests/ 만 존재한다. 나머지는 오탐 없는 여유분이다 —
+# 레이아웃이 바뀌었는데 여기를 빠뜨리면 게이트에 조용히 구멍이 뚫린다.
+# 레이아웃을 바꾸는 ADR은 반드시 이 집합의 갱신을 동반해야 한다.
 BLOCKED_TOP_DIRS = {
     "src", "tests", "test", "__tests__",
     "client", "server", "shared", "packages",

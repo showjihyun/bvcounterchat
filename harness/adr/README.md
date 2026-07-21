@@ -1,7 +1,8 @@
 # ADR 목록
 
 2026-07-21 초안 9건 작성 → 같은 날 Deep Interview(37문항)로 RQ-90~95가
-확정되어 **9건 전부 승인** 상태가 됐다. 답변 근거는
+확정되어 **9건 전부 승인** 상태가 됐다. 이후 로드맵 1단계(프로젝트 초기화)
+착수 시 레이아웃 결정이 없다는 것이 드러나 ADR-0010을 신설했다. 답변 근거는
 `harness/specs/interview/answers.md`, 요구사항은
 `harness/specs/requirements.md`(v1.0, 🟡 0개).
 
@@ -16,6 +17,7 @@
 | [ADR-0007](0007-map-asset-pipeline.md) | 맵 에셋 파이프라인 | 60×60m 오리지널 맵(색조만 Dust2류), glTF, 충돌/시각 메시 분리, 스프레이 아틀라스(AI 생성) | 승인 |
 | [ADR-0008](0008-test-strategy.md) | 테스트 전략 | TDD, Vitest, 순수 tick 함수 결정론, 렌더링 비단위테스트 | 승인 |
 | [ADR-0009](0009-deployment.md) | 배포 | Docker(서버 이미지) + Nginx(HTTP/WS, TLS 불요) + Redis, 멀티 컨테이너 단일 호스트 | 승인 |
+| [ADR-0010](0010-project-layout.md) | 프로젝트 레이아웃 | 단일 package.json + `src/{client,server,shared}`, `@shared/*` 별칭 | 승인 |
 
 > ADR-0001·0002·0003·0006·0009는 `docs/req/03_Technical_Architecture.md`가
 > 스택을 이미 확정해 승인. ADR-0004·0005·0007은 req가 침묵한 세부(물리

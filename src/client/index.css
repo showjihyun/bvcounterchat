@@ -1,0 +1,43 @@
+/* 셸 스타일만. 시각 디자인은 docs/design/DESIGN.md가 진실 공급원이며
+   아직 존재하지 않는다 (CLAUDE.md 진실 공급원 4번, 🟡). UI 본격 구현 전에
+   그 문서가 필요하다 — `harness/workflow/fe.md`. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #1a1713;
+  color: #e8e0d4;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+.app {
+  position: relative;
+  height: 100%;
+}
+
+/* HUD는 캔버스 위에 겹치되 포인터 이벤트를 가로채지 않는다 —
+   조준·사격 입력이 캔버스로 가야 한다 (RQ-54). 입력을 받는 요소
+   (채팅 입력창 RQ-52)만 개별적으로 pointer-events를 되살린다. */
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hud__placeholder {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}

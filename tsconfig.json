@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    // ADR-0008: 타입 검사는 클라이언트·서버·공유를 한 번의 프로그램 그래프로
+    // 돈다. 파일 단위 분리가 불가능하므로 check.sh --fast는 lint만 하고
+    // typecheck는 전체 검증에 위임한다.
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    // Colyseus 스키마의 @type() 데코레이터가 요구한다 (ADR-0002)
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+
+    // ADR-0010: shared 공유는 이 별칭 하나로 성립한다.
+    // vite.config.ts / vite.server.config.ts / vitest.config.ts에도 같은
+    // 별칭을 선언해야 한다 — 한쪽만 있으면 타입은 통과하고 번들이 깨진다.
+    // baseUrl은 TS 6에서 폐기 예정(TS5101)이라 쓰지 않는다.
+    // paths는 tsconfig.json 위치를 기준으로 해석된다.
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@client/*": ["./src/client/*"],
+      "@server/*": ["./src/server/*"]
+    }
+  },
+  "include": ["src", "tests", "*.config.ts"]
+}

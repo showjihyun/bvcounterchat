@@ -3,9 +3,8 @@
 # 게이트 밖에 둔다 — 게이트가 느려지면 우회하고 싶어지고, 우회되는 게이트는
 # 없는 것과 같다.
 #
-# 현재 활성 게이트: 스펙 동결 1건.
-# lint·typecheck·test는 프로젝트 스캐폴딩(로드맵 1단계) 이후 추가한다 —
-# 지금은 검증할 코드가 없어 넣어봐야 항상 통과하는 장식이 된다.
+# 활성 게이트: 스펙 동결 + lint + typecheck + test (ADR-0008).
+# 로컬 실측 4.2초 — 예산 3분에 여유가 크다.
 name: ci
 
 on:
@@ -25,6 +24,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
 
       # 게이트 자신이 고장 났는지 먼저 본다. 고장 난 센서는 없는 센서보다
       # 나쁘다 — 통과하고 있다고 착각하게 만들기 때문이다.
@@ -57,3 +63,14 @@ jobs:
              && ! echo "$CHANGED" | grep -qE '(^tests?/|\.(test|spec)\.)'; then
             echo "::warning::구현 변경에 테스트 변경이 없습니다. TDD 위반인지 확인하고, ADR-0008의 예외(문서·설정·순수 스타일)에 해당하면 PR 설명에 사유를 적으세요."
           fi
+
+      # 결정론적 검증 일괄 (ADR-0008). check.sh가 로컬·CI 양쪽의
+      # 단일 진입점이다 — CI에만 있는 검증 단계를 만들면 로컬에서
+      # 재현할 수 없는 실패가 생긴다.
+      - name: 검증 일괄 (lint + typecheck + test)
+        run: bash scripts/check.sh
+
+      # 빌드가 실제로 되는지. 특히 서버 번들은 @shared 별칭이 빌드 타임에
+      # 해석되지 않으면 런타임에 죽으므로(ADR-0010) 빌드 성공 자체가 검증이다.
+      - name: 빌드
+        run: npm run build
