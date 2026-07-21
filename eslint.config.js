@@ -31,6 +31,21 @@ export default tseslint.config(
         { name: 'window', message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
         { name: 'document', message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
         { name: 'process', message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
+        // 시뮬레이션은 실시간 타이머가 아니라 틱으로 진행한다.
+        // `src/shared/sim/scheduler.ts`(TickScheduler)가 이들을 대체한다 —
+        // 실타이머에 의존하면 테스트가 flaky해지고 결정론이 무너진다 (ADR-0008).
+        {
+          name: 'setTimeout',
+          message: '틱 기반 TickScheduler를 쓰라 — 실타이머는 결정론을 깬다 (ADR-0008).',
+        },
+        {
+          name: 'setInterval',
+          message: '틱 기반 TickScheduler를 쓰라 — 실타이머는 결정론을 깬다 (ADR-0008).',
+        },
+        {
+          name: 'requestAnimationFrame',
+          message: 'src/shared는 환경 중립이어야 한다 (ADR-0010). 렌더 루프는 클라이언트 전용이다.',
+        },
       ],
       // no-restricted-globals는 전역 **참조**만 본다. 임포트 형태
       // (`import fs from 'node:fs'`)는 통과하므로 아래 규칙이 함께 필요하다.
