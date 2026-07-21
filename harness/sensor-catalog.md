@@ -4,16 +4,16 @@
 실행: Comp(결정론적·빠름) / Inf(추론적·느림·비결정).
 원칙: "반드시"는 hook·CI로 강제, "권장"은 Guide로.
 
-> 이 프로젝트는 코드가 전무한 상태(greenfield)에서 하네스 문서부터 세운다.
-> 아래 표의 상태는 **지금 실제로 존재하는 것만** ✅로 표기한다. 2026-07-21
-> Deep Interview 완료로 CLAUDE.md·harness/adr/(0001~0009)·workflow 문서가
-> 갖춰졌고, 같은 날 **첫 Sensor(스펙 동결 게이트)가 실제로 구축**됐다
-> — `.claude/hooks/gate_spec_freeze.py` + `.claude/settings.json` +
-> `.github/workflows/ci.yml`. 나머지 Sensor는 검증할 코드 자체가 없어
-> 그대로 ⬜미구축이다.
+> **이 문서가 Sensor 현황의 정본이다.** 다른 문서(`README.md` 등)는 여기로
+> 위임하며 표를 복제하지 않는다.
+>
+> 아래 표의 상태는 **지금 실제로 존재하는 것만** ✅로 표기한다.
+> 2026-07-21 기준 가동 중인 Sensor는 **4개**다 — 스펙 동결 게이트,
+> 결정론적 검증(lint·typecheck·test), 독립 평가 에이전트, PR 리뷰 게이트.
+> ADR은 0001~0010 전부 승인 상태다.
 >
 > "규칙이 문서에 쓰여 있다"와 "규칙이 강제된다"는 다르다는 것이 이 표의
-> 요점이며, 지금 그 경계선은 **Sensor 1개**다.
+> 요점이다. ⚠️가 붙은 항목은 **규율로만 지켜진다** — 우회를 막는 장치가 없다.
 
 ## Guides (feed-forward)
 
@@ -30,11 +30,11 @@
 |---|---|---|---|---|
 | 트래젝토리 로그 | Comp | 세션 종료(Stop) | hook (.claude/hooks) | ⬜미구축 |
 | 스펙 동결 게이트 (🟡 존재 시 구현 차단) | Comp | 구현 파일 수정 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_spec_freeze.py` exit 2 + `.github/workflows/ci.yml` | ✅ **2026-07-21 구축.** 판정 로직은 스크립트 1개에 있고 hook·CI가 **같은 코드**를 호출한다 — 로컬과 CI가 다르게 판정하는 게이트는 신뢰를 잃으므로 정규식을 CI에 따로 두지 않았다. `--selftest`가 게이트 자신을 검증하며 CI 첫 스텝으로 돈다. 차단 대상 디렉토리는 스크립트 상단 `BLOCKED_TOP_DIRS` — **스캐폴딩에서 실제 레이아웃이 정해지면 갱신 필요**(빠뜨린 디렉토리 = 게이트의 구멍). CI는 git 저장소 초기화 후 활성 |
-| 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | ⬜미구축 (.claude/settings.json 자체가 없음) |
-| 파일 수정 후 빠른 검사 | Comp | 수정 직후(PostToolUse) | hook → check 스크립트 | ⬜미구축 (스크립트·package.json 없음) |
-| lint / typecheck | Comp | CI (check 스크립트) | eslint + tsc --noEmit | ⬜미구축 (package.json 없음, 스택 세팅 전) |
-| 단위·통합 테스트 (트랙 A) | Comp | CI, PR 머지 게이트 | ci.yml → Vitest(ADR-0008 승인 — 러너 확정) | ⬜미구축 (package.json·ci.yml 자체가 없음, 러너 선택만 확정) |
-| 테스트-코드 동행 검사 (M3 프록시) | Comp | CI, PR | ci.yml (경고) | ⬜미구축 |
+| 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | ⬜미구축 — `.claude/settings.json`은 **존재하지만** `permissions`에 `deny` 3건(시크릿)만 있고 golden ask 항목이 없다. 등재: `progress.md` 17g |
+| 파일 수정 후 빠른 검사 | Comp | 수정 직후(PostToolUse) | hook → `scripts/check.sh --fast` | ⬜미구축 — **스크립트는 있으나 호출자가 없다.** `.claude/settings.json`에 PostToolUse hook 미등록 |
+| lint / typecheck | Comp | 로컬 `npm run check` + CI | eslint + `tsc --noEmit` | ✅ **2026-07-21 구축.** `scripts/check.sh`가 로컬·CI 공통 진입점. `src/shared` 전용 규칙(환경 중립·결정론)도 lint로 강제 |
+| 단위·통합 테스트 (트랙 A) | Comp | CI, PR 머지 게이트 | `ci.yml` → Vitest | ✅ **2026-07-21 구축.** `tests/{unit,integration}` 14건 통과, 실측 4.2초. GA 골든 케이스와의 대응은 RQ 구현 시 채워진다 |
+| 테스트-코드 동행 검사 (M3 프록시) | Comp | CI, PR | `ci.yml` (경고) | ✅ 구축 — 단 **경고일 뿐 머지를 막지 않는다.** 커밋 *순서*가 아니라 같은 PR에 테스트가 함께 바뀌었는지만 본다. ⚠️ 커밋 순서를 강제하는 게이트는 없다 |
 | 독립 평가 에이전트 (evaluator) | Inf | 각 RQ 구현 직후 (tdd-workflow Phase 3) | 오케스트레이터 스킬 `.claude/skills/tdd-workflow/SKILL.md` | ✅ **2026-07-21 구축.** `.claude/agents/evaluator.md`(opus). 검증 항목 6건(스위트 재실행·골든 커버리지·Colyseus 경계면 필드 대조·결정론·테스트 약화·스코프). 격리: RQ-ID·`_workspace/{RQ-ID}/` 경로·테스트 커밋 SHA만 받고 coder 대화는 받지 않는다 — 자기 채점 방지. ⚠️ 이 게이트는 **규율로만 강제된다** — 파이프라인을 건너뛰고 직접 구현하는 것을 막는 hook·CI는 없다 |
 | 트랙 B rubric 체크 | Inf | 하네스 변경 시·주간 | 사람 (수동) | ✅ 절차만 (harness/evals/README.md + track-b 시드 완료) |
 | PR 리뷰 게이트 (reviewer, 솔로 대체) | Inf | PR 머지 전 | APPROVE 없이 머지 금지 + 브랜치 보호(status check 필수) | ✅ **2026-07-21 구축.** `.claude/skills/review-gate/SKILL.md` + `.claude/agents/reviewer.md`(opus). 검토 항목 10건(스코프 이탈·ADR 모순·서버 권위·결정론·테스트 약화·렌더 루프 할당·shared 환경오염·값 복제·문서 동행·틱 예산). 격리 규칙: 구현 세션의 대화를 reviewer에 넘기지 않는다. ⚠️ 브랜치 보호(status check 필수) 설정은 **아직 안 됨** — 지금은 규율로만 지켜진다 |
