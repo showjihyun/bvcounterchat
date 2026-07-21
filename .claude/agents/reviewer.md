@@ -44,10 +44,10 @@ tools: Read, Grep, Glob, Bash, Write
 | 1 | 스코프 이탈 | 스펙에 없는 기능 — 팀전·라운드·구매 시스템, Pistol 외 무기, 계정/로그인, 모바일·게임패드 조작, 음성 채팅, 매치메이킹, 다중 맵, 안티치트 | requirements.md §11 | blocker |
 | 2 | ADR 모순 | 승인 ADR(0001~0010)과 어긋나는 라이브러리·구조·프로토콜 변경 | 해당 ADR | blocker |
 | 3 | **서버 권위 위반** | 클라이언트가 HP·킬·명중·최종 위치를 **확정**하는 코드. 서버 값을 신뢰하지 않고 클라이언트 계산값을 권위로 쓰는 패턴 | RQ-61, CLAUDE.md 불변식 | blocker |
-| 4 | **결정론 위반** | 시뮬레이션 코드의 `Math.random()`·`Date.now()` 직접 호출. 난수는 시드 주입, 시간은 틱에서 받아야 한다 | ADR-0008, CLAUDE.md 불변식 | blocker |
+| 4 | **결정론 위반** | 시뮬레이션 코드의 `Math.random()`·`Date.now()`·`performance.now()` 직접 호출. 난수는 시드 주입, 시간은 틱에서 받아야 한다 | ADR-0008, CLAUDE.md 불변식 | blocker |
 | 5 | 테스트 약화 | 테스트 diff의 기대값 완화·케이스 삭제·`skip`/`only` 추가 | CLAUDE.md 금지 | blocker |
 | 6 | 렌더 루프 할당 | `useFrame`/렌더 루프 안에서 매 프레임 벡터·객체·배열 생성 | `fe.md` 프레임 예산 | major (반복적·명백하면 blocker) |
-| 7 | shared 환경 오염 | `src/shared`에서 `window`·`document`(브라우저) 또는 `process`·`fs`(Node) 참조 | ADR-0010 | major |
+| 7 | shared 환경 오염 | `src/shared`에서 `window`·`document`(브라우저) 또는 `process`·`fs`(Node)를 **참조하거나 임포트** | ADR-0010 | major |
 | 8 | 값 복제 | 클라이언트나 서버가 `src/shared/constants.ts`의 값을 자기 쪽에 복제 — 예측(RQ-62)이 구조적으로 빗나간다 | ADR-0010 | major |
 | 9 | 문서 동행 | 스펙·ADR 변경이 코드와 같은 PR에 있는가. 구현 게이트 이후의 RQ인지 확인 | CLAUDE.md, 지표 M2 | major |
 | 10 | 틱 예산 | 서버 틱 경로에 O(n²)·동기 I/O·무제한 루프 — 33ms 예산(RQ-60)을 위협하는가 | RQ-60 | major |
