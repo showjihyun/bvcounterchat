@@ -14,10 +14,11 @@
 > ✅ **2026-07-21 Deep Interview로 🟡 미결이 0개가 되었다.** 37개 질문 전부
 > 결정권자가 답했고, 근거는 `harness/specs/interview/answers.md`에 있다.
 >
-> ⚠️ **다만 스펙 동결 게이트(hook·CI)는 여전히 존재하지 않는다.** 지금은
-> 막을 🟡가 없어 실질적 차단 대상이 없지만, 향후 스펙 개정으로 🟡가 다시
-> 생기면 이를 강제할 수단이 없다 — 하네스 구축 대상으로 남아 있다
-> (`harness/sensor-catalog.md`).
+> ✅ **스펙 동결 게이트가 이 규칙을 강제한다** (2026-07-21 구축).
+> `.claude/hooks/gate_spec_freeze.py`가 🟡 존재 시 `src/`·`tests/` 수정을
+> PreToolUse에서 차단(exit 2)하고, `.github/workflows/ci.yml`이 같은 스크립트로
+> PR을 막는다. 향후 스펙 개정으로 🟡가 다시 생기면 즉시 발효된다.
+> 현재 상태 확인: `npm run gate`.
 
 ---
 

@@ -66,10 +66,12 @@ tests/
   (Vite가 클라이언트 진입점에서 도달 가능한 것만 번들). 다만 `npm ls`로
   "이건 누구 의존성인가"를 구분할 수 없고, 서버 프로덕션 이미지에 클라이언트
   빌드 전용 패키지가 함께 설치된다 — 이미지 크기 손해를 감수한다.
-- **`src/shared`의 환경 중립성은 도구가 강제하지 않는다.** 누군가 거기서
-  `window`를 참조하면 서버에서 런타임에 터진다. 규칙이 문서에만 있는 상태이며,
-  반복되면 lint 규칙(`no-restricted-imports`/`no-restricted-globals`)으로
-  승격한다 — `harness/sensor-catalog.md`의 "같은 실수 2회면 센서 추가" 원칙.
+- **`src/shared`의 환경 중립성은 lint가 강제한다** (`eslint.config.js`의
+  `src/shared` 블록). `no-restricted-globals`가 전역 참조(`window`·`document`·
+  `process`)를, `no-restricted-imports`가 임포트 경로(`node:*`·`fs`·`path` 등)를
+  막는다 — **둘 다 필요하다**. 전자만 두면 `import fs from 'node:fs'`가 무사통과한다
+  (2026-07-21 PR #1 리뷰에서 실제로 이 구멍이 검출됐다).
+  다만 lint는 정적 검사라 동적 접근(`globalThis['win'+'dow']`)까지 막지는 못한다.
 - **게이트의 `BLOCKED_TOP_DIRS`는 이 결정에 종속된다.** 이 ADR을 대체하는
   레이아웃 변경은 반드시 게이트 갱신을 동반해야 한다. 빠뜨리면 게이트는
   조용히 통과시키기 시작하고, 조용히 고장 난 센서가 가장 위험하다.

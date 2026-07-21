@@ -32,6 +32,19 @@ export default tseslint.config(
         { name: 'document', message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
         { name: 'process', message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
       ],
+      // no-restricted-globals는 전역 **참조**만 본다. 임포트 형태
+      // (`import fs from 'node:fs'`)는 통과하므로 아래 규칙이 함께 필요하다.
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { group: ['node:*'], message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' },
+          ],
+          paths: ['fs', 'path', 'os', 'crypto', 'process', 'child_process', 'net'].map(
+            (name) => ({ name, message: 'src/shared는 환경 중립이어야 한다 (ADR-0010).' }),
+          ),
+        },
+      ],
       'no-restricted-properties': [
         'error',
         {
@@ -41,6 +54,12 @@ export default tseslint.config(
         },
         {
           object: 'Date',
+          property: 'now',
+          message: '시뮬레이션은 결정론적이어야 한다 — 시간은 틱에서 받아라 (ADR-0008).',
+        },
+        {
+          // ADR-0008이 Date.now()와 나란히 금지한 API.
+          object: 'performance',
           property: 'now',
           message: '시뮬레이션은 결정론적이어야 한다 — 시간은 틱에서 받아라 (ADR-0008).',
         },

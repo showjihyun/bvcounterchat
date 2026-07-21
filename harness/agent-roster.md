@@ -1,8 +1,12 @@
 # 에이전트 로스터 — TDD·리뷰 파이프라인
 
-> **구현 상태**: 이 문서는 스펙이다. `.claude/agents/{test-writer,coder,evaluator,reviewer}.md`
-> 파일은 아직 스캐폴딩되지 않았다 — 이 문서가 그 구현체의 명세다. 파이프라인
-> 오케스트레이션은 `harness/workflow/tdd.md`·`harness/workflow/review-gate.md` 참조.
+> **구현 상태** (2026-07-21):
+> - ✅ `reviewer` — `.claude/agents/reviewer.md` 스캐폴딩 완료.
+>   오케스트레이터는 `.claude/skills/review-gate/SKILL.md`.
+> - ⬜ `test-writer`·`coder`·`evaluator` — 아직 미구축. 로드맵 2단계(서버) 착수 시 필요하다.
+>
+> 이 문서는 네 에이전트 전체의 명세이며, 실행체와 차이가 생기면 **실행체를 이 문서에 맞춘다**.
+> 파이프라인 오케스트레이션은 `harness/workflow/tdd.md`·`harness/workflow/review-gate.md` 참조.
 
 4개 에이전트가 RQ 1건을 4개의 격리된 세션으로 구현·검증·리뷰한다. 격리가
 핵심이다 — 한 세션이 다른 세션의 판단 근거(대화·의도 설명)를 보면 그 세션의

@@ -10,9 +10,11 @@ export default defineConfig({
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
-    // RQ-01: 내장 GPU 30fps가 하한. 번들이 커지면 첫 로드가 늦어지므로
-    // 경고 임계를 낮게 잡아 증가를 조기에 인지한다 (three.js가 크므로 여유는 둔다).
-    chunkSizeWarningLimit: 900,
+    // 임계는 **현재 실측값(1,073kB) 바로 위**로 잡는다 — 첫 빌드부터 초과하는
+    // 임계는 항상 켜져 있는 경보라서 아무도 안 본다. 지금 목적은 절대 크기
+    // 억제가 아니라 '여기서 더 늘었다'는 신호다.
+    // three.js가 대부분을 차지하며, 코드 스플리팅은 로드맵 9단계(최적화).
+    chunkSizeWarningLimit: 1150,
   },
   server: {
     port: 5173,

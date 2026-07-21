@@ -65,5 +65,6 @@
 ## 명령어·컨벤션
 
 - 커밋: `feat|fix|chore|test|docs(scope): 설명` · 브랜치: `feat/<RQ-ID>-<설명>`
-- 검증 명령(`scripts/check.sh`, `npm test` 등)은 프로젝트 스캐폴딩 시 정의한다.
-  현재 저장소에는 코드가 없다 — 문서만 존재한다.
+- 검증 일괄: `npm run check` (= `scripts/check.sh` — 게이트 → lint → typecheck → test)
+- 개별: `npm run lint` · `npm run typecheck` · `npm test` · `npm run build`
+- 스펙 동결 상태 확인: `npm run gate`
