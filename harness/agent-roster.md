@@ -3,7 +3,9 @@
 > **구현 상태** (2026-07-21):
 > - ✅ `reviewer` — `.claude/agents/reviewer.md` 스캐폴딩 완료.
 >   오케스트레이터는 `.claude/skills/review-gate/SKILL.md`.
-> - ⬜ `test-writer`·`coder`·`evaluator` — 아직 미구축. 로드맵 2단계(서버) 착수 시 필요하다.
+> - **네 에이전트 전부 실행 가능하다.**
+> - ✅ `test-writer`·`coder`·`evaluator` — 2026-07-21 스캐폴딩 완료.
+>   오케스트레이터는 `.claude/skills/tdd-workflow/SKILL.md`.
 >
 > 이 문서는 네 에이전트 전체의 명세이며, 실행체와 차이가 생기면 **실행체를 이 문서에 맞춘다**.
 > 파이프라인 오케스트레이션은 `harness/workflow/tdd.md`·`harness/workflow/review-gate.md` 참조.

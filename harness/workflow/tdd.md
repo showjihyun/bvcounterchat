@@ -1,8 +1,10 @@
 # TDD 워크플로우 명세 — Red → Green → 독립 평가
 
-> **구현 상태**: 이 문서는 스펙이다. 실행 가능한 스킬(`.claude/skills/tdd-workflow/SKILL.md`)과
-> 에이전트 정의(`.claude/agents/{test-writer,coder,evaluator}.md`)는 아직 스캐폴딩되지
-> 않았다 — 이 문서가 그 구현체의 명세다. 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
+> **구현 상태**: ✅ 2026-07-21 스캐폴딩 완료. 실행체는
+> `.claude/skills/tdd-workflow/SKILL.md`(오케스트레이터)와
+> `.claude/agents/{test-writer,coder,evaluator}.md`다.
+> 이 문서는 그 명세이며, 둘 사이에 차이가 생기면 **실행체를 이 문서에 맞춘다**.
+> 에이전트 역할 상세는 `harness/agent-roster.md` 참조.
 
 스펙(RQ) 1건을 별도 에이전트 세션 3개로 구현·검증하는 오케스트레이터.
 
