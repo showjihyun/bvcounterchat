@@ -80,7 +80,9 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
 ## Phase 1: Red — test-writer (별도 세션, sonnet)
 
 `Agent(subagent_type: "test-writer", model: "sonnet")` 호출. 프롬프트에 포함:
-- RQ-ID + EARS 문장 전문 (`requirements.md`에서 인용)
+- RQ-ID + EARS 문장 전문 (`harness/specs/requirements.md`에서 인용)
+- 매핑된 GA-* 골든 케이스 전문 (`harness/evals/golden/track-a-product.jsonl`에서
+  인용) — Phase 0에서 존재를 확인한 그 케이스들
 - 관련 ADR 요약 (해당 RQ가 네트코드/물리/히트판정에 걸리면 ADR-0003/0004/0005)
 - ADR-0008(테스트 전략) 요약 — 테스트 레벨·더블 허용 범위
 - 위 "결정론 규칙" 전문

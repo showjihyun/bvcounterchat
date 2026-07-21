@@ -18,10 +18,13 @@
 
 | 에이전트 | 역할 | model | 입력 | 출력 | 격리 이유 |
 |---|---|---|---|---|---|
-| test-writer | Red — 실패 테스트 작성 | sonnet | RQ-ID, EARS 문장, 관련 ADR 요약, 결정론 규칙 | 테스트 파일 + `01_test-writer_red.md` | 구현을 보면 구현에 맞춘 테스트가 된다 |
-| coder | Green — 최소 구현 | sonnet | RQ-ID, `01_test-writer_red.md`, 테스트 파일 목록 | src/ 구현 + `02_coder_green.md` | test-writer·evaluator와 격리 — 테스트 의도를 재해석하지 않는다 |
-| evaluator | 독립 평가 — PASS/FAIL/BLOCKED | opus | RQ-ID, `_workspace/{RQ-ID}/` 경로만 (대화 없음) | `03_evaluator_report.md` | coder의 설명을 읽으면 그 논리에 오염된다 (자기 채점 방지) |
-| reviewer | 머지 게이트 — APPROVE/REQUEST_CHANGES | opus | diff, 관련 RQ/ADR 목록 (대화 없음) | `_workspace/review/{브랜치명}.md` | 작성자의 논리를 들으면 작성자의 맹점을 공유한다 |
+| test-writer | Red — 실패 테스트 작성 | sonnet | ↓ 상세 절 참조 | 테스트 파일 + `01_test-writer_red.md` | 구현을 보면 구현에 맞춘 테스트가 된다 |
+| coder | Green — 최소 구현 | sonnet | ↓ 상세 절 참조 | src/ 구현 + `02_coder_green.md` | test-writer·evaluator와 격리 — 테스트 의도를 재해석하지 않는다 |
+| evaluator | 독립 평가 — PASS/FAIL/BLOCKED | opus | ↓ 상세 절 참조 | `03_evaluator_report.md` | coder의 설명을 읽으면 그 논리에 오염된다 (자기 채점 방지) |
+| reviewer | 머지 게이트 — APPROVE/REQUEST_CHANGES | opus | ↓ 상세 절 참조 | `_workspace/review/{브랜치명}.md` | 작성자의 논리를 들으면 작성자의 맹점을 공유한다 |
+
+> 입력 칸은 각 에이전트의 상세 절이 정본이다 — 여기에 복제하지 않는다.
+> 같은 목록을 두 곳에 두면 반드시 갈라진다(2026-07-21 PR #2 R3에서 실제로 갈라진 것이 검출됐다).
 
 ## 모델 정책
 
