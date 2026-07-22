@@ -19,19 +19,24 @@ import { WEAPON } from '@shared/constants'
  * "현재 틱"이라 같은 `advanceTo` 호출 안에서 끝없이 pop된다. `advanceTo`는
  * 서버 30Hz 틱 경로(RQ-60)이므로 상한이 없으면 서버가 그 틱에서 영원히
  * 멈춘다 — 상한은 이 조용한 정지를 원인이 특정되는 `RangeError`로 바꾼다.
+ * `createScheduler(clock, options)`의 2번째 인자(`SchedulerOptions`)로
+ * 조정 가능하며(기본 100,000), `d18c11e`에서 구현됐다.
  *
- * `createScheduler(clock, options)`의 2번째 인자(`SchedulerOptions`)는
- * 계약에만 있고 아직 `src/shared/sim/scheduler.ts`에는 없다. 그래서 아래
- * 호출은 `npx tsc --noEmit`에서 인자 개수 불일치(TS2554)로 실패한다 —
- * 정당한 Red다. vitest는 esbuild로 타입 없이 트랜스파일하므로 런타임에는
- * 2번째 인자가 조용히 무시되고 `createScheduler(clock)`과 똑같이 동작한다
- * (상한이 전혀 걸리지 않는다). 그 상태로 재예약 시나리오를 그대로 실행하면
- * `advanceTo`가 **진짜 무한 루프**에 빠진다(단일 스레드 동기 루프라 vitest의
- * `testTimeout`으로도 못 끊는다) — 그래서 `installRunawayCallback`이 자체
- * 안전판(`safetyLimit`)을 두어, 상한이 아직 구현되지 않았을 때도 유한한
- * 횟수 안에서 (상한이 아닌 다른) 에러로 안전하게 멈추게 한다. Red가 hang이
- * 아니라 fail로 나오게 하는 장치다 — 상한이 구현되면 진짜 `RangeError`가
- * 이 안전판(테스트 cap의 5배)보다 훨씬 먼저 던져진다.
+ * 아래 `installRunawayCallback`은 재예약 콜백이 자체 호출 횟수를 세다가
+ * `safetyLimit`을 넘으면 스스로 별도 에러를 던지는 **회귀 방어 장치**다 —
+ * 상한이 나중에 실수로 사라지거나 우회되면(예: 옵션이 무시되도록 리팩터링돼
+ * 회귀하면), 이 테스트가 진짜 무한 루프(단일 스레드 동기 루프라 vitest의
+ * `testTimeout`으로도 못 끊는다)에 빠지는 대신 이 안전판이 먼저 걸려
+ * hang 대신 fail로 끝난다. `safetyLimit`은 테스트 cap(100)의 5배(500)로
+ * 잡아, 상한이 정상 동작할 때는 진짜 `RangeError`가 이 안전판보다 훨씬
+ * 먼저(약 100회 근방) 던져지도록 여유를 뒀다.
+ *
+ * (이력: 이 테스트를 처음 작성한 Red 단계에서는 `SchedulerOptions`가 계약에만
+ * 있고 구현에는 없어, 아래 `createScheduler(clock, { maxCallbacksPerAdvance })`
+ * 호출이 `npx tsc --noEmit`에서 TS2554로 실패했고, vitest 런타임에서는 2번째
+ * 인자가 조용히 무시돼 상한 없이 재예약이 그대로 실행되다 이 안전판이 실제로
+ * 발동해 `AggregateError`로 실패했다. `d18c11e`로 구현된 뒤에는 tsc가 통과하고
+ * 진짜 `RangeError`가 던져진다 — 아래 안전판은 지우지 않고 회귀 방어로 남겼다.)
  */
 function installRunawayCallback(scheduler: TickScheduler, safetyLimit: number): void {
   let callCount = 0
@@ -39,7 +44,7 @@ function installRunawayCallback(scheduler: TickScheduler, safetyLimit: number): 
     callCount++
     if (callCount > safetyLimit) {
       throw new Error(
-        `[테스트 안전판] 상한이 아직 구현되지 않아 ${safetyLimit}회를 넘어 계속 재예약됐다`,
+        `[테스트 안전판] 연쇄 폭주 상한이 걸리지 않아 ${safetyLimit}회를 넘어 계속 재예약됐다 — 상한 로직이 없거나 회귀로 우회됐을 가능성이 있다`,
       )
     }
     scheduler.scheduleIn(0, reschedule)
@@ -276,9 +281,9 @@ describe('TickScheduler (원장 17e §3)', () => {
     () => {
       const clock = createClock()
       const cap = 100
-      // createScheduler의 2번째 인자(SchedulerOptions)는 계약에만 있고 아직
-      // 구현에 없다 — 그래서 이 호출 자체가 tsc에서 인자 개수 불일치(TS2554)로
-      // 실패한다. 그게 이 테스트가 증명하려는 Red이므로 그대로 둔다(우회하지 않는다).
+      // SchedulerOptions는 d18c11e에서 구현되어 이 2번째 인자가 실제로
+      // 적용된다(기본 100,000, 여기서는 검증을 빠르게 하려고 cap으로 축소).
+      // 파일 상단 주석 참고 — 최초 Red 단계에서는 미구현이라 tsc가 TS2554를 냈었다.
       const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: cap })
       installRunawayCallback(scheduler, cap * 5)
 
@@ -292,7 +297,7 @@ describe('TickScheduler (원장 17e §3)', () => {
     () => {
       const clock = createClock()
       const cap = 100
-      // 위와 같은 이유(SchedulerOptions 미구현)로 tsc에서 TS2554가 난다 — 의도한 Red다.
+      // SchedulerOptions는 이미 구현되어 있다(파일 상단 주석 참고).
       const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: cap })
       installRunawayCallback(scheduler, cap * 5)
 
@@ -318,7 +323,7 @@ describe('TickScheduler (원장 17e §3)', () => {
     '연쇄 폭주 상한 미만의 정상적인 유한 연쇄 예약은 상한에 걸리지 않고 전부 실행된다',
     () => {
       const clock = createClock()
-      // 위와 같은 이유(SchedulerOptions 미구현)로 tsc에서 TS2554가 난다 — 의도한 Red다.
+      // SchedulerOptions는 이미 구현되어 있다(파일 상단 주석 참고).
       const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: 100 })
       const CHAIN_LENGTH = 20
       const executed: number[] = []
