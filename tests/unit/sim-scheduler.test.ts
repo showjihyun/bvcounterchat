@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createClock } from '@shared/sim/clock'
-import { createScheduler } from '@shared/sim/scheduler'
+import { createScheduler, type TickScheduler } from '@shared/sim/scheduler'
 import { WEAPON } from '@shared/constants'
 
 /**
@@ -13,7 +13,40 @@ import { WEAPON } from '@shared/constants'
  * 이미 지난 마감시한(`scheduleAt`에 현재 틱 이하, `scheduleIn(0)`)은 오류가
  * 아니라 정상 사용이다 — 다만 예약 시점에 즉시 실행하지 않고 `advanceTo`가
  * 유일한 실행 지점이라는 규칙은 유지된다(계약 §3 보강).
+ *
+ * **연쇄 폭주 상한** (계약 §3 「연쇄 폭주 상한」, PR #4 재평가에서 evaluator가
+ * 실증): 콜백이 `scheduleIn(0)`으로 자기 자신을 재예약하면 마감이 항상
+ * "현재 틱"이라 같은 `advanceTo` 호출 안에서 끝없이 pop된다. `advanceTo`는
+ * 서버 30Hz 틱 경로(RQ-60)이므로 상한이 없으면 서버가 그 틱에서 영원히
+ * 멈춘다 — 상한은 이 조용한 정지를 원인이 특정되는 `RangeError`로 바꾼다.
+ *
+ * `createScheduler(clock, options)`의 2번째 인자(`SchedulerOptions`)는
+ * 계약에만 있고 아직 `src/shared/sim/scheduler.ts`에는 없다. 그래서 아래
+ * 호출은 `npx tsc --noEmit`에서 인자 개수 불일치(TS2554)로 실패한다 —
+ * 정당한 Red다. vitest는 esbuild로 타입 없이 트랜스파일하므로 런타임에는
+ * 2번째 인자가 조용히 무시되고 `createScheduler(clock)`과 똑같이 동작한다
+ * (상한이 전혀 걸리지 않는다). 그 상태로 재예약 시나리오를 그대로 실행하면
+ * `advanceTo`가 **진짜 무한 루프**에 빠진다(단일 스레드 동기 루프라 vitest의
+ * `testTimeout`으로도 못 끊는다) — 그래서 `installRunawayCallback`이 자체
+ * 안전판(`safetyLimit`)을 두어, 상한이 아직 구현되지 않았을 때도 유한한
+ * 횟수 안에서 (상한이 아닌 다른) 에러로 안전하게 멈추게 한다. Red가 hang이
+ * 아니라 fail로 나오게 하는 장치다 — 상한이 구현되면 진짜 `RangeError`가
+ * 이 안전판(테스트 cap의 5배)보다 훨씬 먼저 던져진다.
  */
+function installRunawayCallback(scheduler: TickScheduler, safetyLimit: number): void {
+  let callCount = 0
+  function reschedule(): void {
+    callCount++
+    if (callCount > safetyLimit) {
+      throw new Error(
+        `[테스트 안전판] 상한이 아직 구현되지 않아 ${safetyLimit}회를 넘어 계속 재예약됐다`,
+      )
+    }
+    scheduler.scheduleIn(0, reschedule)
+  }
+  scheduler.scheduleIn(0, reschedule)
+}
+
 describe('TickScheduler (원장 17e §3)', () => {
   it('마감 틱 이전에는 콜백이 실행되지 않는다 (조기 실행 금지)', () => {
     const scheduler = createScheduler(createClock())
@@ -237,4 +270,73 @@ describe('TickScheduler (원장 17e §3)', () => {
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
   })
+
+  it(
+    '연쇄 폭주 상한: scheduleIn(0)으로 자기를 재예약하는 콜백은 advanceTo가 무한 루프 대신 RangeError를 던진다',
+    () => {
+      const clock = createClock()
+      const cap = 100
+      // createScheduler의 2번째 인자(SchedulerOptions)는 계약에만 있고 아직
+      // 구현에 없다 — 그래서 이 호출 자체가 tsc에서 인자 개수 불일치(TS2554)로
+      // 실패한다. 그게 이 테스트가 증명하려는 Red이므로 그대로 둔다(우회하지 않는다).
+      const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: cap })
+      installRunawayCallback(scheduler, cap * 5)
+
+      expect(() => scheduler.advanceTo(clock.tick)).toThrow(RangeError)
+    },
+    2000,
+  )
+
+  it(
+    '연쇄 폭주 에러 메시지는 원인을 특정한다 — 상한값과 재예약 진단을 담는다',
+    () => {
+      const clock = createClock()
+      const cap = 100
+      // 위와 같은 이유(SchedulerOptions 미구현)로 tsc에서 TS2554가 난다 — 의도한 Red다.
+      const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: cap })
+      installRunawayCallback(scheduler, cap * 5)
+
+      let thrown: unknown
+      try {
+        scheduler.advanceTo(clock.tick)
+      } catch (e) {
+        thrown = e
+      }
+
+      expect(thrown).toBeInstanceOf(RangeError)
+      // 정확한 문구가 아니라 원인 추적에 필요한 키워드만 확인한다 — 메시지
+      // 전체를 하드코딩해 비교하면 사소한 표현 변경에도 테스트가 깨진다.
+      const message = thrown instanceof Error ? thrown.message : String(thrown)
+      expect(message).toContain(String(cap))
+      expect(message).toMatch(/연쇄 폭주/)
+      expect(message).toMatch(/재예약/)
+    },
+    2000,
+  )
+
+  it(
+    '연쇄 폭주 상한 미만의 정상적인 유한 연쇄 예약은 상한에 걸리지 않고 전부 실행된다',
+    () => {
+      const clock = createClock()
+      // 위와 같은 이유(SchedulerOptions 미구현)로 tsc에서 TS2554가 난다 — 의도한 Red다.
+      const scheduler = createScheduler(clock, { maxCallbacksPerAdvance: 100 })
+      const CHAIN_LENGTH = 20
+      const executed: number[] = []
+
+      function chainNext(step: number): void {
+        executed.push(step)
+        if (step < CHAIN_LENGTH) {
+          scheduler.scheduleAt(step + 1, () => chainNext(step + 1))
+        }
+      }
+      scheduler.scheduleAt(1, () => chainNext(1))
+
+      // 상한(100)보다 한참 적은 20단계 연쇄이므로, 상한이 실제로 구현된
+      // 뒤에도 이 테스트는 계속 통과해야 한다 — 상한이 정상 동작까지
+      // 깨뜨리지 않는지 확인하는 보험성 회귀 테스트다.
+      expect(() => scheduler.advanceTo(CHAIN_LENGTH)).not.toThrow()
+      expect(executed).toEqual(Array.from({ length: CHAIN_LENGTH }, (_, i) => i + 1))
+    },
+    2000,
+  )
 })
