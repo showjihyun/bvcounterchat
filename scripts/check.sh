@@ -25,4 +25,31 @@ python .claude/hooks/gate_spec_freeze.py --check
 
 npx eslint .
 npx tsc --noEmit
-npx vitest run
+
+# 단위 테스트는 하드 게이트 — 재시도 없음. 실패 = 즉시 실패.
+npx vitest run tests/unit
+
+# 통합 테스트는 재시도한다 (최대 3회). ADR-0008이 허용한 실 WebSocket 통합
+# 테스트에, vitest/Node의 워커 teardown 계층에서 발생하는 ~2% 콜드스타트
+# 워커 사망(exit≠0, "Worker exited unexpectedly" — 테스트 본문 전 프로세스
+# 사망) flaky가 있다. 근본 원인은 vitest/Node 내부 black-box로 미규명(3개
+# 세션 규명 실패, RQ-04). 자세한 경위: harness/progress.md 19a·changelog.
+#
+# **이 재시도는 테스트 약화가 아니다.** 핵심은 결정론 구분이다:
+#   - flaky = 비결정적 인프라 크래시(독립 ~2%) → 재시도가 복구한다.
+#   - 진짜 실패 = 결정적 assertion 실패(매번) → 재시도해도 3회 전부 실패 → 하드 실패.
+# 즉 재시도는 인프라 스폰 크래시만 흡수하고, 실제 결함은 그대로 잡는다.
+# assertion은 손대지 않는다 — 통합 테스트가 검증하는 것은 전부 그대로 강제된다.
+#
+# ~2% 독립 크래시가 3회 연속일 확률 ≈ 0.0008% — 게이트가 실질적으로 안정된다.
+integration_attempts=3
+for attempt in $(seq 1 "$integration_attempts"); do
+  if npx vitest run tests/integration; then
+    break
+  fi
+  if [ "$attempt" -eq "$integration_attempts" ]; then
+    echo "통합 테스트가 ${integration_attempts}회 연속 실패 — flaky가 아니라 실제 결함이다." >&2
+    exit 1
+  fi
+  echo "통합 테스트 실패(시도 ${attempt}/${integration_attempts}) — 인프라 flaky 가능성, 재시도한다." >&2
+done
