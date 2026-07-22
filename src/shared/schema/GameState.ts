@@ -31,4 +31,7 @@ export class GameState extends Schema {
   @type({ map: Player }) players = new MapSchema<Player>()
   /** sessionId로 키잉된 관전자 목록 (RQ-03: 플레이어 정원 초과 시 입장). */
   @type({ map: Spectator }) spectators = new MapSchema<Spectator>()
+  /** 서버 30Hz 고정 틱 카운터 (RQ-60). 매 틱 서버가 갱신해 브로드캐스트한다
+   * — 클라이언트는 이 값으로 서버 시뮬레이션이 진행 중임을 관측한다. */
+  @type('number') tick = 0
 }
