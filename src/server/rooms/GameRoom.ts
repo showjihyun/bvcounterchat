@@ -1,14 +1,18 @@
 import type { Client } from 'colyseus'
 import { Room } from 'colyseus'
 import { GameState, Player, Spectator } from '@shared/schema/GameState'
-import { CAPACITY } from '@shared/constants'
+import { CAPACITY, NET } from '@shared/constants'
+import { createClock } from '@shared/sim/clock'
+import { createScheduler } from '@shared/sim/scheduler'
+import { createTickDriver } from '@shared/sim/tickDriver'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
  * 지점이라 임의로 정한다 — 어떤 값이든 자동 접미사 로직으로 고유화된다. */
 const DEFAULT_NICKNAME = 'player'
 
 /**
- * 'game' 룸 — RQ-04 상설 세션 + RQ-02 닉네임 식별 + RQ-03 정원.
+ * 'game' 룸 — RQ-04 상설 세션 + RQ-02 닉네임 식별 + RQ-03 정원 + RQ-60
+ * 30Hz 고정 틱.
  *
  * 서버 전역에 이 룸은 단 하나만 존재해야 한다(GA-29). 동시 `joinOrCreate`
  * 경쟁으로 룸이 중복 생성되지 않도록 하는 것은 Colyseus 매치메이커가
@@ -38,8 +42,10 @@ const DEFAULT_NICKNAME = 'player'
  * 정확히 일치한다.
  *
  * 게임 상태(위치·HP·킬 등)는 여기서 다루지 않는다 — RQ-10 이후 붙는다.
- * RQ-04는 세션 생명주기, RQ-02는 닉네임 식별, RQ-03은 정원만이 이 룸의
- * 범위다.
+ * RQ-04는 세션 생명주기, RQ-02는 닉네임 식별, RQ-03은 정원, RQ-60은
+ * 시뮬레이션 틱 구동만이 이 룸의 범위다(이동·전투 등 실제 게임 로직을
+ * 틱 콜백에 미리 넣지 않는다 — 지금 틱은 clock·scheduler 전진과
+ * `state.tick` 갱신뿐이다).
  */
 export class GameRoom extends Room<GameState> {
   // RQ-04: 마지막 참여자가 나가 0명이 돼도 룸을 폐기하지 않는다 —
@@ -49,6 +55,40 @@ export class GameRoom extends Room<GameState> {
 
   override onCreate(): void {
     this.state = new GameState()
+    this.startTickLoop()
+  }
+
+  /**
+   * RQ-60: 30Hz 고정 틱. 결정론 하네스(`src/shared/sim/{clock,scheduler,
+   * tickDriver}`, 원장 17e 계약 + 이번 RQ의 `tickDriver`)는 그대로 두고,
+   * 실 경과 시간 측정·구동만 이 룸(서버 경계)의 책임이다(ADR-0008: 실시간
+   * API 직접 호출 금지 lint는 `src/shared`에만 적용된다).
+   *
+   * 구동 API로 Colyseus 0.16.5의 `Room.setSimulationInterval(cb, delay)`를
+   * 택했다(2026-07-22, `node_modules/@colyseus/core/build/Room.js` 실측) —
+   * `this.clock`(`@colyseus/timer` `ClockTimer`)이 매 호출마다 `tick()`으로
+   * 실 경과 시간을 재 `deltaTime`(Date.now 기반)에 담고, 그 값을 콜백 인자로
+   * 넘긴다. 즉 우리가 직접 `Date.now()`를 부르지 않고도 실측 경과 ms를 받을
+   * 수 있다 — Colyseus 자신의 시간 측정 코드는 `@colyseus/core` 내부
+   * (`src/server` 경계 밖의 서드파티)이므로 ADR-0008 lint 대상이 아니다.
+   * `setInterval` 직접 사용 대신 이 API를 쓰는 이유는 room dispose 시 정리를
+   * Colyseus가 이미 보장하기 때문이다(아래 참고).
+   *
+   * dispose 정리: `Room._dispose()`(`Room.js`)가 `_simulationInterval`을
+   * 자동으로 `clearInterval`한다 — RQ-04 종료 드레인(`app.close()` →
+   * `gameServer.gracefullyShutdown()` → 룸 disconnect → `_dispose()`)이
+   * 이미 거치는 경로이므로 별도 `onDispose` 정리를 추가할 필요가 없다(직접
+   * 만든 실 타이머가 없다 — `clock`·`scheduler`·`tickDriver`는 순수 객체).
+   */
+  private startTickLoop(): void {
+    const clock = createClock()
+    const scheduler = createScheduler(clock)
+    const driver = createTickDriver(clock, scheduler)
+
+    this.setSimulationInterval((deltaMs: number) => {
+      driver.advanceByElapsed(deltaMs)
+      this.state.tick = clock.tick
+    }, NET.TICK_MS)
   }
 
   /**
