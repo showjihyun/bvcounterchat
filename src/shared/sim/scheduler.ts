@@ -17,6 +17,16 @@
  * 시뮬레이션이 "몇 틱씩 건너뛰었는지"에 따라 다른 결과를 낸다. 이는
  * 결정론 자체를 무너뜨리므로 `advanceTo`의 호출자(서버 30Hz 루프,
  * `tests/support/harness.ts`)는 반드시 이 규율을 지켜야 한다.
+ *
+ * **연쇄 폭주 상한**: 콜백이 `scheduleIn(0)`으로 자기 자신을 재예약하면
+ * 마감이 항상 "현재 틱"이라 같은 `advanceTo` 호출 안에서 끝없이 pop된다.
+ * `advanceTo`는 서버 30Hz 틱 경로(RQ-60)이므로 상한이 없으면 서버가 그
+ * 틱에서 영원히 멈춘다 — 이 조용한 정지를 원인이 특정되는 `RangeError`로
+ * 바꾸는 안전망이 `maxCallbacksPerAdvance`다. 정상 게임은 절대 이 상한에
+ * 닿지 않으므로(기본 100,000, 10인 규모 한 틱의 정상 콜백은 많아야 수십
+ * 개) 발화 자체가 호출자 버그 신호다. 상한 초과는 콜백 예외(`AggregateError`
+ * 격리 대상)와 다르다 — 즉시 중단해야 할 신호이므로 감싸지 않고 그대로
+ * 던진다.
  */
 
 import { msToTicks, type TickClock } from './clock'
@@ -35,6 +45,18 @@ export interface TickScheduler {
   /** 대기 중인 예약 수. */
   readonly pending: number
 }
+
+export interface SchedulerOptions {
+  /** 한 advanceTo 안의 콜백 실행 상한 (연쇄 폭주 안전망). 기본 100,000. */
+  maxCallbacksPerAdvance?: number
+}
+
+/**
+ * 안전망 기본값. 스펙 상수가 아니다 — 실제 게임이 한 틱에 낼 수 있는
+ * 콜백 수(10인 규모에서 많아야 수십 개)보다 3자리 이상 여유를 두는
+ * 파라미터일 뿐이라 `@shared/constants`가 아니라 여기 둔다.
+ */
+const DEFAULT_MAX_CALLBACKS_PER_ADVANCE = 100_000
 
 interface Timer {
   handle: TimerHandle
@@ -130,9 +152,10 @@ function assertNonNegativeInteger(n: number, label: string): void {
   }
 }
 
-export function createScheduler(clock: TickClock): TickScheduler {
+export function createScheduler(clock: TickClock, options?: SchedulerOptions): TickScheduler {
   const heap = new TimerHeap()
   let nextHandle = 1
+  const maxCallbacksPerAdvance = options?.maxCallbacksPerAdvance ?? DEFAULT_MAX_CALLBACKS_PER_ADVANCE
 
   function scheduleAt(tick: number, callback: () => void): TimerHandle {
     assertNonNegativeInteger(tick, 'scheduleAt의 tick')
@@ -152,10 +175,25 @@ export function createScheduler(clock: TickClock): TickScheduler {
 
   function advanceTo(targetTick: number): void {
     const errors: unknown[] = []
+    let executedCount = 0 // 힙과 별개로 세는 O(1) 카운터 — 별도 순회 없음
 
     for (;;) {
       const next = heap.peek()
       if (next === undefined || next.deadlineTick > targetTick) break
+
+      executedCount++
+      if (executedCount > maxCallbacksPerAdvance) {
+        // 상한 초과는 호출자 버그(무한 재예약) 신호이지 콜백 예외가 아니다 —
+        // AggregateError로 격리하지 않고 즉시 중단해야 하므로 try/catch
+        // 밖에서 그대로 던진다. 이미 실행된 콜백의 부수효과는 되돌리지
+        // 않는다(롤백 없음, advanceTo는 트랜잭션이 아니다).
+        throw new RangeError(
+          `연쇄 폭주 감지: 이 advanceTo 호출에서 콜백이 상한(${maxCallbacksPerAdvance}회)을 ` +
+            `초과해 실행됐다. 콜백이 scheduleIn/scheduleAt으로 자기 자신을 현재 틱 이하로 ` +
+            `재예약하고 있지 않은지 확인하라.`,
+        )
+      }
+
       heap.pop()
       try {
         next.callback()
