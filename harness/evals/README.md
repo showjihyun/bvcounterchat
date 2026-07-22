@@ -16,6 +16,11 @@
 
 주간 회고에서 `.harness/logs/trajectory.jsonl`을 훑고,
 이상했던 세션의 입력을 여기 새 케이스로 추가한다.
+골든 파일을 편집할 때는 **전체 재직렬화 금지** — 바꿀 필드(status 등)만
+in-place로 수정해 diff를 최소화한다. 승인 게이트 대상 파일이라 diff가
+부풀면 사람이 실제 변경을 대조하기 어려워진다(PR #6 리뷰 minor에서 검출 —
+status 4건 변경에 29행 공백 리포맷이 섞였다).
+
 정답(then/rubric)은 반드시 사람이 쓴다 — 에이전트가 자기 정답을 쓰게 하지 않는다.
 
 강제 수단(계획): `.claude/settings.json` permissions가 `harness/evals/golden/**`
