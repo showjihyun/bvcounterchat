@@ -43,6 +43,7 @@
 | 17e-2 | 하네스 플랫폼 간 RNG 동일성 검증 | RQ-62 | ⬜ | — | **미확인 이월.** 32비트 정수 연산만 쓴다는 건 소스로 확인됐으나 다른 엔진(브라우저 JS, ARM Node)에서 같은 수열이 나오는지는 단일 환경(Node/win32)에서 검증 불가. 기준값이 `03_evaluator_report.md` §4-2 B1에 남아 있다 — **클라이언트 코드가 생기면 그때 대조한다.** 갈라지면 클라이언트 예측(RQ-62)이 서버와 어긋난다 |
 | 17f | coder 세션의 `tests/` 쓰기 차단 hook (후속) | 파이프라인 무결성 | ⬜ | `.claude/hooks/` (미생성) | **PR #2 리뷰 blocker 2 후속 권고.** coder는 `Edit`·`Bash` 권한이 있어 테스트 파일 수정이 도구 수준에서 막히지 않는다. 현재 방어는 evaluator의 사후 diff 검출 하나뿐 — `gate_spec_freeze.py`가 PreToolUse 경로 차단의 선례이므로 같은 방식으로 프롬프트 강제를 결정론적 게이트로 승격 가능 |
 | 17g | 골든 파일 ask 게이트 (`settings.json`) | 평가 무결성 | ⬜ | `.claude/settings.json` | **PR #2 리뷰 minor d 후속.** `harness/evals/README.md`와 `sensor-catalog.md`가 `harness/evals/golden/**` 수정을 사람 승인 게이트로 전제하지만 `permissions.ask` 항목이 없다 — 규율로만 지켜진다. 에이전트가 자기 정답을 쓰는 것을 막는 장치이므로 파이프라인 실전 전에 넣는 편이 낫다 |
+| 17h | RQ-04 리뷰 minor 3건 (후속) | RQ-04, RQ-80, ADR-0008 | ⬜ | `src/server/index.ts` | **PR #5 리뷰 minor 이월.** ① `gracefullyShutdown:false`가 프로덕션 SIGTERM 그레이스풀 종료를 제거 — RQ-80이 재시작 소실 허용해 v1 수용 가능하나 `src/server/index.ts`에 트레이드오프 주석 한 줄 권고(reviewer). ② 재시도 방침의 ADR-0008 반영은 major 대응 시 완료. ③ changelog threads 철회 마커 완료 |
 ---
 
 ## 3. 로드맵 (`docs/req/07_Roadmap.md` 10단계, v1 = **전체 10단계** — 질문 34 확정)
