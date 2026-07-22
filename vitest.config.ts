@@ -14,24 +14,16 @@ export default defineConfig({
     testTimeout: 10_000,
     hookTimeout: 10_000,
 
-    // pool을 vitest 기본값 'forks'에서 'threads'로 바꾼다.
+    // pool은 vitest 기본값 'forks'를 쓴다 (명시 안 함 = forks).
     //
-    // 왜: 통합 테스트(Colyseus 실 소켓 + 서버 종료)를 돌린 뒤 fork 워커가
-    // teardown 중 child_process IPC 채널에서 비정상 종료하는 flaky가 있었다
-    // (RQ-04, 콜드스타트 크래시 — `ERR_IPC_CHANNEL_CLOSED`/`EPIPE` 시 vitest
-    // fork 부트스트랩이 자체 `process.exit(1)`). 원인이 애플리케이션 로직이
-    // 아니라 **fork 풀의 child_process IPC 계층**에 있음이 확인됐다:
-    //   - 애플리케이션 측 실제 버그 2개(Colyseus 프로세스 전역 리스너 누적,
-    //     소켓 drain 미await)는 `src/server/index.ts`에서 이미 수정 — 크래시율을
-    //     6.25%→2.75%로 낮췄으나 0은 아니었다.
-    //   - 잔여는 fork IPC teardown 고유. `pool:'threads'`는 worker_threads +
-    //     MessagePort를 써 그 IPC 채널 자체가 없다 → 실측 30/30 콜드스타트 클린
-    //     (forks는 같은 조건 2.75~13%).
-    // 이는 우회가 아니라 flaky가 실재하는 계층(fork IPC)을 회피하는 제자리 수정이다.
-    //
-    // 트레이드오프: threads는 프로세스 격리가 forks보다 약하다. 네이티브 모듈
-    // (Rapier WASM 등)이 테스트에 들어올 때 문제가 생기면 그때 통합만 forks로
-    // 되돌리는 등 재검토한다. `isolate`는 기본(true) — 파일별 모듈 격리는 유지.
-    pool: 'threads',
+    // 시도 이력(반복하지 말 것): RQ-04 통합 테스트(Colyseus 실 소켓 + 서버
+    // 종료)에 콜드스타트 워커 크래시 flaky가 있어 pool 계층 수정을 시도했으나:
+    //   - `pool:'threads'`는 단독 크래시율을 못 낮췄고(~1.5%, 270회 실측)
+    //     오히려 crash가 게이트 전체로 전파돼 `check.sh`가 불안정해졌다(악화).
+    //     forks는 크래시가 파일별 프로세스에 갇혀 게이트가 안정(0/33)이다.
+    //   - `maxWorkers:1`은 오히려 악화(13%). 크래시는 다중 워커 churn이 아니다.
+    // 결론: forks 유지가 최선. 잔여 단독-파일 flaky의 exit-127 근본 원인은
+    // vitest/Node teardown 계층 black-box로 미규명(2개 세션이 규명 실패).
+    // 애플리케이션 측 실제 버그 2개는 `src/server/index.ts`에서 수정됨.
   },
 })
