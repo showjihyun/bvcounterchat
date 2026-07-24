@@ -218,6 +218,47 @@ export function createSimHarness(options?: { seed?: number }): SimHarness
 
 ---
 
+## 5. `src/shared/sim/tickDriver.ts` (RQ-60에서 추가)
+
+```ts
+export interface TickDriverOptions {
+  /** 한 호출당 따라잡는 최대 틱 수. 기본 15 (0.5초치). */
+  maxTicksPerAdvance?: number
+  /** 누적 밀림 상한(틱). 초과분은 버리고 onOverflow를 부른다. 기본 30 (1초치). */
+  maxBacklogTicks?: number
+  /** 밀림 초과로 시간이 유실될 때 호출 (버린 틱 수 전달). 로깅용. */
+  onOverflow?: (droppedTicks: number) => void
+}
+
+export function createTickDriver(
+  clock: MutableTickClock, scheduler: TickScheduler, options?: TickDriverOptions,
+): { advanceByElapsed(elapsedMs: number): number }
+```
+
+**요구 동작 (RQ-60 원 계약 — PR #9에서 검증됨)**
+- 실 경과 ms를 받아 "있어야 할 총 틱 수"를 **총 경과에서 매번 재계산**한다.
+  틱마다 `TICK_MS`를 빼는 뺄셈 누적은 부동소수점 드리프트로 100ms→2틱을
+  낸다(계산 실증 — PR #9 Red 보고서). 반환값은 이번 호출에서 전진한 틱 수.
+- 틱마다 `clock.advance(1)` + `scheduler.advanceTo(clock.tick)` 개별 호출
+  (전진 단위 불변식 §4). 벌크 금지.
+- 인자 음수(RangeError)·NaN(TypeError)이면 던진다. 소수 허용(실측 경과).
+- 시간을 직접 재지 않는다 — 경과는 인자로만 (환경 중립).
+
+**catch-up clamp (하이브리드 — 2026-07-24 사용자 결정, PR #9 리뷰 major 대응)**
+- 한 호출에서 최대 `maxTicksPerAdvance`틱만 진행한다. 남은 밀림은 누적기에
+  이월돼 다음 호출들에서 서서히 따라잡는다 — **짧은 스파이크(GC 수백 ms)는
+  스텝 유실 없이 보존**된다.
+- 누적 밀림이 `maxBacklogTicks`를 넘으면 **초과분을 버리고** `onOverflow`에
+  버린 틱 수를 전달한다 — **긴 정지(OS 서스펜드 등) 후 빨리감기 없이 그
+  구간만 유실**한다. 시뮬레이션은 현재 실 시간 기준으로 재정렬된다.
+- 왜: clamp가 없으면 긴 정지 후 수천 틱을 한 콜백에서 동기로 돌아
+  spiral-of-death가 된다. 스케줄러의 연쇄 폭주 상한은 advanceTo 1회당
+  상한이라 catch-up 총량과 **직교** — 보호하지 않는다(PR #9 리뷰 분석).
+- 이 값들은 스펙 상수가 아니라 **안전망 파라미터**다(연쇄 폭주 상한과 동일
+  성격) — 옵션으로 조정 가능하되 기본값은 위와 같다.
+- RQ-60 개정과 동행: "부하 무관 스텝 수 고정"은 정상 운영 범위의 보장이며,
+  비정상 정지(밀림 > 상한)에서는 유실을 허용한다 — 스펙에 명문화됨.
+
 ## 테스트 위치
 
 - `tests/unit/sim-clock.test.ts`
