@@ -92,16 +92,38 @@ describe('TickDriver — 고정 스텝 누적기 (RQ-60, GA-14)', () => {
     },
   )
 
-  it('RQ-60/GA-14: 오래 정지했다가(1000ms) 한 번에 따라잡아도 30틱을 유실 없이 전진한다', () => {
-    const clock = createClock()
-    const scheduler = createScheduler(clock)
-    const driver = createTickDriver(clock, scheduler)
+  // 20a-1 개정(2026-07-24, 사용자 승인): catch-up clamp(`harness/sim/README.md`
+  // §5, RQ-60 v1.1) 도입으로 한 호출의 전진 상한(기본 15틱)이 생겨, 예전처럼
+  // "1000ms를 한 번의 호출로 따라잡으면 30틱"은 더 이상 성립하지 않는다 —
+  // 계약이 명시적으로 바뀐 데 따른 정당한 개정이며 테스트 약화가 아니다
+  // (`_workspace/20a-1/01_test-writer_red.md` 참고). "정지 후 유실 없이
+  // 따라잡는다"는 원 의도는 그대로 유지하되, 단언을 "여러 호출 합산"으로
+  // 바꿨다. 1000ms는 정확히 30틱 밀림이라 `maxBacklogTicks`(기본 30)와
+  // 정확히 같다 — 계약상 "넘으면"(==는 제외)만 버리므로 이 경계는 정상
+  // 캐치업 대상이다(버려지지 않는다).
+  it(
+    'RQ-60/GA-14: 오래 정지했다가(1000ms=정확히 maxBacklogTicks) 여러 호출에 걸쳐 따라잡아도 30틱을 유실 없이 전진한다 ' +
+      '(20a-1 개정: clamp 도입으로 "한 번에"였던 원 단언을 "여러 호출 합산"으로 개정 — 유실 없음 의도는 그대로)',
+    () => {
+      const clock = createClock()
+      const scheduler = createScheduler(clock)
+      const driver = createTickDriver(clock, scheduler)
 
-    const advanced = driver.advanceByElapsed(1000)
+      const firstCall = driver.advanceByElapsed(1000) // 30틱 밀림 — maxBacklogTicks와 정확히 같아(==) 버려지지 않는다
 
-    expect(advanced).toBe(30)
-    expect(clock.tick).toBe(30)
-  })
+      expect(firstCall).toBe(15) // 기본 maxTicksPerAdvance 상한
+
+      let total = firstCall
+      let guard = 0
+      while (total < 30 && guard < 10) {
+        total += driver.advanceByElapsed(0)
+        guard += 1
+      }
+
+      expect(total).toBe(30) // 여러 호출 합산은 유실 없이 30 — 원 테스트의 의도(무손실 캐치업) 유지
+      expect(clock.tick).toBe(30)
+    },
+  )
 
   it('RQ-60/GA-14: 경과 시간이 0이면 0틱 전진한다', () => {
     const clock = createClock()
