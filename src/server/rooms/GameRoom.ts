@@ -146,10 +146,16 @@ export class GameRoom extends Room<GameState> {
       // 넘는 비정상 정지(GC 장기 정지·OS 서스펜드)에서는 tickDriver가 밀림
       // 전량을 버리고 이 훅을 부른다 — "경고를 남긴다" 규범을 이행하는
       // 유일한 지점이 여기다(호출 안 하면 조용히 시간이 유실된다).
-      // stdout(console.warn)을 택한 이유: GameRoom은 Fastify(pino)와 분리된
-      // Colyseus 계층이고, ADR-0009 배포(도커)의 로그 수집 경로가 stdout
-      // 이기 때문이다. droppedTicks를 그대로 실어 운영자가 유실 규모를 알
-      // 수 있게 한다.
+      // `console.warn`은 관례상 stdout이 아니라 stderr로 나간다. 그래도
+      // 관측 가능한 이유는 ADR-0009(도커 배포)가 규정하는 로그 수집 경로
+      // 때문이 아니라(ADR-0009는 로그 수집 스트림을 규정하지 않는다 —
+      // docker-compose·Nginx·Redis만 다룬다) 도커 로그 드라이버 자체가
+      // 컨테이너 표준 스트림(stdout·stderr 양쪽)을 수집하는 일반 동작
+      // 때문이다 — 운영자는 `docker logs`로 이 경고를 그대로 볼 수 있다.
+      // 콘솔 경고 + droppedTicks 포함이라는 로깅 정책 자체의 출처는
+      // ADR이 아니라 harness/progress.md 20a-2 착수 기록(오케스트레이터
+      // 결정, 사용자 위임 하)이다. droppedTicks를 그대로 실어 운영자가
+      // 유실 규모를 알 수 있게 한다.
       onOverflow: (droppedTicks: number) => {
         console.warn(
           `[GameRoom] RQ-60 v1.1: 비정상 정지로 밀린 틱 ${droppedTicks}개를 유실했습니다(경고 후 현재 시간으로 재정렬).`,
