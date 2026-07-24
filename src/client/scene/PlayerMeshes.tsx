@@ -81,8 +81,19 @@ export function PlayerMeshes({ store }: PlayerMeshesProps) {
   useFrame(() => {
     const state = store.getState()
     // for...of — Map.forEach의 화살표 콜백은 매 프레임 클로저를 새로 할당한다
-    // (리뷰 minor). for...of는 할당 없이 순회한다(프레임 예산 규칙).
+    // (리뷰 minor). for...of는 화살표 클로저의 명시적 프레임당 할당을
+    // 제거한다(프레임 예산 규칙 — 순회 자체가 할당 0이라는 뜻은 아니다).
     for (const [sessionId, mesh] of meshesRef.current) {
+      // RQ-62: 자기 자신은 예측 위치로 렌더한다(GA-34/35, 서버 왕복 지연
+      // 없이 즉시 반응) — 서버 스냅샷 그대로 표시하면 지연이 그대로
+      // 체감된다. 다른 플레이어는 여전히 서버 스냅샷 그대로다(보간은
+      // RQ-63 — 아직 없음). 예측이 아직 없으면(접속 직후) 서버 스냅샷으로
+      // 폴백한다.
+      if (sessionId === state.selfSessionId && state.selfPredictedState) {
+        const predicted = state.selfPredictedState
+        mesh.position.set(predicted.x, predicted.y + BOX_HEIGHT / 2, predicted.z)
+        continue
+      }
       const player = state.players.get(sessionId)
       if (!player) continue
       mesh.position.set(player.x, player.y + BOX_HEIGHT / 2, player.z)

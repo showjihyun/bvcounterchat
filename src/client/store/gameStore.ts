@@ -1,5 +1,6 @@
 import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
+import type { MoveState } from '@shared/sim/movement'
 
 /**
  * game state 레이어(`harness/workflow/fe.md`) — 서버 스냅샷의 클라이언트
@@ -39,7 +40,13 @@ export interface GameStoreState {
   tick: number
   players: Map<string, ClientPlayer>
   spectators: Map<string, ClientSpectator>
+  /** 자기 자신의 예측 이동 상태(RQ-62 GA-34/35, ADR-0003). netcode 레이어
+   * (`src/client/net/connection.ts`)가 로컬 예측·재조정 결과를 반영한다.
+   * 첫 예측·재조정 전에는 null — scene 레이어(`PlayerMeshes`)는 null이면
+   * 서버 스냅샷(`players`)으로 폴백해 렌더링한다. */
+  selfPredictedState: MoveState | null
   setSelfSessionId(sessionId: string): void
+  setSelfPredictedState(state: MoveState): void
   applyServerState(state: ServerStateSnapshot): void
 }
 
@@ -49,9 +56,14 @@ export function createGameStore(): StoreApi<GameStoreState> {
     tick: 0,
     players: new Map(),
     spectators: new Map(),
+    selfPredictedState: null,
 
     setSelfSessionId(sessionId) {
       set({ selfSessionId: sessionId })
+    },
+
+    setSelfPredictedState(state) {
+      set({ selfPredictedState: state })
     },
 
     // 스냅샷 전체 교체 계약 — 이전 호출엔 있었지만 이번 스냅샷에 없는

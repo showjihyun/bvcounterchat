@@ -1,9 +1,11 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createGameStore } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
 import type { GameConnection } from '@client/net/connection'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
+import { createMovementInputTracker } from '@client/input/movementInput'
+import { NET } from '@shared/constants'
 
 /**
  * 클라이언트 → Colyseus 접속 엔드포인트. 같은 오리진의 ws(s) 주소를
@@ -22,8 +24,15 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  *
  * 20b 범위: 닉네임 입장 화면 → `connectToGame` → 접속 성공 시 3D 씬 표시.
  * store는 이 컴포넌트가 소유하고(RQ-61: 서버가 진실, store는 캐시일 뿐)
- * netcode(`connectToGame`)·scene(`GameScene`)에 그대로 전달한다. 예측
- * (RQ-62)·보간(RQ-63)·입력 전송·HUD(RQ-50~55)는 이 PR의 스코프 밖이다.
+ * netcode(`connectToGame`)·scene(`GameScene`)에 그대로 전달한다. 보간
+ * (RQ-63)·사격·HUD(RQ-50~55)는 이 PR의 스코프 밖이다.
+ *
+ * RQ-62: 접속 성공 후 이동 입력 캡처+전송 루프를 시작한다. 서버 틱
+ * 레이트(`NET.TICK_MS`, 30Hz)에 맞춘 독립 인터벌로 돈다 — R3F 렌더
+ * 프레임(`useFrame`)이 아니다. `fe.md`의 "렌더 루프 내 할당 금지" 규칙은
+ * `useFrame`(및 그 안에서 호출되는 코드) 대상이고, 이 루프는 그 밖의
+ * 네트워크 전송 주기라 해당하지 않는다 — `useFrame`에 넣으면 매 프레임
+ * `MoveInput`/예측 상태 객체 할당이 렌더 루프 예산을 갉아먹는다.
  */
 export function App() {
   const [store] = useState(() => createGameStore())
@@ -48,6 +57,20 @@ export function App() {
     },
     [store],
   )
+
+  useEffect(() => {
+    if (!connection) return undefined
+
+    const tracker = createMovementInputTracker()
+    const intervalId = window.setInterval(() => {
+      connection.sendMoveInput(tracker.getMoveInput())
+    }, NET.TICK_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+      tracker.dispose()
+    }
+  }, [connection])
 
   return (
     <div className="app">

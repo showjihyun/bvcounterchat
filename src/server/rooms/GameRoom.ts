@@ -40,6 +40,18 @@ function sanitizeMoveInput(payload: unknown): MoveInput {
 }
 
 /**
+ * `move` payload에서 선택적 시퀀스 번호(RQ-62, ADR-0003 입력 커맨드 버퍼)를
+ * 뽑는다. 유효한(유한한) 숫자가 아니면(레거시 호출 — 기존
+ * `rq-20-movement-authority.test.ts`·`20b-client-connect.test.ts`가 이미
+ * seq 없이 `move`를 호출한다) `undefined`를 반환해 호출자가
+ * `lastProcessedInputSeq`를 갱신하지 않도록 한다(하위 호환, 회귀 금지).
+ */
+function parseInputSeq(payload: unknown): number | undefined {
+  const raw = payload as { seq?: unknown } | null | undefined
+  return typeof raw?.seq === 'number' && Number.isFinite(raw.seq) ? raw.seq : undefined
+}
+
+/**
  * 'game' 룸 — RQ-04 상설 세션 + RQ-02 닉네임 식별 + RQ-03 정원 + RQ-60
  * 30Hz 고정 틱.
  *
@@ -92,6 +104,16 @@ export class GameRoom extends Room<GameState> {
   /** 플레이어별 가장 최근 'move' 입력 — 다음 입력이 올 때까지 유지하며
    * 매 틱 시뮬레이션에 반영한다(실시간 FPS 이동 입력의 표준 모델). */
   private readonly pendingInputs = new Map<string, MoveInput>()
+  /** 플레이어별 가장 최근 수신 입력 시퀀스 번호(RQ-62, ADR-0003) —
+   * `pendingInputs`와 동일한 "최근 수신값을 다음 갱신까지 유지" 모델이다
+   * (리뷰 blocker 수정, `_workspace/review/feat-RQ-62-client-prediction.md`).
+   * 'move' 메시지 수신 시점에는 여기만 갱신하고, `player.lastProcessedInputSeq`
+   * 에 실제로 반영하는 것은 `stepPlayerMovement`가 위치·속도를 쓴 직후로
+   * 미룬다 — 그래야 브로드캐스트되는 스냅샷에서 seq가 그 스냅샷의 위치보다
+   * 앞서지 않는다(Colyseus 패치 주기(기본 20Hz)와 틱(30Hz)의 위상이 어긋나면
+   * 메시지 수신 즉시 기록 방식에서 "seq는 갱신됐지만 위치는 아직 그
+   * 입력을 반영하지 못한" 불일치 스냅샷이 나갈 수 있었다). */
+  private readonly pendingSeqs = new Map<string, number>()
 
   override onCreate(): void {
     this.state = new GameState()
@@ -100,13 +122,25 @@ export class GameRoom extends Room<GameState> {
   }
 
   /**
-   * RQ-20 이동 입력(GA-33 서버 권위 포함). 'move' payload에서 방향·상태
-   * 필드만 뽑는다(`sanitizeMoveInput`) — 페이로드에 좌표(x·y·z)가 실려
-   * 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될 경로가 없다(RQ-61).
+   * RQ-20 이동 입력(GA-33 서버 권위 포함) + RQ-62 입력 시퀀스. 'move'
+   * payload에서 방향·상태 필드만 뽑는다(`sanitizeMoveInput`) — 페이로드에
+   * 좌표(x·y·z)가 실려 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될
+   * 경로가 없다(RQ-61).
+   *
+   * 선택적 `seq`(ADR-0003)가 유효하면 `pendingSeqs`에만 기록한다 — **여기서
+   * `player.lastProcessedInputSeq`를 직접 쓰지 않는다**(리뷰 blocker 수정).
+   * 실제 반영은 `stepPlayerMovement`가 이 입력을 시뮬레이션에 적용해 위치를
+   * 쓴 직후로 미룬다. 없거나 숫자가 아니면(레거시 호출) `pendingSeqs`도
+   * 건드리지 않는다(하위 호환 — 기존 `lastProcessedInputSeq` 값 유지).
    */
   private registerMessageHandlers(): void {
     this.onMessage('move', (client, payload: unknown) => {
       this.pendingInputs.set(client.sessionId, sanitizeMoveInput(payload))
+
+      const seq = parseInputSeq(payload)
+      if (seq !== undefined) {
+        this.pendingSeqs.set(client.sessionId, seq)
+      }
     })
   }
 
@@ -188,6 +222,23 @@ export class GameRoom extends Room<GameState> {
       player.x = next.x
       player.y = next.y
       player.z = next.z
+      // RQ-62(21a-2): 클라이언트 예측 재조정이 공중 상태를 이어받으려면
+      // 속도가 와이어에 실려야 한다(`grounded`는 4필드 확정에 없어 제외).
+      player.vx = next.vx
+      player.vy = next.vy
+      player.vz = next.vz
+
+      // RQ-62 리뷰 blocker 수정: seq는 위치·속도를 쓴 바로 이 자리에서만
+      // 기록한다 — 이번 틱에 실제로 적용한 입력(`input`)에 대응하는
+      // 시퀀스 번호가 정확히 이 스냅샷과 함께 나가야 한다(ADR-0003 "상태를
+      // 갱신한 뒤 처리된 마지막 시퀀스 번호를 담아 반환"). `pendingSeqs`는
+      // `pendingInputs`와 동일하게 다음 메시지가 올 때까지 값을 유지하므로,
+      // 새 입력이 없는 유휴 플레이어는 매 틱 같은 값을 재기록할 뿐
+      // 리셋되지 않는다.
+      const pendingSeq = this.pendingSeqs.get(sessionId)
+      if (pendingSeq !== undefined) {
+        player.lastProcessedInputSeq = pendingSeq
+      }
     })
   }
 
@@ -247,6 +298,7 @@ export class GameRoom extends Room<GameState> {
     // (다음 onJoin이 spawnMoveState()로 새로 시작한다).
     this.moveStates.delete(client.sessionId)
     this.pendingInputs.delete(client.sessionId)
+    this.pendingSeqs.delete(client.sessionId)
   }
 
   /**
