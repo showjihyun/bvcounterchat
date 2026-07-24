@@ -141,7 +141,21 @@ export class GameRoom extends Room<GameState> {
   private startTickLoop(): void {
     const clock = createClock()
     const scheduler = createScheduler(clock)
-    const driver = createTickDriver(clock, scheduler)
+    const driver = createTickDriver(clock, scheduler, {
+      // RQ-60 v1.1(원장 20a-2, PR #10 리뷰 major-2): 누적 밀림이 1초치를
+      // 넘는 비정상 정지(GC 장기 정지·OS 서스펜드)에서는 tickDriver가 밀림
+      // 전량을 버리고 이 훅을 부른다 — "경고를 남긴다" 규범을 이행하는
+      // 유일한 지점이 여기다(호출 안 하면 조용히 시간이 유실된다).
+      // stdout(console.warn)을 택한 이유: GameRoom은 Fastify(pino)와 분리된
+      // Colyseus 계층이고, ADR-0009 배포(도커)의 로그 수집 경로가 stdout
+      // 이기 때문이다. droppedTicks를 그대로 실어 운영자가 유실 규모를 알
+      // 수 있게 한다.
+      onOverflow: (droppedTicks: number) => {
+        console.warn(
+          `[GameRoom] RQ-60 v1.1: 비정상 정지로 밀린 틱 ${droppedTicks}개를 유실했습니다(경고 후 현재 시간으로 재정렬).`,
+        )
+      },
+    })
 
     this.setSimulationInterval((deltaMs: number) => {
       const advancedTicks = driver.advanceByElapsed(deltaMs)
