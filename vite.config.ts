@@ -20,8 +20,11 @@ export default defineConfig({
     port: 5173,
     // 개발 중 클라이언트 → Colyseus 서버(2567) 연결.
     // 프로덕션에서는 Nginx가 같은 오리진으로 프록시한다 (ADR-0009).
+    // ws: true — 매치메이킹 HTTP 요청뿐 아니라 Colyseus의 WebSocket
+    // 업그레이드도 이 프록시를 타야 한다(PR #1 리뷰 이월 ②). 없으면
+    // 매치메이킹은 되지만 룸 접속 WS 핸드셰이크가 프록시를 통과하지 못한다.
     proxy: {
-      '/matchmake': 'http://localhost:2567',
+      '/matchmake': { target: 'http://localhost:2567', ws: true },
     },
   },
 })
