@@ -33,6 +33,12 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  * `useFrame`(및 그 안에서 호출되는 코드) 대상이고, 이 루프는 그 밖의
  * 네트워크 전송 주기라 해당하지 않는다 — `useFrame`에 넣으면 매 프레임
  * `MoveInput`/예측 상태 객체 할당이 렌더 루프 예산을 갉아먹는다.
+ *
+ * RQ-63 부기(20b 후속 + RQ-62 minor ① 병합 이월): 같은 이펙트가
+ * `connection.onDisconnect`를 구독해 침묵 disconnect(네트워크 단절 등)
+ * 발생 시 `connection` state를 `null`로 되돌린다 — 그러면 이 이펙트의
+ * cleanup이 실행되며 이동 입력 전송 인터벌이 자연히 멎는다(끊긴 연결에
+ * 계속 `sendMoveInput`을 호출하는 것을 막는다).
  */
 export function App() {
   const [store] = useState(() => createGameStore())
@@ -65,10 +71,14 @@ export function App() {
     const intervalId = window.setInterval(() => {
       connection.sendMoveInput(tracker.getMoveInput())
     }, NET.TICK_MS)
+    const unsubscribeDisconnect = connection.onDisconnect(() => {
+      setConnection(null)
+    })
 
     return () => {
       window.clearInterval(intervalId)
       tracker.dispose()
+      unsubscribeDisconnect()
     }
   }, [connection])
 
@@ -76,7 +86,7 @@ export function App() {
     <div className="app">
       {connection ? (
         <>
-          <GameScene store={store} />
+          <GameScene store={store} connection={connection} />
           {/* HUD 레이어 — 캔버스 밖 DOM. RQ-50~55는 이후 단계에서 붙인다. */}
           <div className="hud" aria-live="polite">
             <span className="hud__placeholder">ChatStrike — 접속됨</span>

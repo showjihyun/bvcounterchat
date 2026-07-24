@@ -2,20 +2,22 @@ import { Canvas } from '@react-three/fiber'
 import type { StoreApi } from 'zustand/vanilla'
 import { WORLD } from '@shared/constants'
 import type { GameStoreState } from '@client/store/gameStore'
+import type { GameConnection } from '@client/net/connection'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
 import { attachPointerLock } from '@client/input/pointerLock'
 
 interface GameSceneProps {
   store: StoreApi<GameStoreState>
+  connection: GameConnection
 }
 
 /**
  * 3D 씬(ADR-0001 WebGL2, `harness/workflow/fe.md` scene 레이어). 접속 후
  * 표시된다 — 로드맵 1단계 `App.tsx`의 정적 데모 박스를 대체해, 서버
- * 스냅샷의 실제 플레이어를 그린다(RQ-61: 예측(RQ-62 — 자기 자신)·서버
- * 스냅샷 그대로(그 외 — 보간은 RQ-63) 표현).
+ * 스냅샷의 실제 플레이어를 그린다(RQ-61: 자기 자신은 예측(RQ-62), 다른
+ * 플레이어는 보간(RQ-63) 표현).
  */
-export function GameScene({ store }: GameSceneProps) {
+export function GameScene({ store, connection }: GameSceneProps) {
   return (
     <Canvas
       // ADR-0001: WebGL2 고정. WebGPU는 쓰지 않는다.
@@ -34,7 +36,7 @@ export function GameScene({ store }: GameSceneProps) {
         <meshStandardMaterial color="#8a7a5c" />
       </mesh>
       <gridHelper args={[WORLD.SIZE_M, WORLD.SIZE_M]} />
-      <PlayerMeshes store={store} />
+      <PlayerMeshes store={store} connection={connection} />
     </Canvas>
   )
 }

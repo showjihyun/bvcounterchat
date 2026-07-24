@@ -79,6 +79,13 @@ Agent 도구 호출 시 `model` 파라미터를 명시한다 (에이전트 front
 
 ## Phase 1: Red — test-writer (별도 세션, sonnet)
 
+> **선별 Red (ADR-0011, 2026-07-24)**: 이 Phase는 대상 작업이 **Red-first
+> 영역**(`src/shared` 전체 · 서버 판정 로직 · 결함 수정의 재현 테스트)일 때만
+> 실행한다. 그 외(클라이언트 모듈·배선 계층·계약 추가)는 이 Phase를 건너뛰고
+> Phase 2에서 coder가 구현+테스트를 함께 작성한다(test-after — 같은 PR 동반
+> 불변, coder의 tests/ 변경은 **순증만** 허용·기존 단언 접촉 금지, evaluator·
+> reviewer가 diff로 강제). 영역 판정이 애매하면 Red-first 쪽으로 보수적으로.
+
 `Agent(subagent_type: "test-writer", model: "sonnet")` 호출. 프롬프트에 포함:
 - RQ-ID + EARS 문장 전문 (`harness/specs/requirements.md`에서 인용)
 - 매핑된 GA-* 골든 케이스 전문 (`harness/evals/golden/track-a-product.jsonl`에서
