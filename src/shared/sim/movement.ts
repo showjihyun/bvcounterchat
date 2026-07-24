@@ -22,17 +22,30 @@
  * 높이(`MOVEMENT.JUMP_HEIGHT`)만 스펙이 정하고, 여기서 초기 수직
  * 속도(v0)를 역산한다.
  *
- * 공중 가속 미허용(RQ-92, `MOVEMENT.AIR_CONTROL === false`): 이륙 순간의
- * 수평 속도(vx, vz)를 그대로 착지까지 유지하고, 공중 틱의 방향 입력은
- * 무시한다. `MoveState`는 팀리드·test-writer가 지정한 계약대로
- * `x·y·z·vy·grounded`만 노출한다(수평 속도 필드가 없다) — 그래서 이 속도는
- * `stepMovement`가 반환한 특정 객체 참조에 결속한 부가 정보로 별도
- * 보관한다(`airborneVelocity` WeakMap). 반환 객체 자체는 항상 계약대로
- * 평평한 5개 필드뿐이다 — 그래야 무입력 테스트의
- * `toEqual(createGroundedState())` 같은 전체 구조 비교가 정확히 맞는다.
- * 호출자가 매 틱 이 함수의 반환값을 다음 호출의 `state`로 그대로
- * 넘기는 한(테스트·GameRoom 모두 그렇다) 참조가 유지돼 착지까지 값을
- * 안전하게 추적한다.
+ * **REV 2026-07-24 — `MoveState` 7필드 계약(evaluator FAIL #1·#2 대응)**:
+ * 최초 구현은 공중 수평 속도(vx·vz)를 `MoveState`가 노출하지 않는다는
+ * 이유로 모듈 전역 `WeakMap<MoveState, ...>`(반환 객체 참조 키)에
+ * 은닉했다. evaluator가 프로브로 실증한 결함 두 가지 — ①
+ * `JSON.stringify`→`parse` 왕복 복제 후 이어 시뮬레이션하면 수평 관성이
+ * 소실된다(클라이언트 예측(RQ-62)의 스냅샷·롤백 전제, ADR-0004 위반).
+ * ② 값이 완전히 같은 다른 참조(얕은 복사)에 같은 입력을 줘도 출력이
+ * 다르다(`stepMovement`가 인자 값이 아니라 참조에 의존 — ADR-0008 §2
+ * "값의 함수" 순수 함수 요구 위반). 근본 원인은 5필드 계약이 공중 상태를
+ * 완전히 표현하지 못했다는 데 있다 — test-writer가 계약을 `vx`·`vz`
+ * 명시 필드로 확장했다(`tests/unit/sim-movement.test.ts` REV 2026-07-24
+ * 절). 이 구현은 그 계약을 따라 `WeakMap` 은닉을 걷어내고, 공중 수평
+ * 속도를 상태 값 자체에 담는다 — `stepMovement`는 이제 인자 **값**만으로
+ * 다음 상태가 결정되는 순수 함수다(직렬화·복제 왕복 후에도 궤적이
+ * 일치한다).
+ *
+ * 공중 가속 미허용(RQ-92, `MOVEMENT.AIR_CONTROL === false`)은 여전히
+ * 지킨다 — 공중 물리(`stepAirborne`)는 이번 틱의 방향 입력을 아예
+ * 참조하지 않고, 상태에 담긴 `vx`·`vz`(이함 순간 고정된 값)만 그대로
+ * 적용한다. 접지 상태의 `vx`·`vz`는 매 틱 현재 입력에서 새로 계산한
+ * 실제 이동 속도를 그대로 보고한다(0으로 뭉개지 않는다 — "상태는 값의
+ * 완전한 스냅샷"이라는 정신에 더 맞는다. 다음 접지 틱은 어차피 이 값을
+ * 참조하지 않고 입력에서 다시 계산하므로 어떤 값을 남기든 이후 궤적에는
+ * 영향이 없다).
  */
 
 import { MOVEMENT, NET } from '@shared/constants'
@@ -41,8 +54,11 @@ export interface MoveState {
   x: number
   y: number
   z: number
+  /** 수평 속도(m/s) — 접지·공중 모두 노출(REV 2026-07-24, 위 파일 코멘트). */
+  vx: number
   /** 수직 속도(m/s, 상승 +) — 중력 적용 대상. */
   vy: number
+  vz: number
   grounded: boolean
 }
 
@@ -55,11 +71,6 @@ export interface MoveInput {
   /** 이번 틱의 점프 시도(엣지 트리거) — 접지 상태에서만 유효하다. */
   jump: boolean
 }
-
-/** 접지에서 이륙한 뒤 착지까지 수평 속도를 이어 붙이기 위한 부가
- * 저장소 — 위 파일 코멘트 "공중 가속 미허용" 참고. 참조가 끊기면(그
- * 객체를 아무도 더 들고 있지 않으면) 자동 회수된다. */
-const airborneVelocity = new WeakMap<MoveState, { vx: number; vz: number }>()
 
 /** 1틱의 경과 시간(초). `NET.TICK_MS`(1000/30, 부동소수점)를 매번 나누지
  * 않도록 모듈 로드 시 한 번만 계산한다. */
@@ -121,36 +132,47 @@ function jumpVyAt(t: number): number {
 }
 
 /** 공개 필드 `vy`(이전 틱에서 `jumpVyAt`으로 계산된 값)로부터 이륙 후
- * 경과 시각을 역산한다 — 별도의 "경과 틱 수" 은닉 상태 없이 `vy(t)`의
- * 역함수로 시간을 복원한다. 접지 상태의 `vy`는 항상 정확히 0이므로(이륙
- * 이전) 이 함수는 공중 상태(`grounded === false`)에서만 쓴다. */
+ * 경과 시각을 역산한다 — 별도의 "경과 틱 수" 필드 없이 `vy(t)`의
+ * 역함수로 시간을 복원한다(선형·단조감소라 역산이 항상 유일하다 —
+ * evaluator 특별검증 #3 확인). 접지 상태의 `vy`는 항상 정확히 0이므로
+ * (이륙 이전) 이 함수는 공중 상태(`grounded === false`)에서만 쓴다. */
 function jumpElapsedSeconds(previousVy: number): number {
   return (JUMP_V0_MPS - previousVy) / JUMP_GRAVITY_MPS2
 }
 
-/** 접지 상태 결과 — 수평 이동만 적용하고 수직은 0으로 유지한다. 그대로
- * 서 있는 경우와 공중에서 착지하는 경우 모두 같은 모양이라 공유한다. */
+/** 접지 결과 — 수평은 `vx`·`vz`를 그대로(값으로) 적용·보고하고 수직은
+ * 0으로 유지한다. 그대로 서 있는 경우와 공중에서 착지하는 경우가 같은
+ * 모양이라 공유한다. */
 function groundedOutcome(state: MoveState, vx: number, vz: number): MoveState {
-  return { x: state.x + vx * TICK_SECONDS, y: 0, z: state.z + vz * TICK_SECONDS, vy: 0, grounded: true }
+  return {
+    x: state.x + vx * TICK_SECONDS,
+    y: 0,
+    z: state.z + vz * TICK_SECONDS,
+    vx,
+    vy: 0,
+    vz,
+    grounded: true,
+  }
 }
 
 /** 이륙 후 경과 시각 `t`(초)에서의 공중 결과. 높이가 0 이하로 내려간
- * 시점(해석적 궤적이 지면을 지나친 시점)이면 착지로 스냅한다. */
+ * 시점(해석적 궤적이 지면을 지나친 시점)이면 착지로 스냅한다 — 그
+ * 시점까지 유지해 온 수평 속도(vx·vz)로 착지 틱의 이동까지 마저 적용한다. */
 function airborneOutcome(state: MoveState, vx: number, vz: number, t: number): MoveState {
   const height = jumpHeightAt(t)
   if (height <= 0) {
     return groundedOutcome(state, vx, vz)
   }
 
-  const newState: MoveState = {
+  return {
     x: state.x + vx * TICK_SECONDS,
     y: height,
     z: state.z + vz * TICK_SECONDS,
+    vx,
     vy: jumpVyAt(t),
+    vz,
     grounded: false,
   }
-  airborneVelocity.set(newState, { vx, vz })
-  return newState
 }
 
 function stepGrounded(state: MoveState, input: MoveInput): MoveState {
@@ -165,12 +187,13 @@ function stepGrounded(state: MoveState, input: MoveInput): MoveState {
 }
 
 /** 공중 물리는 이번 틱 입력을 참조하지 않는다 — `MOVEMENT.AIR_CONTROL
- * === false`(RQ-92)라 방향 입력이 무엇이든 이륙 순간에 고정된 수평
- * 속도만 그대로 적용한다(에어 스트레이프·버니합 없음). */
+ * === false`(RQ-92)라 방향 입력이 무엇이든 상태에 담긴 `vx`·`vz`(이륙
+ * 순간 고정된 값)만 그대로 적용한다(에어 스트레이프·버니합 없음). 상태
+ * **값**만 읽으므로 직렬화 왕복·얕은 복사를 거친 `state`를 넘겨도 결과가
+ * 같다(REV 2026-07-24). */
 function stepAirborne(state: MoveState): MoveState {
-  const { vx, vz } = airborneVelocity.get(state) ?? { vx: 0, vz: 0 }
   const t = jumpElapsedSeconds(state.vy) + TICK_SECONDS
-  return airborneOutcome(state, vx, vz, t)
+  return airborneOutcome(state, state.vx, state.vz, t)
 }
 
 /** 1틱(`NET.TICK_MS`) 전진 — 평지(y=0) 순수 산술(RQ-20, RQ-92). Rapier

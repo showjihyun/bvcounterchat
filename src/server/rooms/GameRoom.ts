@@ -18,7 +18,7 @@ const IDLE_MOVE_INPUT: MoveInput = { dirX: 0, dirZ: 0, mode: 'run', jump: false 
 /** RQ-31(스폰 지점 순환 로테이션)은 이 RQ의 스코프 밖 — 아직 구현되지
  * 않았으므로 임시로 원점에서 시작한다. */
 function spawnMoveState(): MoveState {
-  return { x: 0, y: 0, z: 0, vy: 0, grounded: true }
+  return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
 }
 
 /**
@@ -82,9 +82,10 @@ export class GameRoom extends Room<GameState> {
   /**
    * 플레이어별 이동 시뮬레이션 상태(RQ-20) — sessionId로 키잉. `Player`
    * 스키마(x·y·z)는 이 상태의 매 틱 스냅샷일 뿐, 시뮬레이션의 정본은 여기
-   * `MoveState`다(수평 관성 등 스키마에 노출하지 않는 값도 `stepMovement`
-   * 내부(`@shared/sim/movement`)가 이 객체 참조에 결속해 들고 있다 —
-   * 그래서 매 틱 반드시 이 맵에 저장된 참조를 그대로 다음 호출에 넘긴다).
+   * `MoveState`다. `MoveState`는 `vx`·`vz`(수평 관성 포함)까지 전부 값으로
+   * 노출하는 완전한 스냅샷이라(`@shared/sim/movement` REV 2026-07-24)
+   * 이 맵은 순수한 저장소일 뿐이다 — 매 틱 반환값을 그대로 넘기면 되고,
+   * 참조 동일성에 기대지 않는다(직렬화·복제해 넘겨도 결과가 같다).
    */
   private readonly moveStates = new Map<string, MoveState>()
   /** 플레이어별 가장 최근 'move' 입력 — 다음 입력이 올 때까지 유지하며
