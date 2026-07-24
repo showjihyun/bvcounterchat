@@ -26,6 +26,17 @@
  * `src/shared` 환경 중립·결정론 제약(ADR-0008/0010): 이 모듈은 "경과
  * 시간"을 인자로 받을 뿐 시간을 직접 재지 않는다 — 실 시간 측정(`Date.now`
  * 등)은 `src/server`의 구동 루프 책임이다.
+ *
+ * **catch-up clamp (하이브리드, RQ-60 v1.1 — `harness/sim/README.md` §5)**:
+ * 한 호출은 최대 `maxTicksPerAdvance`틱만 전진하고, 남은 밀림은 누적기에
+ * 그대로 남아 다음 호출들에서 이어서 소화된다(짧은 스파이크는 유실 없음).
+ * 다만 그 시점에 계산된 밀림(`targetTick - clock.tick`)이 `maxBacklogTicks`를
+ * **넘으면**(`==`는 정상 캐치업 대상) 그 호출은 전량을 버린다 — 0틱 전진,
+ * `onOverflow(버린 전체 틱 수)` 호출, 그리고 누적기를 `clock.tick` 기준으로
+ * 재정렬해 백로그 0에서 재출발한다(다음 33.33ms 경과가 정확히 1틱이 되도록).
+ * 이 재정렬도 "총 경과에서 매번 재계산"이라는 드리프트 방지 원칙을 그대로
+ * 따른다 — 재정렬 시점의 `accumulatedMs`를 `clock.tick * NET.TICK_MS`로
+ * 다시 정의할 뿐, 그 이후의 산술(예: 100ms→3틱)은 오염되지 않는다.
  */
 
 import type { MutableTickClock } from './clock'
@@ -41,6 +52,15 @@ export interface TickDriver {
   advanceByElapsed(elapsedMs: number): number
 }
 
+export interface TickDriverOptions {
+  /** 한 호출당 따라잡는 최대 틱 수. 기본 15 (0.5초치). */
+  maxTicksPerAdvance?: number
+  /** 누적 밀림 상한(틱). 초과분은 버리고 onOverflow를 부른다. 기본 30 (1초치). */
+  maxBacklogTicks?: number
+  /** 밀림 초과로 시간이 유실될 때 호출 (버린 틱 수 전달). 로깅용. */
+  onOverflow?: (droppedTicks: number) => void
+}
+
 /**
  * 정수 배수 경과(예: `NET.TICK_MS` 그대로)가 부동소수점 나눗셈 오차로
  * 한 틱 모자라게 내림되는 것을 막는 여유. 스펙 상수가 아니라 부동소수점
@@ -48,6 +68,13 @@ export interface TickDriver {
  * `DEFAULT_MAX_CALLBACKS_PER_ADVANCE`와 같은 성격).
  */
 const DRIFT_EPSILON_MS = 1e-9
+
+/**
+ * clamp 안전망 파라미터의 기본값(`harness/sim/README.md` §5). 스펙 상수가
+ * 아니므로 `@shared/constants`가 아니라 여기 둔다.
+ */
+const DEFAULT_MAX_TICKS_PER_ADVANCE = 15
+const DEFAULT_MAX_BACKLOG_TICKS = 30
 
 function assertValidElapsed(elapsedMs: number): void {
   if (Number.isNaN(elapsedMs)) {
@@ -58,23 +85,64 @@ function assertValidElapsed(elapsedMs: number): void {
   }
 }
 
-export function createTickDriver(clock: MutableTickClock, scheduler: TickScheduler): TickDriver {
+/**
+ * clamp 옵션(`maxTicksPerAdvance`·`maxBacklogTicks`) 값을 검증한다. 둘 다
+ * "1 이상의 정수"여야 한다 — 0·음수·비정수·NaN은 조용히 보정하지 않고
+ * 던진다(하네스 §1 원칙, `clock.advance`·`scheduler`의 검증과 같은 정신).
+ */
+function resolvePositiveIntOption(value: number | undefined, defaultValue: number, optionName: string): number {
+  if (value === undefined) {
+    return defaultValue
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(
+      `createTickDriver의 options.${optionName}은(는) 1 이상의 정수여야 한다 (받은 값: ${value}) — ` +
+        '조용한 보정 금지(하네스 §1)',
+    )
+  }
+  return value
+}
+
+export function createTickDriver(
+  clock: MutableTickClock,
+  scheduler: TickScheduler,
+  options: TickDriverOptions = {},
+): TickDriver {
+  const maxTicksPerAdvance = resolvePositiveIntOption(
+    options.maxTicksPerAdvance,
+    DEFAULT_MAX_TICKS_PER_ADVANCE,
+    'maxTicksPerAdvance',
+  )
+  const maxBacklogTicks = resolvePositiveIntOption(options.maxBacklogTicks, DEFAULT_MAX_BACKLOG_TICKS, 'maxBacklogTicks')
+  const onOverflow = options.onOverflow
+
   // 총 경과 ms 누적치 — 여기서 뺄셈으로 소모하지 않는다(그게 드리프트의
-  // 원인이다). targetTick은 매번 이 누적치 전체에서 새로 계산한다.
+  // 원인이다). targetTick은 매번 이 누적치 전체에서 새로 계산한다. 밀림
+  // 초과로 버릴 때만 이 누적치를 `clock.tick` 기준으로 재정렬한다(아래).
   let accumulatedMs = 0
 
   function advanceByElapsed(elapsedMs: number): number {
     assertValidElapsed(elapsedMs)
     accumulatedMs += elapsedMs
     const targetTick = Math.floor(accumulatedMs / NET.TICK_MS + DRIFT_EPSILON_MS)
+    const backlog = targetTick - clock.tick
 
-    let advanced = 0
-    while (clock.tick < targetTick) {
+    if (backlog > maxBacklogTicks) {
+      onOverflow?.(backlog)
+      // 빨리감기 없이 이 호출의 밀림 전량을 버린다 — 0틱 전진, clock은
+      // 그대로. 다음 호출부터 백로그 0에서 재출발하도록 누적치를 현재
+      // `clock.tick` 기준으로 재정렬한다(드리프트 없는 총 경과 재계산 방식
+      // 유지 — 이후 산술이 이 재정렬로 오염되지 않는다).
+      accumulatedMs = clock.tick * NET.TICK_MS
+      return 0
+    }
+
+    const ticksToAdvance = Math.min(backlog, maxTicksPerAdvance)
+    for (let i = 0; i < ticksToAdvance; i += 1) {
       clock.advance(1)
       scheduler.advanceTo(clock.tick)
-      advanced += 1
     }
-    return advanced
+    return ticksToAdvance
   }
 
   return { advanceByElapsed }
