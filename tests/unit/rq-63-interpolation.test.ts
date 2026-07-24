@@ -126,19 +126,23 @@ import {
  * - `src/client/store/gameStore.ts`에 보간 결과를 담을 필드를 추가할지,
  *   `PlayerMeshes.tsx`가 그 필드를 어떻게 읽을지 — 렌더링 배선, fe.md
  *   면제 대상.
- * - **버퍼 메모리 정리(오래된 스냅샷 프루닝)**: 이 모듈이 `addSnapshot`을
- *   호출될 때마다 무한정 스냅샷을 누적하면 장시간 세션에서 메모리가
- *   계속 자란다(RQ-62의 `BUFFER_CAP` 관심사와 같은 종류). 다만 RQ-62의
- *   상한(100)은 "클라 틱 레이트와 동일 주기로 입력 전송"이라는 ADR-0003
- *   근거로 자연스러운 수치가 나왔던 반면, 여기서는 "몇 ms 이전 데이터까지
- *   보관할지"에 대한 스펙·ADR 근거가 없다 — 임의의 보관 기간을 정해
- *   테스트하면 그 수치 자체가 이 파일이 구현을 규정하는 것이 되어 금지
- *   원칙에 걸린다. **실패 테스트로 강제하지 않고** coder에게 권고만
- *   남긴다: 렌더 시각은 실전에서 단조 증가하므로, 다음 조회에 더 이상
- *   필요 없어진(가장 최근 조회 시각 - delayMs보다 오래된) 스냅샷은 안전하게
- *   버릴 수 있다.
  * - **20d 부기(침묵 disconnect 시 전송 인터벌·구독 정리)**: 이 항목은
- *   면제한다 — 근거는 이 파일 끝 주석 및 보고서 참고.
+ *   면제한다 — 근거는 `_workspace/RQ-63/01_test-writer_red.md` §3.2.
+ *
+ * **REV — 리뷰 대응(major: 보간 버퍼 무한 성장, `_workspace/review/feat-RQ-63-
+ * interpolation.md`)**: 최초 라운드는 "버퍼 메모리 정리(오래된 스냅샷
+ * 프루닝)"를 "ADR 근거 수치가 없어 임의값을 강제할 수 없다"는 이유로
+ * 실패 테스트 없이 권고만 남겼었다. 리뷰가 실제 구현(`interpolation.ts`)의
+ * `addSnapshot`이 push만 하고 프루닝이 전혀 없어 상설 세션(RQ-04)에서
+ * 세션당 버퍼가 무한히 자라고(메모리) `computePosition`의 최고참발 선형
+ * 스캔 비용도 세션 길이에 비례해 늘어난다(연산, `useFrame` 안에서 매
+ * 프레임 호출됨)는 것을 실제로 지적했다 — 이제 "필요성"이 판정됐으므로
+ * 아래 새 describe 블록에서 delayMs(생성 시 주입값, 이미 이 계약의
+ * 일부)에서 도출한 두 경계로 프루닝을 실패 테스트로 강제한다. 내부
+ * 배열·구현 방식(링버퍼 vs 조회 기반 프루닝)은 규정하지 않는다 — 오직
+ * "기존 '가장 오래된 스냅샷 고정' 정책이 반환하는 값"이라는 이미 있던
+ * 관찰 지점을 통해서만 검증한다(리뷰가 지적한 "oldest 고정 정책과의
+ * 상호작용" 그 자체가 관찰 지점).
  */
 
 const SELF = 'self-session'
@@ -314,5 +318,68 @@ describe('RQ-63/GA-39: 자기 자신은 보간 경로가 아니라 예측(RQ-62)
   it('RQ-63: 스냅샷을 한 번도 받지 못한(존재 자체를 아직 모르는) sessionId는 undefined를 반환한다', () => {
     const interpolator: RemoteEntityInterpolator = createRemoteEntityInterpolator(SELF, 40)
     expect(interpolator.getPosition('never-seen', 1000)).toBeUndefined()
+  })
+})
+
+/**
+ * 리뷰 major 대응 — 세션별 보간 버퍼 프루닝 계약(`_workspace/review/feat-RQ-63-
+ * interpolation.md` "보간 버퍼가 무한 성장한다" 절). `addSnapshot`이 프루닝
+ * 없이 push만 하면(현재 구현) 상설 세션(RQ-04)에서 세션당 버퍼가 무한히
+ * 자란다 — 두 경계 모두 `delayMs`(생성 시 이미 주입되는 값)에서 도출했으므로
+ * 임의값이 아니다.
+ *
+ * 시나리오 공통 설정: `delayMs=100`, 20ms 간격으로 300개 스냅샷을
+ * 연속으로 추가한다(receivedAt 0~5980, x=0~299 — 위치가 시간에 따라
+ * 단조 증가하므로 "어느 스냅샷이 살아남았는지"가 반환값의 크기로 직접
+ * 드러난다). 총 이력 길이(5980ms)는 `delayMs`의 약 60배 — 리뷰가 언급한
+ * "상시 2~4개 스냅샷이면 충분"이라는 정상 동작 요구량보다 훨씬 길게
+ * 실행된 세션을 흉내낸다.
+ */
+describe('RQ-63 리뷰 major 대응: 세션별 보간 버퍼는 무한 성장하지 않는다(프루닝 계약, delayMs에서 도출)', () => {
+  const REMOTE = 'remote-long-session'
+  const DELAY_MS = 100
+  const ARRIVAL_INTERVAL_MS = 20
+  const TOTAL_SNAPSHOTS = 300 // 5980ms 분량 — delayMs(100)의 약 60배
+
+  function buildLongRunningInterpolator(): RemoteEntityInterpolator {
+    const interpolator = createRemoteEntityInterpolator(SELF, DELAY_MS)
+    for (let i = 0; i < TOTAL_SNAPSHOTS; i += 1) {
+      interpolator.addSnapshot(REMOTE, { x: i, y: 0, z: 0, receivedAt: i * ARRIVAL_INTERVAL_MS })
+    }
+    return interpolator
+  }
+
+  it('RQ-63/리뷰 major: 최초 스냅샷의 원래 수신 시각을 조회해도("가장 오래된 스냅샷 고정" 정책 경로) 더 이상 그 스냅샷 값이 나오지 않는다 — 오래된 스냅샷이 실제로 버려졌다는 증거', () => {
+    const interpolator = buildLongRunningInterpolator()
+
+    // te = renderTime - delayMs = 0(최초 스냅샷의 원래 receivedAt). 프루닝이
+    // 전혀 없다면(현재 버그) "가장 오래된 스냅샷 고정" 정책이 정확히 x=0을
+    // 반환한다 — snapshot[0]이 60×delayMs가 지난 지금도 여전히 버퍼의
+    // "가장 오래된" 항목이기 때문이다.
+    const renderTime = DELAY_MS + 0
+    const position = interpolator.getPosition(REMOTE, renderTime)
+
+    // 관대한 상한선: 10×delayMs(=1000ms)보다 오래된 데이터는 어떤 합리적인
+    // 프루닝 구현도 이 시점엔 버렸어야 한다(리뷰의 "상시 2~4개면 충분"
+    // 추정보다 5~10배 여유롭다). 그렇다면 최신 스냅샷(receivedAt=5980)
+    // 기준 1000ms 이내, 즉 receivedAt>=4980(index>=249)인 스냅샷만
+    // "가장 오래된 생존자"로 남아있어야 한다 — x가 249 미만이면 프루닝이
+    // 이 관대한 상한보다도 안 됐다는 뜻이고, 정확히 0이면 프루닝이 전혀
+    // 없다는 뜻이다(현재 버그).
+    expect(position?.x).toBeGreaterThanOrEqual(249)
+  })
+
+  it('RQ-63/리뷰 major: 프루닝이 있어도 delayMs 이내(정상 동작이 항상 필요로 하는 lookback)의 최근 구간은 여전히 정확하게 선형 보간된다 — 과잉 프루닝으로 GA-37이 깨지지 않는다', () => {
+    const interpolator = buildLongRunningInterpolator()
+
+    // 최신 스냅샷(index 299, receivedAt=5980)에서 75ms 전 — delayMs(100ms)
+    // 이내로, 정상 동작이 항상 감당해야 하는 lookback 범위 안이다.
+    // snapshot[295](receivedAt=5900,x=295)와 snapshot[296](receivedAt=5920,
+    // x=296) 사이, 비율 5/20=0.25 → x = 295 + 0.25*(296-295) = 295.25.
+    const targetTime = 5905
+    const renderTime = targetTime + DELAY_MS
+    const position = interpolator.getPosition(REMOTE, renderTime)
+
+    expect(position?.x).toBeCloseTo(295.25, 5)
   })
 })
