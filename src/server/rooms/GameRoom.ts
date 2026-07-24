@@ -104,6 +104,16 @@ export class GameRoom extends Room<GameState> {
   /** 플레이어별 가장 최근 'move' 입력 — 다음 입력이 올 때까지 유지하며
    * 매 틱 시뮬레이션에 반영한다(실시간 FPS 이동 입력의 표준 모델). */
   private readonly pendingInputs = new Map<string, MoveInput>()
+  /** 플레이어별 가장 최근 수신 입력 시퀀스 번호(RQ-62, ADR-0003) —
+   * `pendingInputs`와 동일한 "최근 수신값을 다음 갱신까지 유지" 모델이다
+   * (리뷰 blocker 수정, `_workspace/review/feat-RQ-62-client-prediction.md`).
+   * 'move' 메시지 수신 시점에는 여기만 갱신하고, `player.lastProcessedInputSeq`
+   * 에 실제로 반영하는 것은 `stepPlayerMovement`가 위치·속도를 쓴 직후로
+   * 미룬다 — 그래야 브로드캐스트되는 스냅샷에서 seq가 그 스냅샷의 위치보다
+   * 앞서지 않는다(Colyseus 패치 주기(기본 20Hz)와 틱(30Hz)의 위상이 어긋나면
+   * 메시지 수신 즉시 기록 방식에서 "seq는 갱신됐지만 위치는 아직 그
+   * 입력을 반영하지 못한" 불일치 스냅샷이 나갈 수 있었다). */
+  private readonly pendingSeqs = new Map<string, number>()
 
   override onCreate(): void {
     this.state = new GameState()
@@ -117,9 +127,11 @@ export class GameRoom extends Room<GameState> {
    * 좌표(x·y·z)가 실려 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될
    * 경로가 없다(RQ-61).
    *
-   * 선택적 `seq`(ADR-0003)가 유효하면 그 값을 그대로 `lastProcessedInputSeq`에
-   * 반영한다 — 근사값도 서버 자체 카운터도 아니라 클라이언트가 보낸 값
-   * 그대로다. 없거나 숫자가 아니면(레거시 호출) 갱신하지 않는다(하위 호환).
+   * 선택적 `seq`(ADR-0003)가 유효하면 `pendingSeqs`에만 기록한다 — **여기서
+   * `player.lastProcessedInputSeq`를 직접 쓰지 않는다**(리뷰 blocker 수정).
+   * 실제 반영은 `stepPlayerMovement`가 이 입력을 시뮬레이션에 적용해 위치를
+   * 쓴 직후로 미룬다. 없거나 숫자가 아니면(레거시 호출) `pendingSeqs`도
+   * 건드리지 않는다(하위 호환 — 기존 `lastProcessedInputSeq` 값 유지).
    */
   private registerMessageHandlers(): void {
     this.onMessage('move', (client, payload: unknown) => {
@@ -127,10 +139,7 @@ export class GameRoom extends Room<GameState> {
 
       const seq = parseInputSeq(payload)
       if (seq !== undefined) {
-        const player = this.state.players.get(client.sessionId)
-        if (player) {
-          player.lastProcessedInputSeq = seq
-        }
+        this.pendingSeqs.set(client.sessionId, seq)
       }
     })
   }
@@ -218,6 +227,18 @@ export class GameRoom extends Room<GameState> {
       player.vx = next.vx
       player.vy = next.vy
       player.vz = next.vz
+
+      // RQ-62 리뷰 blocker 수정: seq는 위치·속도를 쓴 바로 이 자리에서만
+      // 기록한다 — 이번 틱에 실제로 적용한 입력(`input`)에 대응하는
+      // 시퀀스 번호가 정확히 이 스냅샷과 함께 나가야 한다(ADR-0003 "상태를
+      // 갱신한 뒤 처리된 마지막 시퀀스 번호를 담아 반환"). `pendingSeqs`는
+      // `pendingInputs`와 동일하게 다음 메시지가 올 때까지 값을 유지하므로,
+      // 새 입력이 없는 유휴 플레이어는 매 틱 같은 값을 재기록할 뿐
+      // 리셋되지 않는다.
+      const pendingSeq = this.pendingSeqs.get(sessionId)
+      if (pendingSeq !== undefined) {
+        player.lastProcessedInputSeq = pendingSeq
+      }
     })
   }
 
@@ -277,6 +298,7 @@ export class GameRoom extends Room<GameState> {
     // (다음 onJoin이 spawnMoveState()로 새로 시작한다).
     this.moveStates.delete(client.sessionId)
     this.pendingInputs.delete(client.sessionId)
+    this.pendingSeqs.delete(client.sessionId)
   }
 
   /**

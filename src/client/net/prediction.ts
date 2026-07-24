@@ -42,6 +42,15 @@ interface BufferedInput {
   input: MoveInput
 }
 
+/** 미확인 입력 버퍼 상한(리뷰 minor 대응, `_workspace/review/feat-RQ-62-
+ * client-prediction.md` "후속 이슈 권고"). 클라이언트가 서버 틱 레이트
+ * (30Hz, `NET.TICK_HZ`)와 동일한 주기로 입력을 보낸다는 ADR-0003 전제
+ * 하에 약 3.3초 분량이다 — 정상 왕복(수 틱)보다 훨씬 넉넉해 정상 플레이
+ * 중 오탐(정당한 미확인 입력이 드롭됨) 위험이 없고, 스냅샷 기아(소켓은
+ * 살아 있으나 패치가 오래 끊기는 병적 상황)에서도 재생 비용과 메모리를
+ * 유한하게 묶는다. */
+const BUFFER_CAP = 100
+
 /** `AuthoritativeMoveState`에서 `lastProcessedInputSeq`를 뺀 순수
  * `MoveState` 부분만 뽑는다 — 재조정의 새 기준값이 된다. */
 function toMoveState(state: AuthoritativeMoveState): MoveState {
@@ -66,6 +75,12 @@ export function createClientPredictor(initialState: MoveState): ClientPredictor 
       const seq = nextSeq
       nextSeq += 1
       buffer.push({ seq, input })
+      // 상한 초과 시 가장 오래된(가장 작은 seq) 항목부터 드롭한다(스냅샷
+      // 기아 시 무한 성장 방지) — buffer는 항상 seq 오름차순이라 맨 앞이
+      // 가장 오래된 항목이다.
+      if (buffer.length > BUFFER_CAP) {
+        buffer.shift()
+      }
       predicted = stepMovement(predicted, input)
       return { seq, predicted }
     },
