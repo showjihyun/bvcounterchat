@@ -71,6 +71,41 @@ interface RemoteBuffer {
 }
 
 /**
+ * 세션별 버퍼 프루닝 윈도우 배수(리뷰 major 대응, `_workspace/review/
+ * feat-RQ-63-interpolation.md` "보간 버퍼가 무한 성장한다" — 상설 세션
+ * (RQ-04)에서 `addSnapshot`이 프루닝 없이 계속 `push`만 하면 세션당 버퍼가
+ * 무한히 자라 메모리·조회 비용(§ 아래 `computePosition`) 모두 세션
+ * 길이에 비례해 나빠진다).
+ *
+ * 정상 동작은 `delayMs` 하나 남짓의 lookback만 있으면 충분하다(상시
+ * 스냅샷 2~4개, ADR-0003 지연 버퍼). 10배 여유를 둔 이유는 통상적인
+ * 지터·전송 간격 편차(GA-38)에서도 절대 과잉 프루닝으로 정상 보간
+ * (GA-37)이 깨지지 않게 하기 위해서다 — 이 여유값은 리뷰 대응 Red
+ * (`tests/unit/rq-63-interpolation.test.ts` "리뷰 major 대응" describe,
+ * "10×delayMs 관대한 상한" 근거)와 동일한 배수다.
+ */
+const PRUNE_WINDOW_MULTIPLIER = 10
+
+/**
+ * 세션 버퍼에서 최신 수신 시각 기준 `delayMs * PRUNE_WINDOW_MULTIPLIER`보다
+ * 오래된 스냅샷을 버린다. `addSnapshot` 호출 직후에만 실행한다 — 스냅샷
+ * 수신(약 30Hz)마다 한 번이면 충분하고, `useFrame`(60fps × 원격 최대 9명)
+ * 경로에는 없다. `snapshots`는 `receivedAt` 오름차순이라 맨 앞부터 지우면
+ * 되고, 항상 최소 1개는 남긴다 — `computePosition`의 "스냅샷 1개뿐" 고정
+ * 정책이 빈 배열을 절대 보지 않아야 한다.
+ */
+function pruneBuffer(buffer: RemoteBuffer, delayMs: number): void {
+  const { snapshots } = buffer
+  const newest = snapshots[snapshots.length - 1]
+  if (!newest) return
+
+  const cutoff = newest.receivedAt - delayMs * PRUNE_WINDOW_MULTIPLIER
+  while (snapshots.length > 1 && snapshots[0]!.receivedAt < cutoff) {
+    snapshots.shift()
+  }
+}
+
+/**
  * 보간할 두 스냅샷이 없을 때의 "고정(freeze)" 정책(외삽 금지, ADR-0003) 및
  * 구간 선형 보간을 계산해 `out`에 쓴다. `getPosition`·`copyPositionInto`가
  * 이 함수 하나를 공유한다 — 계산 로직 중복을 피한다.
@@ -105,11 +140,18 @@ function computePosition(buffer: RemoteBuffer, targetTime: number, out: Interpol
   }
 
   // targetTime이 (oldest, newest) 구간 내부임이 위에서 보장된다 — 그 값을
-  // 실제로 감싸는 인접 스냅샷 쌍을 찾아 선형 보간한다(첫 쌍에 고정되지 않음).
-  for (let i = 0; i < snapshots.length - 1; i += 1) {
+  // 실제로 감싸는 인접 스냅샷 쌍을 찾아 선형 보간한다.
+  //
+  // 최신 끝에서 역방향으로 스캔한다(리뷰 major 대응 — 원래는 최고참부터
+  // 정방향 스캔이라 매 조회가 O(n)이었다). ADR-0003 지연 버퍼(delayMs)는
+  // 정의상 "한 스냅샷 간격 남짓"만큼만 과거를 보므로, targetTime은 거의
+  // 항상 버퍼 최신 끝 근처에 있다 — 정상 상황(스냅샷 기아·지터가 아닌 한)
+  // 첫 반복(i = length-2)에서 바로 찾아 O(1)에 수렴한다. `pruneBuffer`가
+  // n을 이미 유계로 만들었으므로(위 §) 최악의 경우도 무한정 커지지 않는다.
+  for (let i = snapshots.length - 2; i >= 0; i -= 1) {
     const from = snapshots[i]!
     const to = snapshots[i + 1]!
-    if (targetTime > to.receivedAt) continue
+    if (targetTime < from.receivedAt) continue
 
     const span = to.receivedAt - from.receivedAt
     const t = span > 0 ? (targetTime - from.receivedAt) / span : 0
@@ -142,6 +184,7 @@ export function createRemoteEntityInterpolator(
         buffers.set(sessionId, buffer)
       }
       buffer.snapshots.push(snapshot)
+      pruneBuffer(buffer, delayMs)
     },
 
     getPosition(sessionId, renderTime) {
