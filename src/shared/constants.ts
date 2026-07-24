@@ -103,6 +103,14 @@ export const WORLD = {
   SAFE_ZONE_ALLOWS_FIRING: false,
 } as const
 
+/** 닉네임 (RQ-02 v1.2) */
+export const IDENTITY = {
+  /** 새니타이즈 후 최대 길이 — 유니코드 코드포인트 기준(서로게이트 쌍은
+   * 1자로 센다). 중복 회피 접미사는 이 제한 적용 후에 붙으므로 최종 길이가
+   * 이 값을 넘을 수 있다 (RQ-02 v1.2). */
+  NICKNAME_MAX_CODEPOINTS: 16,
+} as const
+
 /** 채팅·HUD (RQ-40, RQ-55) */
 export const UI = {
   /** 채팅 히스토리 보관 개수 (RQ-40) */
