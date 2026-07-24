@@ -354,3 +354,118 @@ describe('RQ-62 입력 시퀀스 — 서버가 처리한 seq가 스냅샷의 las
     15_000,
   )
 })
+
+/**
+ * RQ-62 리뷰 blocker 재현 (`_workspace/review/feat-RQ-62-client-prediction.md`
+ * "지적 사항" 절 — REQUEST_CHANGES, blocker 1건).
+ *
+ * **결함**: `GameRoom`의 `onMessage('move')`가 `lastProcessedInputSeq`를
+ * **메시지 수신 시점**에 기록하는데, 위치·속도(`x·y·z·vx·vy·vz`)는 **다음
+ * 시뮬레이션 틱**(`stepPlayerMovement`)에서야 반영된다. Colyseus 기본 패치
+ * 주기(50ms)와 틱(33ms)의 위상이 어긋나 있어, 어떤 스냅샷이 브로드캐스트되는
+ * 시점에 "seq는 이미 갱신됐지만 그 seq에 대응하는 입력은 아직 위치에
+ * 반영되지 않은" 상태가 실제로 관측될 수 있다. 클라이언트 `reconcile`은 그
+ * seq 이하의 버퍼 입력을 전부 폐기하므로, 아직 위치에 반영되지 않은 입력의
+ * 효과가 통째로 사라져 자기 캐릭터가 한 스텝만큼 뒤로 밀리는(러버밴딩)
+ * 정정이 이동 중 간헐적으로 발생한다.
+ *
+ * **재현 설계(team-lead 지시)**: 클라이언트가 seq를 알고 있으므로, 방향이
+ * 홀/짝 seq마다 번갈아 바뀌는(dirX: +1 ↔ -1) 입력을 33ms(서버 틱)보다 훨씬
+ * 빠른 주기로 연속 전송한다. `stepMovement`가 `vx`를 "누적"이 아니라 매 틱
+ * **현재 입력에서 새로 계산**하므로(`@shared/sim/movement` `groundVelocity`),
+ * 관측된 `vx`의 부호는 "그 틱에 실제로 적용된 입력이 어느 것이었는지"를
+ * 오차 없이 정확하게 드러낸다. 따라서 각 관측 스냅샷에서 "`lastProcessedInputSeq`의
+ * 홀짝이 가리키는 부호"와 "실제 `vx`의 부호"가 항상 일치해야 한다는 것이
+ * 검증 가능한 불변식이 된다 — 결함이 있으면 스트림 도중 최소 한 번은
+ * 어긋난다(메시지 전송이 틱보다 빨라 정상적으로 발생), 수정되면 두 값이
+ * 항상 같은 지점(틱 적용 시점)에서 함께 기록되므로 절대 어긋나지 않는다.
+ *
+ * **flaky 방지**: 단발성 스냅샷 1회 관측은 타이밍 의존이라 보장이 없다
+ * (team-lead 지시) — 그래서 다수 입력을 8ms 간격(요청 간격 — 실측으로는
+ * OS 타이머 해상도에 따라 더 성기게 배치될 수 있다, 아래 참고)으로 900ms
+ * 넘게 흘려보내고, 그 구간 전체의 스냅샷을 전부 수집해 **단 하나라도**
+ * 불변식을 어기면 실패로 잡는다.
+ *
+ * **실측 메모(디버그 스크립트로 확인, 2026-07-24, win32)**: 이 환경에서는
+ * `setInterval(8)`이 OS 타이머 해상도(Windows 기본 ~15.6ms)에 걸려 실제로는
+ * ~15.5ms 간격으로 배치되고, Colyseus 패치(요청 50ms)도 같은 해상도에 걸려
+ * 패치마다 정확히 4개의 메시지가 도착하는 매우 규칙적인 위상으로
+ * 관측됐다(seq가 매 패치 정확히 +4 — 항상 짝수만 표본에 등장). 그런데도
+ * 표본 22개 중 8개가 핵심 불변식을 어겼다(예: `seq=2, vx=+6`인데
+ * 홀짝 규칙상 짝수 seq는 `vx=-6`이어야 한다) — **한쪽 홀짝만 관측돼도
+ * 결함은 그대로 드러난다.** 그래서 아래 진단 사전 확인은 "홀·짝이 둘 다
+ * 표본에 있어야 한다"를 요구하지 않는다(과도한 조건 — 타이머 해상도에
+ * 따라 거짓 실패를 낼 수 있다). 수정 후에는 이 불변식이 스트림 도중 한
+ * 번도 깨지지 않아야 하므로(seq와 위치가 항상 같은 지점에서 갱신) 어떤
+ * 타이밍·OS 타이머 해상도에서도 안정적으로 통과한다 — 통과 방향의 타이밍
+ * 의존성이 없다.
+ */
+describe('RQ-62 리뷰 blocker 재현 — 스냅샷의 seq는 그 스냅샷 위치에 실제로 반영된 입력을 넘어서지 않는다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  const SEND_INTERVAL_MS = 8 // 33ms 틱보다 훨씬 빠르다 — 한 틱 동안 여러 메시지가 도착하도록 강제한다.
+  const BURST_DURATION_MS = 900
+  const SAMPLING_WINDOW_MS = BURST_DURATION_MS + 400 // 버스트 종료 후에도 잠시 더 관측한다.
+
+  it(
+    'RQ-62 리뷰 blocker: 이동 중 관측된 모든 스냅샷에서 vx의 부호가 그 스냅샷의 lastProcessedInputSeq 홀짝(전송한 dirX 부호)과 항상 일치한다',
+    async () => {
+      const room = await joinGame(newClient(server))
+      await waitForDefinedSnapshot(room)
+
+      const samples: PlayerSnapshot[] = []
+      const capture = (): void => {
+        const current = readPlayerSnapshot(room)
+        if (current) samples.push(current)
+      }
+      capture() // 관측 시작 시점(베이스라인, seq=0·vx=0)도 포함한다.
+      room.onStateChange(capture)
+
+      let seq = 0
+      const sendTimer = setInterval(() => {
+        seq += 1
+        const dirX = seq % 2 === 1 ? 1 : -1 // 홀수 seq → +1, 짝수 seq → -1
+        room.send('move', { dirX, dirZ: 0, mode: 'run', jump: false, seq })
+      }, SEND_INTERVAL_MS)
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, SAMPLING_WINDOW_MS)
+      })
+      clearInterval(sendTimer)
+
+      // 진단 사전 확인 — 관측 자체가 의미 있으려면 충분한 샘플 수와, seq
+      // 추적이 실제로 진행됐어야 한다(전부 0이면 이 불변식이 검증할 대상이
+      // 없다). 홀·짝 seq가 둘 다 표본에 등장하는지는 요구하지 않는다 —
+      // OS 타이머 해상도(예: Windows ~15.6ms 배치)에 따라 패치마다 도착하는
+      // 메시지 개수가 짝수로 고정돼 표본이 한쪽 홀짝에 쏠릴 수 있는데(실측
+      // 확인), 그래도 그 표본들 안에서 seq와 vx 부호가 어긋나는 사례는
+      // 그대로 잡힌다 — 아래 핵심 불변식이 그 사례들을 놓치지 않는다.
+      expect(samples.length).toBeGreaterThan(5)
+      expect(samples.some((s) => s.lastProcessedInputSeq > 0)).toBe(true)
+
+      // 핵심 불변식(blocker) — vx는 매 틱 현재 입력에서 새로 계산되므로
+      // (누적 아님), 그 부호는 "이 틱에 실제로 적용된 입력이 어느
+      // 것이었는지"를 정확히 드러낸다. lastProcessedInputSeq의 홀짝이
+      // 가리키는 부호와 항상 일치해야 한다.
+      const violations = samples.filter((s) => {
+        const expectedSign = s.lastProcessedInputSeq === 0 ? 0 : s.lastProcessedInputSeq % 2 === 1 ? 1 : -1
+        return Math.sign(s.vx) !== expectedSign
+      })
+
+      expect(violations, `${violations.length}/${samples.length}개 스냅샷이 불변식을 어겼다: ${JSON.stringify(violations)}`).toEqual(
+        [],
+      )
+
+      await leaveRoom(room)
+    },
+    SAMPLING_WINDOW_MS + 10_000,
+  )
+})
