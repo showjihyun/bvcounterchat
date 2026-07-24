@@ -6,6 +6,7 @@ import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { sanitizeNickname } from '@shared/identity/nickname'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
  * 지점이라 임의로 정한다 — 어떤 값이든 자동 접미사 로직으로 고유화된다. */
@@ -199,12 +200,17 @@ export class GameRoom extends Room<GameState> {
    * 입장시킨다. 차 있으면 `spectators`가 `CAPACITY.SPECTATORS` 미만인지
    * 보고 미만이면 관전자로 입장시킨다(RQ-41). 둘 다 차 있으면 접속을
    * 거부한다(`throw`) — 클래스 상단 문서에 근거를 남겼다.
+   *
+   * RQ-02 v1.2: `uniqueNickname()`(중복 접미사 부착)보다 먼저
+   * `sanitizeNickname()`(제어문자 제거 → 트림 → 코드포인트 16자 절단)을
+   * 적용한다 — 접미사는 길이 제한 적용 **후**에 붙어야 재절단으로 무력화되지
+   * 않는다(스펙 순서). 새니타이즈 결과가 빈 문자열이면(또는 애초에 문자열이
+   * 아니면) 닉네임 미제공과 동일하게 `DEFAULT_NICKNAME`으로 대체한다.
    */
   override onJoin(client: Client, options?: { nickname?: unknown }): void {
-    const requested =
-      typeof options?.nickname === 'string' && options.nickname.length > 0
-        ? options.nickname
-        : DEFAULT_NICKNAME
+    const rawNickname = typeof options?.nickname === 'string' ? options.nickname : ''
+    const sanitized = sanitizeNickname(rawNickname)
+    const requested = sanitized.length > 0 ? sanitized : DEFAULT_NICKNAME
     const nickname = this.uniqueNickname(requested)
 
     if (this.state.players.size < CAPACITY.PLAYERS) {
