@@ -64,6 +64,22 @@ import { buildServer } from '@server/index'
  * 이므로 가짜 시계로는 애초에 "실 경과 시간"이라는 갭의 관측 조건 자체를
  * 만들 수 없다. 동기 블록은 전역 타이머 체계를 건드리지 않고 프로세스의
  * 실제 실행을 지연시킬 뿐이라 이 위험이 없다.
+ *
+ * **리뷰 반영(원장 20a-2, `_workspace/review/fix-20a-2-onoverflow-wiring.md`,
+ * APPROVE·major 1·minor 2)**:
+ * - **[major] droppedTicks 단언 탈-tautology**: 이전 버전은 메시지의 모든
+ *   숫자를 무차별로 뽑아 `> 30` 검사했는데, 실 구현 메시지("[GameRoom]
+ *   RQ-60 v1.1: ...")의 고정 리터럴 "60"(RQ-60)만으로 이미 참이 되어
+ *   구현이 droppedTicks를 아예 빼고 로깅해도 통과하는 허점이 있었다.
+ *   `numbersNearTickWord()`로 "틱"이라는 단어에 인접한 숫자만 취하도록
+ *   좁혀, 메시지 앞머리의 고정 리터럴("RQ-60"·"v1.1")은 배제되고 실제
+ *   버린 틱 수 자리의 숫자만 신뢰하게 했다.
+ * - **[minor] 대조군 flaky 제거**: "블록 이전에는 경고가 0회"라는 절대
+ *   가정(`not.toHaveBeenCalled()`)은 콜드스타트에서 룸 생성 직후 첫
+ *   deltaMs가 이례적으로 커 저확률로 깨질 수 있었다. 대조군을 삭제하는
+ *   대신 "블록 이전 호출 수를 기준선으로 기록 → 블록 이후 새로 추가된
+ *   호출만 검사"로 바꿔, 절대 0 가정 없이도 "관측된 경고가 이번 overflow
+ *   이벤트에 의한 것"이라는 대조 의도를 그대로 유지했다.
  */
 
 const ROOM_NAME = 'game'
@@ -72,9 +88,11 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 
-/** 룸이 첫 몇 틱을 정상적으로 굴리도록 주는 유예. 이 구간에서는 밀림이
- * 쌓이지 않아야 정상(catch-up) 구간과 이후 overflow 구간이 명확히
- * 구분된다 — 아래 "블록 이전에는 경고가 없다" 대조군 단언의 전제. */
+/** 룸이 첫 몇 틱을 정상적으로 굴리도록 주는 유예. 통상 이 구간에서는
+ * 밀림이 쌓이지 않아 정상(catch-up) 구간과 이후 overflow 구간이 구분된다
+ * (콜드스타트로 이 구간에도 드물게 overflow가 나더라도, 아래 본 검사는
+ * "블록 이후에 새로 추가된 호출"만 보므로 결과에 영향이 없다 — 리뷰
+ * minor, 원장 20a-2). */
 const SETTLE_MS = 200
 
 /**
@@ -171,15 +189,58 @@ async function leaveRoom(room: Room): Promise<void> {
 }
 
 /**
- * `console.warn` 호출 인자들에서 숫자를 전부 뽑아낸다 — 구현이 버린 틱
- * 수를 별도 인자로 넘기든(`console.warn('...', droppedTicks)`) 메시지
- * 문자열에 보간하든(`console.warn(\`...${droppedTicks}...\`)`) 양쪽 다
- * "관찰 가능한 행위"로 동일하게 다룬다 — 로그 포맷을 지정하지 않는다.
+ * "틱" 문맥에 인접한 숫자가 문자열 안에 있는지 찾기 위한 창(문자 수).
+ * 실 구현 메시지("...밀린 틱 36개를...")는 "틱"과 숫자 사이가 공백 1칸뿐
+ * 이지만, 로그 문구가 조금 달라져도(예: "틱: 36개", "틱 약 36개") 깨지지
+ * 않도록 여유를 둔다. 동시에 "RQ-60"·"v1.1" 같은 메시지 앞머리 고정
+ * 리터럴(실측 거리 20자 이상)은 이 창 안에 들어오지 않는다 — 리뷰 major
+ * (원장 20a-2)가 지적한 tautology(리터럴 60·1.1만으로 단언이 항상 참이
+ * 되던 문제)를 막는 값이다.
  */
-function extractNumbers(args: unknown[]): number[] {
+const TICK_CONTEXT_WINDOW_CHARS = 8
+
+/**
+ * 문자열에서 "틱"이라는 단어에 인접한 숫자만 뽑는다. 정확한 조사·접미사
+ * (예: '개')까지는 요구하지 않는다 — 로그 포맷을 과하게 지정하지 않기
+ * 위함(리뷰가 제시한 두 대안 중 느슨한 쪽 채택, `_workspace/review/
+ * fix-20a-2-onoverflow-wiring.md` major 지적 참고). "RQ-60"·"v1.1"처럼
+ * "틱"과 멀리 떨어진 자리의 숫자는 제외된다 — 그래서 이 함수가 반환하는
+ * 숫자는 메시지의 고정 리터럴이 아니라 실제로 "틱" 개수를 의도한 자리의
+ * 값일 가능성이 높다.
+ */
+function numbersNearTickWord(text: string): number[] {
+  const tickIndices = [...text.matchAll(/틱/g)].map((m) => m.index).filter((i): i is number => i !== undefined)
+  if (tickIndices.length === 0) return []
+
+  const near: number[] = []
+  for (const match of text.matchAll(/\d+(?:\.\d+)?/g)) {
+    const start = match.index
+    if (start === undefined) continue
+    const end = start + match[0].length
+    const isNear = tickIndices.some((tickIdx) => {
+      // 숫자가 "틱" 뒤에 있으면 그 사이 문자 수, 앞에 있으면 그 사이
+      // 문자 수 — 어느 어순이든 대비한다(현재 구현은 "틱 N개" 순서).
+      const gap = start > tickIdx ? start - (tickIdx + 1) : tickIdx - end
+      return gap <= TICK_CONTEXT_WINDOW_CHARS
+    })
+    if (isNear) near.push(Number(match[0]))
+  }
+  return near
+}
+
+/**
+ * `console.warn` 호출 인자들에서 "버린 틱 수"로 신뢰할 수 있는 숫자를
+ * 뽑는다. 숫자 인자(`console.warn('...', droppedTicks)`)는 메시지 고정
+ * 리터럴과 섞일 위험이 없으므로 그대로 신뢰한다. 문자열 인자
+ * (`console.warn(\`...${droppedTicks}...\`)`)는 "틱" 문맥에 인접한
+ * 숫자만 취한다(`numbersNearTickWord`) — 양쪽 다 "관찰 가능한 행위"로
+ * 다루되, 문자열 인자 쪽은 메시지에 우연히 섞인 무관한 숫자(예:
+ * "RQ-60"의 60)를 걸러낸다.
+ */
+function extractCredibleTickCounts(args: unknown[]): number[] {
   return args.flatMap((arg) => {
     if (typeof arg === 'number') return [arg]
-    if (typeof arg === 'string') return (arg.match(/\d+(?:\.\d+)?/g) ?? []).map(Number)
+    if (typeof arg === 'string') return numbersNearTickWord(arg)
     return []
   })
 }
@@ -207,23 +268,28 @@ describe('RQ-60 v1.1 onOverflow 배선 — 긴 정지 시 경고 (원장 20a-2, 
       const room = await joinGame(newClient(server))
       await sleep(SETTLE_MS)
 
-      // 대조군: 정상 구간(짧은 정착 대기, 0.5초 미만 지연은 유실 없이
-      // 캐치업하는 정상 경로)에서는 아직 경고가 없어야 한다 — 이후 블록
-      // 뒤의 경고가 "언제든 나오는 무관한 경고"가 아니라 실제로 이번
-      // overflow 이벤트에 의한 것임을 구분하는 대조다.
-      expect(warnSpy).not.toHaveBeenCalled()
+      // 대조군: "블록 이전 호출 수"를 절대 0으로 가정하지 않고 기준선으로만
+      // 기록한다(리뷰 minor, 원장 20a-2 — 콜드스타트에서 룸 생성 직후 첫
+      // deltaMs가 이례적으로 커 정착 구간에도 overflow가 발동할 저확률
+      // 가능성을 배제할 수 없다). 이후 "블록 뒤에 새로 추가된 호출"만
+      // 검사해 그 호출이 이번 overflow 이벤트에 의한 것임을 구분한다 —
+      // 대조군을 삭제하는 것이 아니라 절대 0 가정만 제거한 것이다.
+      const callsBeforeBlock = warnSpy.mock.calls.length
 
       blockEventLoopSync(BLOCK_MS)
 
       await sleep(POST_BLOCK_SETTLE_MS)
       await leaveRoom(room)
 
-      // 핵심 단언(RQ-60 v1.1 "경고를 남긴다"): 배선이 없으면 이 호출 자체가
-      // 전혀 일어나지 않아 실패한다 — 현재(Red) 상태를 그대로 드러낸다.
-      expect(warnSpy).toHaveBeenCalled()
+      const callsAfterBlock = warnSpy.mock.calls.slice(callsBeforeBlock)
 
-      const droppedTicksReported = warnSpy.mock.calls.some((callArgs) =>
-        extractNumbers(callArgs).some((n) => n > MIN_EXPECTED_DROPPED_TICKS),
+      // 핵심 단언(RQ-60 v1.1 "경고를 남긴다"): 배선이 없으면 이 블록 이후
+      // 구간에 새로 추가되는 호출 자체가 없어 실패한다 — 현재(Red) 상태를
+      // 그대로 드러낸다.
+      expect(callsAfterBlock.length).toBeGreaterThan(0)
+
+      const droppedTicksReported = callsAfterBlock.some((callArgs) =>
+        extractCredibleTickCounts(callArgs).some((n) => n > MIN_EXPECTED_DROPPED_TICKS),
       )
       expect(droppedTicksReported).toBe(true)
     },
