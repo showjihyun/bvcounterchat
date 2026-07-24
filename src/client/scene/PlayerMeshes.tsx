@@ -80,11 +80,13 @@ export function PlayerMeshes({ store }: PlayerMeshesProps) {
 
   useFrame(() => {
     const state = store.getState()
-    meshesRef.current.forEach((mesh, sessionId) => {
+    // for...of — Map.forEach의 화살표 콜백은 매 프레임 클로저를 새로 할당한다
+    // (리뷰 minor). for...of는 할당 없이 순회한다(프레임 예산 규칙).
+    for (const [sessionId, mesh] of meshesRef.current) {
       const player = state.players.get(sessionId)
-      if (!player) return
+      if (!player) continue
       mesh.position.set(player.x, player.y + BOX_HEIGHT / 2, player.z)
-    })
+    }
   })
 
   return <group ref={groupRef} />
