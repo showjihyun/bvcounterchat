@@ -153,15 +153,20 @@ function waitForStoreCondition(
 ): Promise<GameStoreState> {
   return withTimeout(
     new Promise<GameStoreState>((resolve) => {
-      let unsubscribe: (() => void) | undefined
+      // `unsubscribe`는 `tryResolve`(아래) 안에서 참조되지만, 그 참조는
+      // `tryResolve`가 실제로 호출될 때만 평가된다 — `store.subscribe`는
+      // 등록 시점에 리스너를 동기 호출하지 않으므로(zustand vanilla 구현
+      // 확인: `subscribe`는 Set에 추가만 하고 반환한다) 아래 `const` 대입이
+      // 끝난 뒤에야 `tryResolve`가 처음 호출된다. 따라서 `let` 대신
+      // `const`로 선언·대입을 한 번에 할 수 있다.
       const tryResolve = (): void => {
         const state = store.getState()
         if (predicate(state)) {
-          unsubscribe?.()
+          unsubscribe()
           resolve(state)
         }
       }
-      unsubscribe = store.subscribe(tryResolve)
+      const unsubscribe = store.subscribe(tryResolve)
       tryResolve()
     }),
     ms,
