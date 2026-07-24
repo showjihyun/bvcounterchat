@@ -34,3 +34,6 @@
 {"id": "GA-34", "spec": "RQ-62", "given": "접속한 클라이언트", "when": "이동 입력 발생", "then": "서버 응답을 기다리지 않고 로컬 예측 위치가 즉시 반영된다 (RQ-62 예측)", "verify": "tests/unit/rq-62-prediction.test.ts", "status": "done"}
 {"id": "GA-35", "spec": "RQ-62", "given": "예측 진행 중", "when": "서버 스냅샷 도착(처리된 마지막 입력 시퀀스 포함)", "then": "그 시퀀스 이전 예측은 서버 값으로 교체되고 이후 미확인 입력은 재생으로 재구성된다 — 입력 중단 후 서버 값에 오차 0 수렴 (ADR-0003 재조정)", "verify": "tests/unit/rq-62-prediction.test.ts", "status": "done"}
 {"id": "GA-36", "spec": "RQ-62", "given": "같은 입력 시퀀스", "when": "클라 예측과 서버 시뮬레이션을 각각 실행", "then": "두 궤적이 일치한다 (shared stepMovement 재사용 — ADR-0004/0008 결정론)", "verify": "tests/unit/rq-62-prediction.test.ts", "status": "done"}
+{"id": "GA-37", "spec": "RQ-63", "given": "타 플레이어의 서버 스냅샷 2개(t1, t2) 수신", "when": "렌더 시각이 t1~t2 사이", "then": "표시 위치가 두 스냅샷의 선형 보간 중간값이다 — 지연 버퍼(한 스냅샷 간격 이상)를 둔 과거 시점을 그린다 (ADR-0003)", "verify": "tests/unit/rq-63-interpolation.test.ts", "status": "todo"}
+{"id": "GA-38", "spec": "RQ-63", "given": "스냅샷 도착 간격이 불규칙(지터)", "when": "연속 렌더", "then": "표시 위치가 순간이동(스냅) 없이 연속적으로 움직인다 — 버퍼에 스냅샷이 있는 한 보간이 유지된다", "verify": "tests/unit/rq-63-interpolation.test.ts", "status": "todo"}
+{"id": "GA-39", "spec": "RQ-63", "given": "자기 자신", "when": "렌더", "then": "자기 캐릭터는 보간 대상이 아니라 예측(RQ-62) 위치로 그려진다 — 두 경로가 섞이지 않는다", "verify": "tests/unit/rq-63-interpolation.test.ts", "status": "todo"}
