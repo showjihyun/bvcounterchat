@@ -222,11 +222,19 @@ export interface DamageOutcome {
   died: boolean
 }
 
-/** hp는 0 미만으로 내려가지 않는다(클램프) — died는 클램프 전 원값 기준
- * (hp<=0)으로 판정. */
+/**
+ * hp는 0 미만으로 내려가지 않는다(클램프). `died`는 "생존 → 사망"
+ * **전이**에서만 성립한다(REV — 리뷰 major 재현,
+ * `_workspace/review/feat-RQ-12-14-combat-core.md`) — `currentHp`(=이번
+ * 피해 적용 전 hp)가 이미 0 이하였다면, 클램프 전 원값이 다시 0 이하로
+ * 나와도 `died`는 false다. RQ-15(리스폰) 미구현으로 시신이 사라지지
+ * 않는 상태에서 같은 대상을 재사격해도 킬이 중복 기록되지 않게 하는
+ * 최소 조건이다 — `currentHp`를 이미 인자로 받고 있어 시그니처 변경이
+ * 필요 없다.
+ */
 export function applyDamage(currentHp: number, damage: number): DamageOutcome {
   const rawHp = currentHp - damage
-  return { hp: Math.max(0, rawHp), died: rawHp <= 0 }
+  return { hp: Math.max(0, rawHp), died: currentHp > 0 && rawHp <= 0 }
 }
 
 /**

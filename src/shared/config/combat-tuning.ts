@@ -27,6 +27,12 @@ export interface SpreadTuning {
  * 상대의 머리(자기 자신이 서 있는 바로 그 자리)를 스스로 "관통"하며 명중으로
  * 오판정된다 — 눈높이를 머리 볼륨 위로 두면 이 겹쳐 스폰 시나리오에서도
  * 위쪽 조준은 항상 깨끗하게 빗나간다.
+ *
+ * **복원 조건(리뷰 minor, `_workspace/review/feat-RQ-12-14-combat-core.md`)**:
+ * 1.9m는 평균 키(1.8m 이하)를 넘는 비현실값이다 — RQ-31(비겹침 스폰)이
+ * 도입돼 플레이어들이 서로 다른 위치에서 시작하게 되면, 이 겹쳐 스폰
+ * 회피 목적이 사라지므로 현실적인 눈높이(머리 볼륨 상단 이하)로 되돌리고
+ * GA-06을 재검증해야 한다.
  */
 export const DEFAULT_HITBOX: HitboxConfig & { eyeHeightM: number } = {
   bodyRadiusM: 0.3,
