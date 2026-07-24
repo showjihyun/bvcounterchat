@@ -30,11 +30,7 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * **가정(coder에게)**: `rq-12-server-hitscan.test.ts`의 가정 1~4와 동일
  * (`Player.hp`·`Player.kills` 필드, `'fire'` 메시지, 즉시 판정,
  * `DEFAULT_HITBOX`). **킬 크레딧 갱신 시점**: 피해자의 `hp`가 0(이하)이
- * 되는 그 사격의 처리 안에서, 가해자(사수)의 `kills`를 정확히 1 증가시킨다
- * — 이미 사망한(hp<=0) 대상에 대한 추가 사격이 있다면 몇 번을 더 맞아도
- * `kills`가 중복 증가하지 않는다는 것까지는 이 RQ가 규정하지 않는다(리스폰
- * 부재 상태에서 "이미 죽은 대상"의 취급은 스코프 밖 — 이 테스트는 정확히
- * 4번째 사격에서 처음 사망이 발생하는 시나리오만 다룬다).
+ * 되는 그 사격의 처리 안에서, 가해자(사수)의 `kills`를 정확히 1 증가시킨다.
  *
  * **rate-limit과의 상호작용**: 4회 연속 사격은 매 사격 사이에 rate-limit
  * (ADR-0005, 150ms)이 확실히 풀릴 만큼 기다린 뒤 보낸다(각 사격이 실제로
@@ -44,6 +40,19 @@ import { PLAYER, WEAPON } from '@shared/constants'
  *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존(ADR-0008
  * 허용 예외). 모든 대기에 `withTimeout()` 상한.
+ *
+ * **REV — 리뷰 major 재현(`_workspace/review/feat-RQ-12-14-combat-core.md`)**:
+ * 최초 버전의 "가정" 절은 "이미 사망한 대상에 대한 추가 사격이 킬을
+ * 중복 기록하지 않는다는 것까지는 이 RQ가 규정하지 않는다(스코프 밖)"고
+ * 적었다 — 이는 **잘못된 스코프 판단이었다**. RQ-15(리스폰) 미구현으로
+ * 시신이 사라지지 않는 것은 사실이지만, 그로 인해 "이미 죽은 대상을
+ * rate-limit 간격으로 계속 쏴 킬을 무제한 파밍할 수 있다"는 것은 스코프
+ * 밖 사안이 아니라 RQ-14 자체의 결함(죽음은 1회의 사건이어야 하는데
+ * 반복 기록된다)이다 — 리뷰가 이 미검증 라이브 경로를 지적했다(major).
+ * 아래 두 번째 `it()`가 이 결함을 재현한다. **킬 크레딧 갱신 규칙 정정**:
+ * 피해자의 `hp`가 "생존(>0) → 사망(<=0)"으로 **전이**하는 그 사격에서만
+ * `kills`를 1 증가시킨다 — 이미 hp<=0인 대상에 대한 추가 사격은 몇 번을
+ * 맞아도 `kills`를 다시 올리지 않는다.
  */
 
 const ROOM_NAME = 'game'
@@ -56,6 +65,8 @@ const TRAVEL_MS = 900
 const SETTLE_MS = 200
 /** 연속 사격 사이의 여유 — ADR-0005 rate-limit(150ms)을 명백히 초과한다. */
 const BETWEEN_SHOTS_MS = 300
+/** "변화 없음"을 확인하기 위한 관찰 구간(여러 상태 갱신을 거치기 충분한 여유). */
+const NO_CHANGE_OBSERVATION_MS = 500
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -291,6 +302,69 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
         '사망 처리 후 가해자 킬 수 증가 대기',
       )
       expect(afterKillCredit.kills).toBe(1)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    40_000,
+  )
+
+  /**
+   * REV — 리뷰 major 재현(`_workspace/review/feat-RQ-12-14-combat-core.md`
+   * "이미 사망(hp=0)한 대상에 대한 재사격이 킬을 중복 기록한다",
+   * `GameRoom.ts:226-230` 진단).
+   *
+   * RQ-15(리스폰)가 이 RQ의 스코프 밖이라 사망한 플레이어의 시신이 월드에서
+   * 사라지지 않고 원위치·히트박스가 그대로 남는다 — 그래서 사수는
+   * rate-limit(150ms) 간격만 지키며 시신을 계속 쏴 킬을 무제한 파밍할 수
+   * 있다(리뷰가 지적한 실제 도달 가능한 라이브 경로). 이 테스트는 GA-08의
+   * "최초 사망 시 킬 1 기록"에 이어, **그 뒤의 재사격이 킬 수를 더 올리지
+   * 않는다**는 불변식만 추가로 확인한다(HP의 이후 진행치는 team-lead 지시대로
+   * 관찰 범위 밖 — 킬 수 불변이 핵심 계약이다).
+   */
+  it(
+    'RQ-14 리뷰 major 재현: B가 사망(킬 1 기록)한 뒤 A가 rate-limit 간격을 지켜 B의 시신을 재사격해도, A의 킬 수는 1로 불변이다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomB = await joinGame(newClient(server))
+
+      await waitForDefinedVictim(roomB, roomB.sessionId)
+      await waitForDefinedKiller(roomA, roomA.sessionId)
+
+      const settledB = await travelAndSettle(roomB)
+      const aim = aimAtBody(settledB.x)
+
+      // GA-08과 동일한 절차로 B를 사망시킨다(바디샷 4회, rate-limit 간격 준수).
+      for (let shot = 1; shot <= 4; shot += 1) {
+        roomA.send('fire', aim)
+        const expectedHp = Math.max(0, PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * shot)
+        await waitForHpCondition(
+          roomB,
+          roomB.sessionId,
+          (hp) => hp === expectedHp,
+          `${shot}번째 바디샷 후 HP=${expectedHp} 대기`,
+        )
+        await sleep(BETWEEN_SHOTS_MS)
+      }
+
+      const afterDeath = await waitForKillsCondition(
+        roomA,
+        roomA.sessionId,
+        (kills) => kills > 0,
+        '사망 처리 후 가해자 킬 수 증가 대기',
+      )
+      expect(afterDeath.kills).toBe(1) // 최초 사망 — 정상 크레딧(전제 확인)
+
+      // 핵심 재현 — RQ-15 미구현으로 B의 시신은 그대로 원위치에 남아 있어
+      // 동일 조준이 여전히 히트박스에 명중한다. rate-limit(150ms)을 확실히
+      // 지켜 재사격한다.
+      roomA.send('fire', aim)
+
+      // "변화 없음"은 순간 스냅샷으로 증명할 수 없다 — 여러 상태 갱신을
+      // 거치는 동안에도 킬 수가 여전히 1인지 확인한다(rq-12-server-hitscan
+      // "무관한 방향 사격 시 HP 불변" 테스트와 동일한 고정 대기 패턴).
+      await sleep(NO_CHANGE_OBSERVATION_MS)
+      const afterRefire = readKiller(roomA, roomA.sessionId)
+      expect(afterRefire?.kills).toBe(1) // 현재 구현에서는 2로 관측돼 실패한다(Red)
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
     },

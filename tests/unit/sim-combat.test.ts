@@ -315,6 +315,39 @@ describe('RQ-14 HP 감산·사망 판정 — applyDamage', () => {
     expect(outcome.hp).toBe(50)
     expect(outcome.died).toBe(false)
   })
+
+  /**
+   * REV — 리뷰 major 재현(`_workspace/review/feat-RQ-12-14-combat-core.md`
+   * "이미 사망(hp=0)한 대상에 대한 재사격이 킬을 중복 기록한다").
+   *
+   * `died`는 "생존 → 사망" **전이**에서만 성립해야 한다(RQ-14 "HP가 0
+   * 이하가 되면... 킬을 기록해야 한다" — 죽음은 1회의 사건이지, hp<=0
+   * 상태가 유지되는 매 순간 반복되는 사건이 아니다). `currentHp` 인자는
+   * 이미 "이번 피해 적용 **전** hp"(=직전 hp) 그 자체이므로, 별도 인자
+   * 추가 없이 `currentHp > 0`이었는지만 추가로 확인하면 된다 — 이미
+   * hp<=0인 대상에게 데미지를 더 적용해도(현재 hp는 계속 0으로 클램프)
+   * `died`는 다시 true가 되지 않아야 한다.
+   *
+   * 이 계약은 "어느 레이어가 '이미 죽음'을 걸러야 하는가"라는 리뷰의
+   * 열린 질문에 대한 test-writer의 답이다 — `applyDamage`가 이미
+   * `currentHp`(=직전 hp)를 인자로 받고 있으므로, 이 판단에 필요한
+   * 정보를 이미 가진 이 함수가 책임지는 것이 계약 확장 없이 가능한
+   * 최소 수정이다(구현 방식을 규정하지 않는다 — `GameRoom`이 별도로
+   * "직전 hp>0" 가드를 두는 방식으로 고쳐도 이 단언 자체는 여전히
+   * `applyDamage`의 관측 가능한 계약으로 성립해야 한다).
+   */
+  it(
+    'RQ-14 리뷰 major 재현: 이미 HP가 0인(이미 사망한) 대상에 데미지를 추가로 적용해도 died는 다시 true가 되지 않는다 — 사망은 생존→사망 전이에서만 성립한다',
+    () => {
+      const bodyShotOnCorpse = applyDamage(0, damageForRegion('body'))
+      expect(bodyShotOnCorpse.hp).toBe(0)
+      expect(bodyShotOnCorpse.died).toBe(false)
+
+      const headshotOnCorpse = applyDamage(0, damageForRegion('head'))
+      expect(headshotOnCorpse.hp).toBe(0)
+      expect(headshotOnCorpse.died).toBe(false)
+    },
+  )
 })
 
 describe('ADR-0005 발사 속도 제한(rate-limit) 판정 — canFire', () => {
