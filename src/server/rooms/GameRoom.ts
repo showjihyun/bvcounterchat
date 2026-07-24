@@ -40,6 +40,18 @@ function sanitizeMoveInput(payload: unknown): MoveInput {
 }
 
 /**
+ * `move` payload에서 선택적 시퀀스 번호(RQ-62, ADR-0003 입력 커맨드 버퍼)를
+ * 뽑는다. 유효한(유한한) 숫자가 아니면(레거시 호출 — 기존
+ * `rq-20-movement-authority.test.ts`·`20b-client-connect.test.ts`가 이미
+ * seq 없이 `move`를 호출한다) `undefined`를 반환해 호출자가
+ * `lastProcessedInputSeq`를 갱신하지 않도록 한다(하위 호환, 회귀 금지).
+ */
+function parseInputSeq(payload: unknown): number | undefined {
+  const raw = payload as { seq?: unknown } | null | undefined
+  return typeof raw?.seq === 'number' && Number.isFinite(raw.seq) ? raw.seq : undefined
+}
+
+/**
  * 'game' 룸 — RQ-04 상설 세션 + RQ-02 닉네임 식별 + RQ-03 정원 + RQ-60
  * 30Hz 고정 틱.
  *
@@ -100,13 +112,26 @@ export class GameRoom extends Room<GameState> {
   }
 
   /**
-   * RQ-20 이동 입력(GA-33 서버 권위 포함). 'move' payload에서 방향·상태
-   * 필드만 뽑는다(`sanitizeMoveInput`) — 페이로드에 좌표(x·y·z)가 실려
-   * 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될 경로가 없다(RQ-61).
+   * RQ-20 이동 입력(GA-33 서버 권위 포함) + RQ-62 입력 시퀀스. 'move'
+   * payload에서 방향·상태 필드만 뽑는다(`sanitizeMoveInput`) — 페이로드에
+   * 좌표(x·y·z)가 실려 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될
+   * 경로가 없다(RQ-61).
+   *
+   * 선택적 `seq`(ADR-0003)가 유효하면 그 값을 그대로 `lastProcessedInputSeq`에
+   * 반영한다 — 근사값도 서버 자체 카운터도 아니라 클라이언트가 보낸 값
+   * 그대로다. 없거나 숫자가 아니면(레거시 호출) 갱신하지 않는다(하위 호환).
    */
   private registerMessageHandlers(): void {
     this.onMessage('move', (client, payload: unknown) => {
       this.pendingInputs.set(client.sessionId, sanitizeMoveInput(payload))
+
+      const seq = parseInputSeq(payload)
+      if (seq !== undefined) {
+        const player = this.state.players.get(client.sessionId)
+        if (player) {
+          player.lastProcessedInputSeq = seq
+        }
+      }
     })
   }
 
@@ -188,6 +213,11 @@ export class GameRoom extends Room<GameState> {
       player.x = next.x
       player.y = next.y
       player.z = next.z
+      // RQ-62(21a-2): 클라이언트 예측 재조정이 공중 상태를 이어받으려면
+      // 속도가 와이어에 실려야 한다(`grounded`는 4필드 확정에 없어 제외).
+      player.vx = next.vx
+      player.vy = next.vy
+      player.vz = next.vz
     })
   }
 

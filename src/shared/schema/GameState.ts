@@ -18,6 +18,20 @@ export class Player extends Schema {
   @type('number') x = 0
   @type('number') y = 0
   @type('number') z = 0
+  /** 서버가 `stepMovement`로 계산한 수평·수직 속도(m/s, RQ-62 21a-2 확정).
+   * 클라이언트 예측(`src/client/net/prediction.ts`)의 재조정 기준값에
+   * 필요하다 — `MoveState`(x·y·z·vx·vy·vz·grounded 7필드)를 재사용하려면
+   * 와이어에도 속도가 실려야 한다. `grounded`는 여기 추가하지 않는다 —
+   * `@shared/sim/movement`의 현재 구현에서는 `grounded === (y === 0)`이
+   * 항상 성립해 배선 코드가 파생시킬 수 있다(잠재적 암묵 의존 —
+   * `tests/unit/rq-62-prediction.test.ts` §참고 절 확인). */
+  @type('number') vx = 0
+  @type('number') vy = 0
+  @type('number') vz = 0
+  /** 서버가 처리를 반영한 마지막 입력 시퀀스 번호(RQ-62, ADR-0003 입력
+   * 커맨드 버퍼). 클라이언트가 'move' 메시지에 `seq`를 싣지 않으면(레거시
+   * 호출) 갱신되지 않는다 — 기본값 0이 유지된다. */
+  @type('number') lastProcessedInputSeq = 0
 }
 
 /**
