@@ -23,7 +23,7 @@ import { MOVEMENT, NET } from '@shared/constants'
  * ```ts
  * export interface MoveState {
  *   x: number; y: number; z: number
- *   vy: number       // 수직 속도(m/s, 상승 +) — 중력 적용 대상
+ *   vx: number; vy: number; vz: number  // 속도(m/s) — 접지·공중 모두 노출
  *   grounded: boolean
  * }
  * export interface MoveInput {
@@ -33,6 +33,23 @@ import { MOVEMENT, NET } from '@shared/constants'
  * }
  * export function stepMovement(state: MoveState, input: MoveInput): MoveState
  * ```
+ *
+ * **REV 2026-07-24 — 계약 확장(5필드 → 7필드, 테스트 약화 아님)**: 최초
+ * 계약은 `vx`·`vz`가 없는 5필드였다. evaluator FAIL
+ * (`_workspace/RQ-20/03_evaluator_report.md` 특별검증 #1·#2)이 그 계약
+ * 아래에서 나온 구현(공중 수평 속도를 모듈 전역 `WeakMap<MoveState, ...>`에
+ * 반환 객체 참조로 은닉)의 결함을 실증했다 — ① `JSON.stringify`→`parse`
+ * 왕복 복제 후 이어 시뮬레이션하면 수평 관성이 소실된다(원본 x=1.4 vs
+ * 클론 x=0.6 동결) → 클라이언트 예측(RQ-62)이 서버 스냅샷을 그대로
+ * 받아 재시뮬레이션하는 롤백 전제(ADR-0004 "예측이 같은 틱 함수를
+ * 재사용해야 한다")가 무너진다. ② 값이 완전히 같은 얕은 복사본에 같은
+ * 입력을 줘도 출력이 다르다 → `stepMovement`가 인자 **값**이 아니라
+ * 객체 **참조**(WeakMap 키)에 의존 → ADR-0008 §2 "시뮬레이션 틱 함수는
+ * 순수 함수(값의 함수)" 요구 위반. 근본 원인은 5필드 계약이 공중 상태의
+ * 완전한 표현이 아니었다는 데 있다(실제 상태는 vx·vz를 포함한 7개인데
+ * 2개가 계약 밖 out-of-band였다) — 그래서 `vx`·`vz`를 은닉 대신 명시
+ * 필드로 승격한다. 아래 "MoveState 계약 확장" describe 블록이 이 결함의
+ * 회귀를 직접 방지한다(이 두 테스트가 없으면 같은 은닉이 다시 통과한다).
  *
  * `stepMovement`는 **정확히 1틱(`NET.TICK_MS`) 전진**한다 — clock/scheduler
  * (원장 17e 계약)와 동일하게, 벌크가 아니라 틱 단위 호출을 반복하는 것이
@@ -56,11 +73,13 @@ import { MOVEMENT, NET } from '@shared/constants'
  * ADR-0008/ADR-0010 lint 대상이다 — `Math.random()`·`Date.now()`·실타이머
  * 직접 호출 금지(`harness/sim/README.md` 제약과 동일). 순수 산술이라
  * 난수·시간이 아예 필요 없지만, 아래 "결정론" 테스트로 "같은 입력 → 같은
- * 출력"을 직접 확인한다.
+ * 출력"을 직접 확인한다. 그 결정론이 **참조가 아니라 값에만** 의존하는지는
+ * "MoveState 계약 확장" describe 블록(직렬화 왕복·얕은 복사 비교)이
+ * 별도로 확인한다 — 위 REV 2026-07-24 참고.
  */
 
 function createGroundedState(): MoveState {
-  return { x: 0, y: 0, z: 0, vy: 0, grounded: true }
+  return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
 }
 
 /** input을 유지한 채 n틱 전진시킨 최종 상태. */
@@ -230,4 +249,61 @@ describe('RQ-20 이동 — 평지 순수 산술 (GA-30~32)', () => {
       expect(reversedDirection.x).toBeCloseTo(sameDirection.x, 6)
     })
   })
+
+  /**
+   * REV 2026-07-24 — 계약 확장 회귀 방지 (evaluator FAIL #1·#2, 파일 상단
+   * "REV 2026-07-24" 절 참고). `MoveState`는 **값만으로 다음 상태가
+   * 결정되는 완전한 스냅샷**이어야 한다 — 공중 수평 속도(vx·vz)를 반환
+   * 객체 밖(예: 모듈 전역 `WeakMap`)에 은닉하면 아래 두 테스트가 잡는다.
+   * 이 두 테스트가 없으면 "형식상 계약(반환 객체가 7개 필드를 가짐)은
+   * 지키되 정신(완전한 표현)은 어기는" 은닉이 다시 조용히 통과한다.
+   */
+  describe(
+    'MoveState 계약 확장 — 값만으로 결정되는 완전한 스냅샷이다 ' +
+      '(ADR-0008 결정론 · ADR-0004 클라이언트 예측 재사용, evaluator FAIL #1·#2 회귀 방지)',
+    () => {
+      /** 이함 직후 공중 상태 — 정면(dirX=1)으로 달리며 동시에 점프해
+       * 수평 관성(6m/s)을 실은 상태. 아래 두 테스트가 이 상태의 "값만으로
+       * 결정되는가"를 검증한다. */
+      function makeAirborneState(): MoveState {
+        const airborne = stepMovement(createGroundedState(), { dirX: 1, dirZ: 0, mode: 'run', jump: true })
+        expect(airborne.grounded).toBe(false) // 전제 확인 — 여기서부터가 공중 구간이다
+        return airborne
+      }
+
+      it(
+        '공중 상태를 JSON 직렬화 왕복(구조적 복제)한 뒤 이어 시뮬레이션해도, 원본을 이어 시뮬레이션한 ' +
+          '궤적과 완전히 같다 (참조가 끊겨도 값이 보존돼야 한다 — 클라이언트 예측(RQ-62)의 스냅샷·롤백 전제, ADR-0004)',
+        () => {
+          const airborne = makeAirborneState()
+          const clone = JSON.parse(JSON.stringify(airborne)) as MoveState
+          expect(clone).toEqual(airborne) // 왕복 직후에는 값이 같다(참조만 다르다) — 아래 단언의 전제
+
+          const nextInput: MoveInput = { dirX: 0, dirZ: 0, mode: 'run', jump: false }
+          const originalNext = stepMovement(airborne, nextInput)
+          const cloneNext = stepMovement(clone, nextInput)
+
+          expect(cloneNext).toEqual(originalNext)
+        },
+      )
+
+      it(
+        '같은 값을 가진 서로 다른 객체 참조에 같은 입력을 주면 같은 결과가 나온다 ' +
+          '(state는 참조가 아니라 값으로만 다음 상태를 결정해야 한다 — ADR-0008 "값의 함수")',
+        () => {
+          const airborne = makeAirborneState()
+          const shallowCopy: MoveState = { ...airborne } // 값 동일, 참조는 다른 새 객체
+          expect(shallowCopy).not.toBe(airborne) // 전제 확인 — 진짜 다른 참조다
+          expect(shallowCopy).toEqual(airborne)
+
+          const input: MoveInput = { dirX: -1, dirZ: 0, mode: 'run', jump: false } // 방향은 임의(공중 가속 미허용이라 무관) — 참조 의존성만 확인
+
+          const fromOriginal = stepMovement(airborne, input)
+          const fromCopy = stepMovement(shallowCopy, input)
+
+          expect(fromCopy).toEqual(fromOriginal)
+        },
+      )
+    },
+  )
 })
