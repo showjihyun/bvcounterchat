@@ -41,3 +41,30 @@ body {
   font-size: 0.8rem;
   opacity: 0.6;
 }
+
+/* 닉네임 입장 화면 — 기능 최소, 시각 디자인은 DESIGN.md 확정 이후 유예
+   (`harness/workflow/fe.md`). */
+.join-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.join-screen__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 16rem;
+}
+
+.join-screen__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+}
+
+.join-screen__error {
+  margin: 0;
+  color: #e07a7a;
+  font-size: 0.85rem;
+}
