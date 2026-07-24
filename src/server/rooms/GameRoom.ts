@@ -5,10 +5,38 @@ import { CAPACITY, NET } from '@shared/constants'
 import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
+import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
  * 지점이라 임의로 정한다 — 어떤 값이든 자동 접미사 로직으로 고유화된다. */
 const DEFAULT_NICKNAME = 'player'
+
+/** 'move' 메시지를 아직 한 번도 보내지 않은 플레이어(방금 접속)에 쓰는
+ * 입력 — 무입력·평지 대기 상태. */
+const IDLE_MOVE_INPUT: MoveInput = { dirX: 0, dirZ: 0, mode: 'run', jump: false }
+
+/** RQ-31(스폰 지점 순환 로테이션)은 이 RQ의 스코프 밖 — 아직 구현되지
+ * 않았으므로 임시로 원점에서 시작한다. */
+function spawnMoveState(): MoveState {
+  return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
+}
+
+/**
+ * `move` 메시지 payload에서 이동 입력 필드(`dirX`·`dirZ`·`mode`·`jump`)만
+ * 뽑아 타입을 강제한다. 클라이언트가 같은 payload에 임의 좌표(x·y·z 등
+ * 여분 필드)를 실어 보내도 여기서 아예 읽지 않으므로 서버 상태에 닿을
+ * 경로가 없다 (RQ-61 서버 권위, RQ-20/GA-33). 타입이 어긋난 필드는 조용히
+ * 안전한 기본값으로 대체한다 — 크래시·틱 정지보다 안전하다.
+ */
+function sanitizeMoveInput(payload: unknown): MoveInput {
+  const raw = payload as { dirX?: unknown; dirZ?: unknown; mode?: unknown; jump?: unknown } | null | undefined
+  return {
+    dirX: typeof raw?.dirX === 'number' ? raw.dirX : 0,
+    dirZ: typeof raw?.dirZ === 'number' ? raw.dirZ : 0,
+    mode: raw?.mode === 'walk' || raw?.mode === 'crouch' || raw?.mode === 'run' ? raw.mode : 'run',
+    jump: raw?.jump === true,
+  }
+}
 
 /**
  * 'game' 룸 — RQ-04 상설 세션 + RQ-02 닉네임 식별 + RQ-03 정원 + RQ-60
@@ -41,11 +69,9 @@ const DEFAULT_NICKNAME = 'player'
  * reject한다 — GA-21이 요구하는 관측(Error + 비어있지 않은 message)과
  * 정확히 일치한다.
  *
- * 게임 상태(위치·HP·킬 등)는 여기서 다루지 않는다 — RQ-10 이후 붙는다.
+ * 게임 상태 중 HP·킬 등은 여기서 다루지 않는다 — RQ-14 이후 붙는다.
  * RQ-04는 세션 생명주기, RQ-02는 닉네임 식별, RQ-03은 정원, RQ-60은
- * 시뮬레이션 틱 구동만이 이 룸의 범위다(이동·전투 등 실제 게임 로직을
- * 틱 콜백에 미리 넣지 않는다 — 지금 틱은 clock·scheduler 전진과
- * `state.tick` 갱신뿐이다).
+ * 시뮬레이션 틱 구동, RQ-20은 이동(위치)이 이 룸의 범위다.
  */
 export class GameRoom extends Room<GameState> {
   // RQ-04: 마지막 참여자가 나가 0명이 돼도 룸을 폐기하지 않는다 —
@@ -53,9 +79,34 @@ export class GameRoom extends Room<GameState> {
   // 자동 dispose하므로 반드시 꺼야 한다(GA-26).
   override autoDispose = false
 
+  /**
+   * 플레이어별 이동 시뮬레이션 상태(RQ-20) — sessionId로 키잉. `Player`
+   * 스키마(x·y·z)는 이 상태의 매 틱 스냅샷일 뿐, 시뮬레이션의 정본은 여기
+   * `MoveState`다. `MoveState`는 `vx`·`vz`(수평 관성 포함)까지 전부 값으로
+   * 노출하는 완전한 스냅샷이라(`@shared/sim/movement` REV 2026-07-24)
+   * 이 맵은 순수한 저장소일 뿐이다 — 매 틱 반환값을 그대로 넘기면 되고,
+   * 참조 동일성에 기대지 않는다(직렬화·복제해 넘겨도 결과가 같다).
+   */
+  private readonly moveStates = new Map<string, MoveState>()
+  /** 플레이어별 가장 최근 'move' 입력 — 다음 입력이 올 때까지 유지하며
+   * 매 틱 시뮬레이션에 반영한다(실시간 FPS 이동 입력의 표준 모델). */
+  private readonly pendingInputs = new Map<string, MoveInput>()
+
   override onCreate(): void {
     this.state = new GameState()
+    this.registerMessageHandlers()
     this.startTickLoop()
+  }
+
+  /**
+   * RQ-20 이동 입력(GA-33 서버 권위 포함). 'move' payload에서 방향·상태
+   * 필드만 뽑는다(`sanitizeMoveInput`) — 페이로드에 좌표(x·y·z)가 실려
+   * 와도 이 핸들러가 아예 읽지 않으므로 상태에 반영될 경로가 없다(RQ-61).
+   */
+  private registerMessageHandlers(): void {
+    this.onMessage('move', (client, payload: unknown) => {
+      this.pendingInputs.set(client.sessionId, sanitizeMoveInput(payload))
+    })
   }
 
   /**
@@ -79,6 +130,13 @@ export class GameRoom extends Room<GameState> {
    * `gameServer.gracefullyShutdown()` → 룸 disconnect → `_dispose()`)이
    * 이미 거치는 경로이므로 별도 `onDispose` 정리를 추가할 필요가 없다(직접
    * 만든 실 타이머가 없다 — `clock`·`scheduler`·`tickDriver`는 순수 객체).
+   *
+   * RQ-20: `driver.advanceByElapsed(deltaMs)`가 반환하는 값은 이번 실
+   * 콜백에서 실제로 전진한 틱 수다(catch-up으로 여러 틱일 수도, clamp
+   * 초과로 0일 수도 있다 — RQ-60). 이동은 그 틱 수만큼 정확히 반복
+   * 호출한다 — `stepMovement`(`@shared/sim/movement`)가 벌크 전진을
+   * 허용하지 않는 정확히-1틱 계약이기 때문이다(위 scheduler.advanceTo와
+   * 같은 불변식).
    */
   private startTickLoop(): void {
     const clock = createClock()
@@ -86,9 +144,30 @@ export class GameRoom extends Room<GameState> {
     const driver = createTickDriver(clock, scheduler)
 
     this.setSimulationInterval((deltaMs: number) => {
-      driver.advanceByElapsed(deltaMs)
+      const advancedTicks = driver.advanceByElapsed(deltaMs)
+      for (let i = 0; i < advancedTicks; i += 1) {
+        this.stepPlayerMovement()
+      }
       this.state.tick = clock.tick
     }, NET.TICK_MS)
+  }
+
+  /** 접속 중인 모든 플레이어를 정확히 1틱 전진시키고 스키마 위치를
+   * 갱신한다(RQ-20). 관전자는 RQ-41에 따라 월드에 존재하지 않으므로
+   * 대상이 아니다. 인원이 정원(`CAPACITY.PLAYERS`=10)으로 상한돼 있어
+   * 이 순회는 틱 예산(RQ-60, 33ms)에 부담을 주지 않는다. */
+  private stepPlayerMovement(): void {
+    this.state.players.forEach((player, sessionId) => {
+      const previous = this.moveStates.get(sessionId)
+      if (!previous) return // onJoin이 채워두므로 정상 경로에서는 발생하지 않는다.
+
+      const input = this.pendingInputs.get(sessionId) ?? IDLE_MOVE_INPUT
+      const next = stepMovement(previous, input)
+      this.moveStates.set(sessionId, next)
+      player.x = next.x
+      player.y = next.y
+      player.z = next.z
+    })
   }
 
   /**
@@ -112,6 +191,8 @@ export class GameRoom extends Room<GameState> {
       const player = new Player()
       player.nickname = nickname
       this.state.players.set(client.sessionId, player)
+      // RQ-20: 스폰 지점 로테이션(RQ-31)은 스코프 밖 — 원점에서 시작한다.
+      this.moveStates.set(client.sessionId, spawnMoveState())
       return
     }
 
@@ -136,6 +217,10 @@ export class GameRoom extends Room<GameState> {
     if (!this.state.players.delete(client.sessionId)) {
       this.state.spectators.delete(client.sessionId)
     }
+    // RQ-20: 재접속 시 이전 세션의 이동 상태를 이어받지 않도록 정리한다
+    // (다음 onJoin이 spawnMoveState()로 새로 시작한다).
+    this.moveStates.delete(client.sessionId)
+    this.pendingInputs.delete(client.sessionId)
   }
 
   /**
