@@ -1,12 +1,13 @@
 import { MapSchema, Schema, type } from '@colyseus/schema'
+import { PLAYER } from '@shared/constants'
 
 /**
  * 'game' 룸의 상태 스키마 (ADR-0002: Colyseus, ADR-0010: `src/shared`에
  * 두는 이유 — 클라이언트가 이 정의로 상태를 역직렬화한다).
  *
- * RQ-02(닉네임 식별) + RQ-20(위치) 범위만 담는다. `Player`에는 `nickname`·
- * 위치(x·y·z) 외의 필드를 앞서 넣지 않는다 — HP·킬 등은 각자의
- * RQ(RQ-14~18 등)가 붙을 때 추가한다.
+ * RQ-02(닉네임 식별) + RQ-20(위치) + RQ-14(HP·킬) 범위를 담는다. 리스폰
+ * (RQ-15)·데스 카운트(RQ-81)·헤드샷 킬 이벤트(RQ-55)는 이 RQ의 스코프
+ * 밖이라 아직 넣지 않는다.
  */
 export class Player extends Schema {
   /** 서버가 확정한 최종 닉네임 (RQ-02) — 충돌 시 자동 접미사가 붙는다. */
@@ -32,6 +33,13 @@ export class Player extends Schema {
    * 커맨드 버퍼). 클라이언트가 'move' 메시지에 `seq`를 싣지 않으면(레거시
    * 호출) 갱신되지 않는다 — 기본값 0이 유지된다. */
   @type('number') lastProcessedInputSeq = 0
+  /** 현재 HP(RQ-14) — 서버 hitscan(RQ-12) 판정만 이 값을 갱신한다.
+   * 클라이언트가 'fire' 메시지에 실어 보내는 명중·데미지 주장 필드는
+   * 애초에 읽는 경로가 없다(RQ-61). */
+  @type('number') hp: number = PLAYER.MAX_HP
+  /** 확정 킬 수(RQ-14). 피해자의 hp가 0 이하가 되는 그 사격 처리 안에서만
+   * 가해자 쪽이 1 증가한다. */
+  @type('number') kills = 0
 }
 
 /**
