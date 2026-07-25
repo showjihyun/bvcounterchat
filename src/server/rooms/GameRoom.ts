@@ -23,6 +23,7 @@ import {
   isRespawnDue,
   isSpawnProtected,
 } from '@shared/sim/lifecycle'
+import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, shouldStartReload } from '@shared/sim/ammo'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 
@@ -166,6 +167,16 @@ export class GameRoom extends Room<GameState> {
   /** RQ-16: 마지막 스폰 이후 사격(명중 여부 무관)을 한 번이라도 했는지 —
    * true면 경과와 무관하게 보호가 즉시 해제된다. */
   private readonly firedSinceSpawn = new Map<string, boolean>()
+  /** RQ-10: 사수(세션)별 탄창 잔여 발수 — `diedAtTick`·`spawnedAtTick`과
+   * 동일하게 GameRoom 서버 전유 상태로 관리한다(`Player` 스키마에는 추가
+   * 필드를 두지 않는다 — RQ-53 클라 탄약 HUD가 다음 라운드의 명시적 범위,
+   * `tests/unit/sim-ammo.test.ts` 가정 1). 키가 없으면(참여 직후) 가득 찬
+   * 것으로 간주한다(onJoin이 채운다). */
+  private readonly magazines = new Map<string, number>()
+  /** RQ-11: 사수(세션)별 재장전을 시작한 틱 — 키가 없으면 재장전 중이
+   * 아니다(`canFireAmmo`의 `reloadStartedAtTick: number | undefined`와
+   * 동일한 "부재=undefined" 규약, `diedAtTick`과 같은 패턴). */
+  private readonly reloadStartedAtTick = new Map<string, number>()
   /** RQ-31: 룸 전역 스폰 로테이션 커서 — 세션이 아니라 룸 하나가 갖는다
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
@@ -202,6 +213,27 @@ export class GameRoom extends Room<GameState> {
     this.onMessage('fire', (client, payload: unknown) => {
       this.handleFire(client.sessionId, sanitizeFireInput(payload))
     })
+
+    this.onMessage('reload', (client) => {
+      this.handleReload(client.sessionId)
+    })
+  }
+
+  /**
+   * RQ-11: 명시적 재장전 요청(`sim-ammo.test.ts` 가정 4) — payload는 쓰지
+   * 않는다(빈 객체 `{}`). 탄창이 가득 차 있어도 허용한다(GA-04 given의
+   * "요청함" 갈래는 잔여탄과 무관하다). `shooterPlayer`가 없으면(관전자·
+   * 이미 나간 세션) 조용히 무시한다 — `handleFire`의 "존재하지 않으면
+   * 무시" 원칙과 동일.
+   */
+  private handleReload(sessionId: string): void {
+    const player = this.state.players.get(sessionId)
+    if (!player) return
+
+    const magazine = this.magazines.get(sessionId) ?? WEAPON.MAGAZINE
+    if (shouldStartReload(magazine, true)) {
+      this.reloadStartedAtTick.set(sessionId, this.state.tick)
+    }
   }
 
   /**
@@ -239,12 +271,35 @@ export class GameRoom extends Room<GameState> {
     if (!canFire(lastFireAt, now, WEAPON.FIRE_INTERVAL_MS)) return
     this.lastFireAtMs.set(shooterId, now)
 
+    // RQ-10/RQ-11(`sim-ammo.test.ts` 가정 2): canAct·rate-limit을 통과한
+    // 뒤 탄창이 비었거나 재장전 중이면 요청을 완전히 무시한다(레이도 쏘지
+    // 않는다) — `sanitizeMoveInput`의 "조용히 무시" 원칙과 동일. **순서
+    // 고정**: rate-limit(ADR-0005, 위)이 항상 ammo 게이트(아래)보다 먼저
+    // 실행된다 — 두 메커니즘은 독립이며 이 순서를 바꾸면 안 된다(계약
+    // 가정 2 그대로). `_workspace/RQ-10-11/02_coder_green.md` §4가 이
+    // 순서 자체가 통합 테스트 레이스의 배경이었음을 기록한다(구현이 아닌
+    // 테스트의 지연 배치 결함으로 판명 — 이 순서를 되돌리는 것으로 "고치지"
+    // 않았다).
+    const magazine = this.magazines.get(shooterId) ?? WEAPON.MAGAZINE
+    const reloadStartedAt = this.reloadStartedAtTick.get(shooterId)
+    if (!canFireAmmo(magazine, reloadStartedAt, this.state.tick, RELOAD_TICKS)) return
+
     const shooterState = this.moveStates.get(shooterId)
     if (!shooterState) return
 
     // RQ-16: 사격 행위 자체(명중 여부 무관)로 사수 자신의 스폰 보호를
     // 즉시 해제한다.
     this.firedSinceSpawn.set(shooterId, true)
+
+    // RQ-10/RQ-11(가정 3): 위 게이트를 모두 통과해 사격이 실제로 처리되므로
+    // (명중 여부 무관, `firedSinceSpawn`과 동일 정신) 1발을 소모한다. 소모
+    // 결과 탄창이 0이 되면(`shouldStartReload(newMagazine, false)`) 그
+    // 시점의 tick으로 자동 재장전을 시작한다.
+    const newMagazine = consumeRound(magazine)
+    this.magazines.set(shooterId, newMagazine)
+    if (shouldStartReload(newMagazine, false)) {
+      this.reloadStartedAtTick.set(shooterId, this.state.tick)
+    }
 
     const ray: Ray = {
       origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, DEFAULT_HITBOX.eyeHeightM),
@@ -374,6 +429,16 @@ export class GameRoom extends Room<GameState> {
       const previous = this.moveStates.get(sessionId)
       if (!previous) return // onJoin이 채워두므로 정상 경로에서는 발생하지 않는다.
 
+      // RQ-11(가정 5): 재장전 완료 판정을 틱 루프에서 매 틱 사전 판정한다
+      // (계약은 트리거 시점을 규정하지 않으나, 팀리드 지시대로 틱 루프에서
+      // 판정 — 이동·리스폰과 동일한 타이밍에 상태를 정착시킨다). 완료되면
+      // 탄창을 `WEAPON.MAGAZINE`으로 리필하고 재장전 상태를 지운다.
+      const reloadStartedAt = this.reloadStartedAtTick.get(sessionId)
+      if (reloadStartedAt !== undefined && isReloadComplete(reloadStartedAt, currentTick, RELOAD_TICKS)) {
+        this.magazines.set(sessionId, WEAPON.MAGAZINE)
+        this.reloadStartedAtTick.delete(sessionId)
+      }
+
       if (!canAct(player.hp)) {
         const diedAt = this.diedAtTick.get(sessionId)
         if (diedAt !== undefined && isRespawnDue(diedAt, currentTick, RESPAWN_TICKS)) {
@@ -496,6 +561,8 @@ export class GameRoom extends Room<GameState> {
       this.moveStates.set(client.sessionId, spawnMoveState(point))
       this.spawnedAtTick.set(client.sessionId, this.state.tick)
       this.firedSinceSpawn.set(client.sessionId, false)
+      // RQ-10: 최초 입장은 탄창 가득 참(`WEAPON.MAGAZINE`)에서 시작한다.
+      this.magazines.set(client.sessionId, WEAPON.MAGAZINE)
       return
     }
 
@@ -531,6 +598,10 @@ export class GameRoom extends Room<GameState> {
     this.diedAtTick.delete(client.sessionId)
     this.spawnedAtTick.delete(client.sessionId)
     this.firedSinceSpawn.delete(client.sessionId)
+    // RQ-10/RQ-11: 재접속 시 이전 세션의 탄창·재장전 상태를 이어받지 않는다
+    // (다음 onJoin이 magazines를 새로 초기화한다).
+    this.magazines.delete(client.sessionId)
+    this.reloadStartedAtTick.delete(client.sessionId)
   }
 
   /**
