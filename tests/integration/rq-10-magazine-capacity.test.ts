@@ -236,6 +236,15 @@ describe('RQ-10/GA-03: 탄창 10발 소진 후에도 영구 사격 불가 상태
         expect(afterFirstShot.hp).toBeLessThan(PLAYER.MAX_HP)
         const hpAfterFirstShot = afterFirstShot.hp
 
+        // 레이스 수정(REV): waitForPlayerCondition은 로컬 WS 왕복(30~50ms)
+        // 만에 resolve되므로, 여기서 곧장 루프에 진입하면 루프의 첫 사격이
+        // 직전 양성 대조군 사격과의 간격이 rate-limit(150ms) 미만이 되어
+        // 그 발이 정당하게 드롭(ADR-0005)되고, 탄창 계산이 어긋난다(10발
+        // 소모 의도가 9발만 소모됨 → 탄창에 1발이 남아 아래 "즉시 재사격은
+        // 무명중" 단언이 깨진다). 대조군과 루프 사이에 BETWEEN_SHOTS_MS
+        // 간격을 둬 루프의 모든 사격이 rate-limit을 명백히 초과하게 한다.
+        await sleep(BETWEEN_SHOTS_MS)
+
         // 남은 9발은 명중해도 대상이 죽지 않도록(공허화 방지 설계 — 파일
         // 상단 참고) 항상 빗나가는 방향으로 소모한다. 이 9발 + 위 1발 =
         // 정확히 WEAPON.MAGAZINE(10)발이다.
