@@ -351,6 +351,16 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
 
         // "스폰 지점 중 하나"(GA-09 then) — SPAWN_POINTS 멤버십으로 확인한다
         // (정확한 좌표값 자체는 잠정값이라 이 파일이 규정하지 않는다).
+        // REV4(리뷰 minor-11 코멘트 정정 — coder 구현 `02668fc`가 이 전제
+        // 자체를 없앴다): 이전 REV3는 "B가 죽기 전에 `move`를 보낸 적이
+        // 없다"는 전제 위에서만 이 멤버십 비교가 정확하다고 적었으나, coder가
+        // `respawnPlayer`에서 `pendingInputs.delete(sessionId)`를 추가해
+        // (`GameRoom.ts`) 리스폰 시 남은 이동 입력을 무조건 지우므로 이제 이
+        // 전제 자체가 필요 없다 — B가 사망 전에 `move`를 보냈든 안 보냈든
+        // 리스폰 직후에는 항상 정지 상태에서 시작해 좌표가 `SPAWN_POINTS`의
+        // 정수 격자를 벗어나지 않는다. (참고로 이 `it()`은 애초에 `killPlayer`
+        // 가 `'fire'`만 보내 `move`를 전혀 안 쓰므로, 이 전제가 있던 시절에도
+        // 실제로는 안전했다 — 옛 REV3 주석이 "만약"을 과하게 걱정한 것이었다.)
         const isKnownSpawnPoint = SPAWN_POINTS.some(
           (point: { x: number; y: number; z: number }) =>
             point.x === afterRespawn.x && point.y === afterRespawn.y && point.z === afterRespawn.z,
@@ -390,8 +400,15 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
         expect(afterMoveAttempt?.x).toBe(atDeath.x)
         expect(afterMoveAttempt?.z).toBe(atDeath.z)
 
-        // 사격 무시 — 죽은 B가 A를 정확히 겨눠도(B의 첫 발사라 rate-limit에
-        // 걸리지 않는다) A는 전혀 피해를 입지 않아야 한다.
+        // 사격 무시 — 죽은 B가 A를 정확히 겨눠도 A는 전혀 피해를 입지
+        // 않아야 한다. REV3(리뷰 minor-5 대응 — stale 주석 정정): "B의 첫
+        // 발사라 rate-limit에 걸리지 않는다"는 헬퍼 적응(§13) 이전의 설명
+        // 이었다 — B의 실제 첫 발사는 `killPlayer` 안의 보호 해제 사격
+        // (:251)이다. 그 사격부터 이 지점까지 실제 간격은 1.5초 이상(킬
+        // 시퀀스 소요 + `MOVE_IGNORE_OBSERVE_MS`)이라 rate-limit(150ms)은
+        // 이미 한참 지났다 — 이 사격이 무시되는 이유는 rate-limit이 아니라
+        // 사망자 갭(`canAct`)이며, 그것이 정확히 이 단언이 확인하려는
+        // 대상이다.
         const deadShooterAim = aimAtBody(atDeath, baselineA)
         roomB.send('fire', deadShooterAim)
         await sleep(FIRE_IGNORE_OBSERVE_MS)

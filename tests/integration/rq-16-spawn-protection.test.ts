@@ -53,6 +53,13 @@ import { PLAYER } from '@shared/constants'
  * 헬퍼가 이제 킬 시퀀스 시작 전 B의 자기-보호-해제 사격을 보낸다(item C가
  * 최초 입장에도 적용되며 드러난 전제 붕괴 — 함수 docblock 참고). GA-10
  * (1)(2)(3) 세 `it()` 본문의 단언은 변경하지 않았다.
+ *
+ * **REV3(리뷰 major-2·minor-2 대응, `_workspace/review/
+ * feat-RQ-15-16-respawn-protection.md`)**: (a) GA-10 (1)과 "최초 입장 스폰"
+ * `it()` 끝에 양성 대조군(보호 해제 후 같은 조준 재사격 → HP 감소)을
+ * 추가했다 — 기존 단언은 그대로 두고 뒤에 이어붙였다(순증). (b)
+ * `LATE_IN_WINDOW_MS`를 2700ms→2000ms로 낮췄다 — 관측 지연(패치 주기)과
+ * `sleep` 오버슈트가 겹쳐도 보호 창(3000ms)을 넘기지 않도록 여유를 넓혔다.
  */
 
 const ROOM_NAME = 'game'
@@ -68,9 +75,16 @@ const RESPAWN_OBSERVE_TIMEOUT_MS = 8_000
 /** "피해 무효화"를 확인하는 관찰 창 — 여러 상태 갱신을 거치기 충분한 여유
  * (다른 통합 테스트의 NO_CHANGE_OBSERVATION_MS와 동일 패턴). */
 const NO_DAMAGE_OBSERVE_MS = 500
-/** GA-10 (1) — 보호 지속을 "3초 내내"로 뒷받침하기 위해 보호 창 막바지
- * (SPAWN_PROTECTION_MS=3000ms에 근접하되 넘지 않는 지점)에서도 재확인한다. */
-const LATE_IN_WINDOW_MS = 2_700
+/** GA-10 (1) — 보호 지속을 "3초 내내"로 뒷받침하기 위해 보호 창 막바지에
+ * 근접한 지점에서도 재확인한다. REV3(리뷰 minor-2 대응): 이 값은 **리스폰
+ * 관측 시각**(`waitForPlayerCondition`이 resolve된 시각) 기준인데, 서버
+ * 리스폰은 그보다 최대 패치 주기(~50ms) 앞서 이미 일어나 있다 — 관측 지연 +
+ * 아래 `sleep`의 오버슈트가 겹치면 두 번째 사격이 실제 보호 창(3000ms)을
+ * 넘겨 보내질 수 있다(오탐 실패 위험). 2700ms는 여유가 300ms뿐이라 얇다고
+ * 판단해 2000ms로 낮췄다 — "막바지"라는 의도(3초 내내 무효화됨을 보임)는
+ * 여전히 살아있고(0ms 시점만 확인하는 것보다 훨씬 강한 확인), 여유는
+ * 1000ms로 3배 이상 늘었다. */
+const LATE_IN_WINDOW_MS = 2_000
 /** 자기 사격이 서버에 반영될 시간을 준다(로컬 WS라 짧아도 충분하나 여유를 둔다). */
 const SELF_FIRE_SETTLE_MS = 300
 /** GA-10 (3) — SPAWN_PROTECTION_MS(3000ms)를 확실히 넘기는 여유(스케줄링
@@ -304,6 +318,26 @@ describe('RQ-16/GA-10: 스폰 보호 — 피해 무효화·자기 사격 즉시 
         await sleep(NO_DAMAGE_OBSERVE_MS)
         const afterSecondAttack = readPlayer(roomB, roomB.sessionId)
         expect(afterSecondAttack?.hp).toBe(PLAYER.MAX_HP)
+
+        // REV3(리뷰 major-2 보조 대응) — 양성 대조군: 위 두 번의 "HP 불변"이
+        // 보호 때문임을 이 `it()` 자체 안에서 닫는다. (2)(3)이 파일 수준에서
+        // 이미 "같은 aimAtBody 헬퍼로 보호 해제 후 피해가 든다"를 보여주지만,
+        // (1) 스스로도 자기완결적으로 증명하도록 리뷰가 요청했다 — hitscan이
+        // 통째로 망가져도(예: findClosestHit 후보 수집이 비어도) 위 두 단언은
+        // 계속 green일 수 있다는 것이 GA-06 공허화와 같은 유형의 위험이다.
+        // B가 자기 보호를 해제한 뒤 **같은 aimAtRespawnedB 벡터**로 A가
+        // 세 번째 사격을 보내면 이번에는 HP가 실제로 줄어야 한다.
+        roomB.send('fire', UP_MISS_AIM)
+        await sleep(SELF_FIRE_SETTLE_MS)
+        roomA.send('fire', aimAtRespawnedB)
+        const afterProtectionReleased = await waitForPlayerCondition(
+          roomB,
+          roomB.sessionId,
+          (p) => p.hp < PLAYER.MAX_HP,
+          'REV3 양성 대조군: 보호 해제 후 같은 조준 재사격 시 HP 감소 대기',
+          HP_TIMEOUT_MS,
+        )
+        expect(afterProtectionReleased.hp).toBeLessThan(PLAYER.MAX_HP)
       } finally {
         await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
       }
@@ -412,6 +446,27 @@ describe('RQ-16(전문 — GA-10 보강): 최초 입장 스폰도 동일하게 �
 
         const afterAttack = readPlayer(roomB, roomB.sessionId)
         expect(afterAttack?.hp).toBe(PLAYER.MAX_HP)
+
+        // REV3(리뷰 major-2 대응) — 양성 대조군: 이 describe는 자기 전용
+        // 서버에서 `it()` 하나만 돌리고 위 단언이 순수 음성(HP 불변)이라,
+        // hitscan이 통째로 망가져도(예: findClosestHit 후보 수집이 비어도)
+        // green일 수 있었다(GA-06과 같은 유형의 공허화 위험 — 지금은
+        // A=(22,0,0)·B=(20,0,9) 배치에서 `aim`이 우연히 바디 중심을
+        // 정확히 관통해서 통과하지만, 맵 단계에서 SPAWN_POINTS가 실좌표로
+        // 바뀌면 조용히 공허해질 수 있다). B가 자기 최초 입장 보호를 해제한
+        // 뒤 **같은 aim 벡터**로 A가 재사격하면 HP가 실제로 준다는 것을
+        // 이 describe 안에서 직접 증명한다.
+        roomB.send('fire', UP_MISS_AIM)
+        await sleep(SELF_FIRE_SETTLE_MS)
+        roomA.send('fire', aim)
+        const afterProtectionReleased = await waitForPlayerCondition(
+          roomB,
+          roomB.sessionId,
+          (p) => p.hp < PLAYER.MAX_HP,
+          'REV3 양성 대조군: 보호 해제 후 같은 조준 재사격 시 HP 감소 대기',
+          HP_TIMEOUT_MS,
+        )
+        expect(afterProtectionReleased.hp).toBeLessThan(PLAYER.MAX_HP)
       } finally {
         await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
       }
