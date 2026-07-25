@@ -406,20 +406,47 @@ export class GameRoom extends Room<GameState> {
     return SPAWN_POINTS[this.spawnCursor]!
   }
 
-  /** RQ-15(리스폰) + RQ-16(스폰 보호 재시작): HP를 `PLAYER.MAX_HP`로,
+  /**
+   * RQ-15(리스폰) + RQ-16(스폰 보호 재시작): HP를 `PLAYER.MAX_HP`로,
    * 위치를 다음 스폰 지점으로 되돌리고, 그 스폰 지점 기준으로 스폰 보호
    * 타이머를 다시 시작한다(`spawnedAtTick`=currentTick,
-   * `firedSinceSpawn`=false) — 최초 입장(`onJoin`)과 동일한 초기화다. */
+   * `firedSinceSpawn`=false) — 최초 입장(`onJoin`)과 동일한 초기화다.
+   *
+   * **리뷰 minor 4 수정**: `moveStates`는 `spawnMoveState`로 속도 0을
+   * 담지만, 와이어로 나가는 `Player` 스키마의 `vx`/`vy`/`vz`는 별도
+   * 필드라 여기서 명시적으로 0을 쓰지 않으면 다음
+   * `stepPlayerMovement`가 갱신할 때까지 **사망 시점 속도**를 그대로
+   * 유지한다 — 그 사이 나가는 패치가 "스폰 지점 + 낙하 중 속도"라는
+   * 모순 스냅샷이 되어 RQ-62 클라 예측 재조정이 1틱 어긋난다.
+   *
+   * **리뷰 minor 11 수정**: 사망 직전에 보낸 `move` 입력이
+   * `pendingInputs`에 남아 있으면, 리스폰 직후 다음 틱에 그 입력이
+   * 그대로 적용돼 스폰 좌표를 벗어나며 이동해 버린다(GA-09의 "리스폰
+   * 위치가 `SPAWN_POINTS` 멤버십과 정확히 일치"라는 관측이 타이밍에
+   * 따라 깨질 수 있고, 부활 직후 죽기 전 입력으로 움직이는 것은 게임
+   * 감각으로도 부자연스럽다) — 리스폰 시 `pendingInputs`를 지워 다음
+   * 입력이 도착할 때까지 정지 상태를 유지한다. `pendingSeqs`는 지우지
+   * 않는다 — RQ-62(ADR-0003)의 `lastProcessedInputSeq`는 클라 예측
+   * 버퍼가 "서버가 어디까지 반영했는지" 추적하는 식별자로, 리스폰으로
+   * 시퀀스 자체가 무효화되지 않는다(클라는 여전히 그 seq까지의 입력을
+   * 보낸 것이 맞다 — 다음 `move` 메시지가 오면 자연히 갱신된다). 여기서
+   * 지우면 스키마 `lastProcessedInputSeq` 값과 어긋나 클라 예측 버퍼
+   * 정리(trim) 로직에 불필요한 혼란을 준다.
+   */
   private respawnPlayer(sessionId: string, player: Player, currentTick: number): void {
     const point = this.allocateSpawnPoint()
     this.moveStates.set(sessionId, spawnMoveState(point))
     player.x = point.x
     player.y = point.y
     player.z = point.z
+    player.vx = 0
+    player.vy = 0
+    player.vz = 0
     player.hp = PLAYER.MAX_HP
     this.diedAtTick.delete(sessionId)
     this.spawnedAtTick.set(sessionId, currentTick)
     this.firedSinceSpawn.set(sessionId, false)
+    this.pendingInputs.delete(sessionId)
   }
 
   /**
