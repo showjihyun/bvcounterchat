@@ -34,6 +34,21 @@ body {
   pointer-events: none;
 }
 
+/* 22b 임시 크로스헤어 — 화면 정중앙 점. 카메라 정면(=서버 판정 레이
+   방향)이 화면 중앙이므로 조준점도 정중앙이다. RQ-54 정식 크로스헤어는
+   DESIGN.md 이후. */
+.hud__crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: #f2f2f2;
+  box-shadow: 0 0 2px rgb(0 0 0 / 80%);
+}
+
 .hud__placeholder {
   position: absolute;
   bottom: 1rem;
