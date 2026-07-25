@@ -1,0 +1,55 @@
+# RQ-80 — 사내망 단일 호스트 배포 (ADR-0009).
+#
+# 2서비스 구성: app(게임 서버) + nginx(리버스 프록시·정적 자산). Redis는
+# 넣지 않는다 — 세션 상태·통계 영속(RQ-81)은 별도 라운드로 유예한다(원장
+# 27a). 무중단 배포는 RQ-80이 비목표로 명시했으므로 재배포/재시작 시 접속
+# 끊김·세션 소실을 그대로 수용한다(GA-43이 검증하는 건 "재시작 후 복구"이지
+# "끊김 없음"이 아니다).
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    image: chatstrike-app:local
+    restart: unless-stopped
+    environment:
+      # 컨테이너 기본값(src/server/index.ts: PORT=2567, HOST=0.0.0.0)과
+      # 동일하지만, 배포 계약을 이 파일에 명시적으로 남겨 운영자가 서버
+      # 소스를 열어보지 않아도 알 수 있게 한다.
+      - PORT=2567
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    expose:
+      - '2567'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', '--spider', 'http://127.0.0.1:2567/health']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    image: chatstrike-nginx:local
+    restart: unless-stopped
+    depends_on:
+      # app이 실제로 /health에 응답할 때까지 nginx 기동을 미룬다 — 정적
+      # upstream(nginx.conf `upstream chatstrike_app`)은 기동 시 한 번만
+      # 이름을 해석하므로, app 컨테이너가 존재하기 전에 nginx가 먼저
+      # config를 로드하면 "host not found in upstream" 로 죽는다.
+      app:
+        condition: service_healthy
+    ports:
+      # 호스트에 노출하는 유일한 포트 — HTTP/WS 동일 오리진(ADR-0009).
+      # app은 nginx를 통해서만 도달 가능하다(직접 포트 게시 없음).
+      - '${HOST_HTTP_PORT:-8080}:80'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', '--spider', 'http://127.0.0.1/']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
