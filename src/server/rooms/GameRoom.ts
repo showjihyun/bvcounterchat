@@ -252,8 +252,17 @@ export class GameRoom extends Room<GameState> {
     }
 
     const candidates: HitCandidate[] = []
-    this.state.players.forEach((_player, sessionId) => {
+    this.state.players.forEach((player, sessionId) => {
       if (sessionId === shooterId) return // RQ-17: 팀 없음 — 사수 자신만 제외, 그 외 전원이 대상
+      // 리뷰 minor 3 — 시신 통과(사용자 결정, 스펙·골든 미규정 영역):
+      // 시신이 뒤에 있는 산 사람에게 갈 총알을 흡수하는 "최대 3초(리스폰
+      // 전까지) 총알 방패"가 비직관적이라는 리뷰 지적에, 시신은 hitscan
+      // 대상에서 아예 제외하기로 결정했다. 위 §"사망자 갭"의
+      // `canAct(shooterPlayer.hp)` 가드(사수 쪽)와는 별개다 — 이건
+      // **피격 대상 쪽** 필터다: 시신은 쏠 수도 없고(사수 가드), 맞을
+      // 수도 없다(이 가드). 밸런싱 단계에서 뒤집힐 수 있는 게임 감각
+      // 결정이며, 뒤집는다면 이 한 줄만 지우면 된다.
+      if (!canAct(player.hp)) return
       const targetState = this.moveStates.get(sessionId)
       if (!targetState) return
       candidates.push({ id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } })
