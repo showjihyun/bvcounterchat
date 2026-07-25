@@ -4,7 +4,7 @@ import { WORLD } from '@shared/constants'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
-import { attachPointerLock } from '@client/input/pointerLock'
+import { PlayerControls } from '@client/scene/PlayerControls'
 
 interface GameSceneProps {
   store: StoreApi<GameStoreState>
@@ -14,8 +14,15 @@ interface GameSceneProps {
 /**
  * 3D 씬(ADR-0001 WebGL2, `harness/workflow/fe.md` scene 레이어). 접속 후
  * 표시된다 — 로드맵 1단계 `App.tsx`의 정적 데모 박스를 대체해, 서버
- * 스냅샷의 실제 플레이어를 그린다(RQ-61: 자기 자신은 예측(RQ-62), 다른
- * 플레이어는 보간(RQ-63) 표현).
+ * 스냅샷의 실제 플레이어를 그린다(RQ-61: 자기 자신은 1인칭 카메라(RQ-62
+ * 예측 위치, 22b), 다른 플레이어는 보간(RQ-63) 표현).
+ *
+ * 22b: 포인터 락·마우스 룩·1인칭 카메라·발사 배선은 `PlayerControls`
+ * (렌더 계층, `useThree()`로 캔버스에 접근 — `Canvas`의 `onCreated` 콜백
+ * 대신 이 방식을 쓰는 이유는 `PlayerControls.tsx` 상단 코멘트 참고)가
+ * 전담한다. 초기 `camera` 위치는 `PlayerControls`의 첫 프레임이 즉시
+ * 덮어쓰므로(1인칭 위치로) 의미 있는 값은 아니다 — 접속 첫 프레임까지의
+ * 짧은 과도 상태일 뿐이다.
  */
 export function GameScene({ store, connection }: GameSceneProps) {
   return (
@@ -23,11 +30,6 @@ export function GameScene({ store, connection }: GameSceneProps) {
       // ADR-0001: WebGL2 고정. WebGPU는 쓰지 않는다.
       gl={{ powerPreference: 'high-performance', antialias: false }}
       camera={{ fov: 75, position: [0, 1.7, 5], near: 0.1, far: WORLD.SIZE_M * 2 }}
-      // RQ-62(fe.md 입력 처리): 캔버스 클릭 시 포인터 락 요청. ESC/포커스
-      // 이탈 해제는 브라우저 표준 동작(attachPointerLock 주석 참고).
-      onCreated={(canvasState) => {
-        attachPointerLock(canvasState.gl.domElement)
-      }}
     >
       <color attach="background" args={['#c2b49a']} />
       <hemisphereLight intensity={1.2} groundColor="#8a7a5c" />
@@ -37,6 +39,7 @@ export function GameScene({ store, connection }: GameSceneProps) {
       </mesh>
       <gridHelper args={[WORLD.SIZE_M, WORLD.SIZE_M]} />
       <PlayerMeshes store={store} connection={connection} />
+      <PlayerControls store={store} connection={connection} />
     </Canvas>
   )
 }

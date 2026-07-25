@@ -4,8 +4,6 @@ import { connectToGame } from '@client/net/connection'
 import type { GameConnection } from '@client/net/connection'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
-import { createMovementInputTracker } from '@client/input/movementInput'
-import { NET } from '@shared/constants'
 
 /**
  * 클라이언트 → Colyseus 접속 엔드포인트. 같은 오리진의 ws(s) 주소를
@@ -27,18 +25,17 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  * netcode(`connectToGame`)·scene(`GameScene`)에 그대로 전달한다. 보간
  * (RQ-63)·사격·HUD(RQ-50~55)는 이 PR의 스코프 밖이다.
  *
- * RQ-62: 접속 성공 후 이동 입력 캡처+전송 루프를 시작한다. 서버 틱
- * 레이트(`NET.TICK_MS`, 30Hz)에 맞춘 독립 인터벌로 돈다 — R3F 렌더
- * 프레임(`useFrame`)이 아니다. `fe.md`의 "렌더 루프 내 할당 금지" 규칙은
- * `useFrame`(및 그 안에서 호출되는 코드) 대상이고, 이 루프는 그 밖의
- * 네트워크 전송 주기라 해당하지 않는다 — `useFrame`에 넣으면 매 프레임
- * `MoveInput`/예측 상태 객체 할당이 렌더 루프 예산을 갉아먹는다.
+ * RQ-62: 이동 입력 캡처+전송 루프(30Hz)는 **22b에서 `PlayerControls`로
+ * 옮겼다** — 전송 직전 로컬 WASD를 yaw로 회전해야 하고(마우스 룩), yaw를
+ * 소유한 `mouseLook` 컨트롤러가 캔버스와 같은 유효범위에 있어야 하기
+ * 때문이다. 여기에 루프를 남겨두면 회전 미적용 입력이 같은 주기로 함께
+ * 전송돼 서버의 latest-wins 이동이 두 입력 사이에서 요동친다.
  *
- * RQ-63 부기(20b 후속 + RQ-62 minor ① 병합 이월): 같은 이펙트가
+ * RQ-63 부기(20b 후속 + RQ-62 minor ① 병합 이월): 아래 이펙트가
  * `connection.onDisconnect`를 구독해 침묵 disconnect(네트워크 단절 등)
- * 발생 시 `connection` state를 `null`로 되돌린다 — 그러면 이 이펙트의
- * cleanup이 실행되며 이동 입력 전송 인터벌이 자연히 멎는다(끊긴 연결에
- * 계속 `sendMoveInput`을 호출하는 것을 막는다).
+ * 발생 시 `connection` state를 `null`로 되돌린다 — 그러면 `GameScene`이
+ * 언마운트되며 `PlayerControls`의 cleanup이 전송 인터벌·입력 리스너를
+ * 정리한다(끊긴 연결에 계속 `sendMoveInput`을 호출하는 것을 막는다).
  */
 export function App() {
   const [store] = useState(() => createGameStore())
@@ -67,17 +64,11 @@ export function App() {
   useEffect(() => {
     if (!connection) return undefined
 
-    const tracker = createMovementInputTracker()
-    const intervalId = window.setInterval(() => {
-      connection.sendMoveInput(tracker.getMoveInput())
-    }, NET.TICK_MS)
     const unsubscribeDisconnect = connection.onDisconnect(() => {
       setConnection(null)
     })
 
     return () => {
-      window.clearInterval(intervalId)
-      tracker.dispose()
       unsubscribeDisconnect()
     }
   }, [connection])
@@ -89,6 +80,10 @@ export function App() {
           <GameScene store={store} connection={connection} />
           {/* HUD 레이어 — 캔버스 밖 DOM. RQ-50~55는 이후 단계에서 붙인다. */}
           <div className="hud" aria-live="polite">
+            {/* 22b 임시 크로스헤어(RQ-54 자리표시) — 조준점이 없으면 어디를
+                쏘는지 알 수 없어 사격 자체를 확인할 수 없다. 정식 디자인·
+                탄퍼짐 시각화는 DESIGN.md 확정 이후(fe.md HUD 체크리스트). */}
+            <span className="hud__crosshair" aria-hidden="true" />
             <span className="hud__placeholder">ChatStrike — 접속됨</span>
           </div>
         </>

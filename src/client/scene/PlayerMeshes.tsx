@@ -71,6 +71,17 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
         group.add(mesh)
         meshes.set(sessionId, mesh)
       })
+
+      // 22b: 1인칭 카메라가 자기 박스 **안**(눈높이)에 있으므로 자기 메시를
+      // 그리면 내부 면이 화면을 가린다. 자기 것만 숨긴다 — 위치 갱신
+      // (`useFrame`)은 계속 돌려 둔다(3인칭 관전 RQ-91 등에서 다시 켜기만
+      // 하면 되도록). 여기서 매번 갱신하는 이유: `selfSessionId`가 첫
+      // 스냅샷보다 늦게 정해지는 경우에도 자기 메시가 계속 보이지 않도록
+      // (mesh 생성 시점 한 번만 판단하면 그 순간의 값에 고정된다). 이
+      // 함수는 store 변경 시에만 돌고 렌더 루프가 아니다.
+      for (const [sessionId, mesh] of meshes) {
+        mesh.visible = sessionId !== state.selfSessionId
+      }
     }
 
     syncMeshes(store.getState())
