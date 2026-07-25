@@ -23,7 +23,7 @@ import {
   isRespawnDue,
   isSpawnProtected,
 } from '@shared/sim/lifecycle'
-import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, shouldStartReload } from '@shared/sim/ammo'
+import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, isReloading, shouldStartReload } from '@shared/sim/ammo'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 
@@ -225,15 +225,30 @@ export class GameRoom extends Room<GameState> {
    * "요청함" 갈래는 잔여탄과 무관하다). `shooterPlayer`가 없으면(관전자·
    * 이미 나간 세션) 조용히 무시한다 — `handleFire`의 "존재하지 않으면
    * 무시" 원칙과 동일.
+   *
+   * **리뷰 major 1**: `handleFire`(L267)와 동일하게 `canAct` 가드를 둔다 —
+   * 시신도 `state.players`에 남아 있어(사망은 hp=0일 뿐 삭제가 아니다)
+   * 가드가 없으면 시신이 재장전을 걸 수 있고, `respawnPlayer`가
+   * `reloadStartedAtTick`을 지우지 않아 그 잠금이 리스폰을 넘어 살아남는다
+   * (방금 부활한 멀쩡한 플레이어가 최대 ≈2초 사격 불가). 리스폰 시 그
+   * 필드를 지울지는 별개의 게임 감각 결정이라 이번엔 바꾸지 않았다 — 이
+   * 가드만으로 결함 경로가 닫힌다(자동 재장전은 `handleFire`가 `canAct`를
+   * 통과한 뒤에만 트리거되므로 시신이 심을 수 없다).
+   * **리뷰 major 2**: 이미 재장전 중이면 요청을 무시한다 — 매 수신마다
+   * 기준 tick을 덮어쓰면 관측되는 재장전 시간이 RQ-11의 "2초"를 넘을 수
+   * 있다(`'reload'`에는 rate-limit이 없어 키 오토리피트로도 도달 가능).
    */
   private handleReload(sessionId: string): void {
     const player = this.state.players.get(sessionId)
     if (!player) return
+    if (!canAct(player.hp)) return // RQ-15: 시신은 재장전할 수 없다(handleFire와 동일)
+    if (isReloading(this.reloadStartedAtTick.get(sessionId), this.state.tick, RELOAD_TICKS)) return
 
-    const magazine = this.magazines.get(sessionId) ?? WEAPON.MAGAZINE
-    if (shouldStartReload(magazine, true)) {
-      this.reloadStartedAtTick.set(sessionId, this.state.tick)
-    }
+    // RQ-11 "요청하면" 갈래는 잔여탄과 무관하다(`shouldStartReload(_, true)`는
+    // 항상 참, `src/shared/sim/ammo.ts:64-66`) — 위 재장전-중 가드를
+    // 통과했다면 무조건 새 재장전을 시작한다(리뷰 minor 2: 죽은 조건문
+    // 제거).
+    this.reloadStartedAtTick.set(sessionId, this.state.tick)
   }
 
   /**
@@ -269,6 +284,12 @@ export class GameRoom extends Room<GameState> {
     const now = Date.now()
     const lastFireAt = this.lastFireAtMs.get(shooterId)
     if (!canFire(lastFireAt, now, WEAPON.FIRE_INTERVAL_MS)) return
+    // 리뷰 minor 1: 이 갱신은 ammo 게이트(아래)보다 먼저 실행되므로, 그
+    // 게이트에 막혀 실제로 발사되지 않은 요청도 rate-limit 예산을
+    // 소모한다 — 의도된 동작이다(발사 *요청* 자체를 rate-limit 대상으로
+    // 본다, 연타 억제). 반대로 두고 싶으면(ammo 게이트 통과 시에만 갱신)
+    // 이 줄을 게이트 아래로 옮기면 된다 — 밸런싱 판단이라 이번엔 바꾸지
+    // 않았다.
     this.lastFireAtMs.set(shooterId, now)
 
     // RQ-10/RQ-11(`sim-ammo.test.ts` 가정 2): canAct·rate-limit을 통과한
