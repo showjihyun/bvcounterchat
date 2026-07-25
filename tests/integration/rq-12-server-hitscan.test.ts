@@ -319,7 +319,17 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       const roomB = await joinGame(newClient(server))
 
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
-      await travelAndSettle(roomB) // B를 +X로 이동(원래 이동 시나리오 유지)
+
+      // REV2(공허화 해소, evaluator FAIL 대응): B가 먼저 자신의 최초 입장
+      // 스폰 보호를 해제하지 않으면, 아래 "HP 불변"이 진짜 미스가 아니라
+      // 보호 때문일 수 있다(evaluator PROBE-A가 GA-06에서 실증한 것과
+      // 동일한 함정) — 이 파일의 다른 두 it()(GA-05 본 테스트·rate-limit
+      // 테스트)가 이미 같은 환경에서 "진짜 명중은 HP를 정확히 줄인다"를
+      // 증명해 뒀으므로(양성 대조군 역할), 이 테스트에는 별도 대조군을
+      // 추가하지 않았다 — 자세한 판단 근거는 `_workspace/RQ-15-16/
+      // 01_test-writer_red.md` §14 참고.
+      roomB.send('fire', UP_MISS_AIM)
+      await travelAndSettle(roomB) // B를 +X로 이동(원래 이동 시나리오 유지) — 1100ms, 위 해제 사격이 반영되기 충분하다
 
       // REV: 수직 위(UP_MISS_AIM)를 조준 — A·B의 실제 XZ 위치와 무관하게
       // 기하학적으로 항상 빗나간다(파일 상단 REV "부가 수정" 근거). 원래의
