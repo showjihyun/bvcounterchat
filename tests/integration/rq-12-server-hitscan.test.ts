@@ -1,0 +1,354 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import type { FastifyInstance } from 'fastify'
+import { Client, Room } from 'colyseus.js'
+import { buildServer } from '@server/index'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { PLAYER, WEAPON } from '@shared/constants'
+
+/**
+ * RQ-12 서버 hitscan — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus
+ * 룸 경계, ADR-0011: 서버 판정 로직은 Red-first 영역).
+ *
+ * 매핑된 골든 케이스: **GA-05** (`harness/evals/golden/track-a-product.jsonl`).
+ * GA-05: "given: 플레이어 A가 플레이어 B를 조준 / when: A가 사격 / then:
+ * 명중 여부는 클라이언트가 아닌 서버의 hitscan 레이캐스트 결과로 결정되며,
+ * 서버가 계산한 결과만 HP에 반영된다." `verify` 필드가 이 파일 경로를
+ * 정확히 지정한다.
+ *
+ * 이 파일은 추가로 **ADR-0005의 발사 속도 제한(rate-limit, 150ms)**도
+ * 검증한다 — 별도 GA는 없지만 RQ-12의 서버 권위 발사 파이프라인(클라이언트가
+ * 연사 속도를 조작해 서버에 보고하는 경로 차단)의 일부이므로 같은 파일에
+ * 둔다. GA-06(악의적 명중 주장 거부)·GA-07(헤드샷)·GA-08(사망·킬)은 각자의
+ * 전용 파일(`rq-12-client-hit-claim-rejected`·`rq-13-headshot-multiplier`·
+ * `rq-14-death-kill-credit`)이 담당한다 — 이 파일에서 재검증하지 않는다.
+ *
+ * **레벨 분리(ADR-0008)**: 레이×히트박스 교차·부위별 데미지·HP 감산의
+ * 순수 산술은 `tests/unit/sim-combat.test.ts`가 이미 결정론적으로 고정한다.
+ * 이 파일은 그 산술을 직접 임포트하지 않는다 — "클라이언트가 조준 방향만
+ * 보내고, 서버가 자신의 히트박스 판정으로 HP를 갱신하는가"만 실 Colyseus
+ * 룸 경계에서 블랙박스로 관측한다(`rq-20-movement-authority.test.ts`와
+ * 동일한 정신).
+ *
+ * **가정 1(coder에게 — Player 스키마 확장)**: `Player`(`@shared/schema/GameState`)에
+ * `hp: number`(기본 `PLAYER.MAX_HP`=100)와 `kills: number`(기본 0) 필드가
+ * 추가된다. 이 파일은 `hp`만 관측한다(`kills`는 `rq-14-death-kill-credit`
+ * 담당).
+ *
+ * **가정 2(coder에게 — 'fire' 메시지 shape)**: 클라이언트는
+ * `room.send('fire', { dirX, dirY, dirZ })`로 조준 방향(정규화된 단위
+ * 벡터 — 서버가 방어적으로 재정규화해도 무방, `tests/unit/sim-combat.test.ts`
+ * "정규화되지 않은 방향" 테스트 참고)만 보낸다. **클라이언트는 자신이
+ * 무엇을 맞혔는지·얼마나 데미지를 입혔는지 주장하는 필드를 보내지 않으며,
+ * 서버도 그런 필드가 있어도 읽지 않는다**(RQ-12 "클라이언트의 명중 주장은
+ * 신뢰하지 않아야 한다") — `sanitizeMoveInput`이 `move` payload에서 방향·
+ * 상태 필드만 뽑던 것과 동일한 패턴(`GameRoom.ts`).
+ *
+ * **가정 3(coder에게 — 레이 원점·판정 시점)**: 서버는 사수의 현재 추적
+ * 위치(`moveStates`, RQ-20)에 `DEFAULT_HITBOX.eyeHeightM`만큼 y축 오프셋을
+ * 더한 지점을 레이 원점으로 쓴다. 판정 대상은 사수를 제외한 **모든** 접속
+ * 플레이어(RQ-17 — 팀 개념 없음, `tests/integration/rq-17-no-team-restriction.test.ts`
+ * 참고)의 현재 추적 위치(발 기준)다. `'fire'` 메시지는 **수신 즉시**(다음
+ * 시뮬레이션 틱을 기다리지 않고) 판정한다 — RQ-12 원문 "hitscan(**즉시**
+ * 판정 레이캐스트)"의 직역. 히트박스 치수는 `@shared/config/combat-tuning`의
+ * `DEFAULT_HITBOX`를 모든 플레이어에 동일 적용한다(캐릭터별 차등 없음, v1
+ * 범위).
+ *
+ * **가정 4(coder에게 — rate-limit 추적 단위)**: 발사 간격은 사수(세션)별로
+ * 독립 추적한다(다른 플레이어의 발사는 서로의 rate-limit에 영향을 주지
+ * 않는다). 정확한 판정 함수는 `@shared/sim/combat`의 `canFire(lastFireAtMs,
+ * nowMs, minIntervalMs)`(순수 함수, `tests/unit/sim-combat.test.ts` 참고)를
+ * 그대로 쓰면 된다 — `nowMs`를 서버가 어떻게 조달하는지(틱 기반 또는
+ * `Date.now()` — `src/server`는 ADR-0008 lint 대상이 아니다)는 이 테스트가
+ * 규정하지 않는다. 이 테스트는 관대한 실시간 여유(수백 ms)로 경계를 확인해
+ * 정확한 ms 양자화 방식에 결합하지 않는다 — 정밀한 150ms 경계 자체는
+ * `canFire` 단위 테스트가 이미 고정했다.
+ *
+ * **좌표 설계(고정된 히트박스 값에 무관하게 견고한 기하)**: 사수 A는 원점에
+ * 고정(이동 입력을 보내지 않는다), 대상 B는 +X 방향으로 실시간 이동시킨 뒤
+ * 정지시켜 **실제 도달한 최종 위치를 읽어서** 조준 각도를 계산한다(가정한
+ * 거리에 결합하지 않는다 — 실 네트워크 타이밍 변동에 견고). 수직 각도는
+ * `DEFAULT_HITBOX`의 바디 중심 높이((bodyBottomM+bodyTopM)/2)와
+ * `eyeHeightM`의 차이로 정확히 계산한다 — 바디 반지름(0.3m)·헤드 반지름
+ * (0.12m) 대비 충분히 큰 각도차(수 도 단위)로 분리돼 오조준 리스크가 없다.
+ *
+ * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다(ADR-0008
+ * 허용 예외). 모든 대기에 `withTimeout()` 상한을 걸고, HP 관측은 고정
+ * 슬립 대신 `onStateChange`로 실제 값 변화를 폴링한다. 이동-정지 구간의
+ * "정지 대기"만 예외적으로 고정 시간을 쓴다(값이 더 이상 변하지 않는다는
+ * 것 자체를 확인하려는 목적이라 이벤트 기반 대기가 부적합 — `rq-20`의
+ * "무입력이면 표류하지 않는다" 테스트와 같은 필요성).
+ */
+
+const ROOM_NAME = 'game'
+const LISTEN_TIMEOUT_MS = 5_000
+const CLOSE_TIMEOUT_MS = 5_000
+const JOIN_TIMEOUT_MS = 5_000
+const LEAVE_TIMEOUT_MS = 5_000
+const HP_TIMEOUT_MS = 5_000
+
+/** B를 +X로 이 시간(ms)만큼 실제 이동시킨다 — 6m/s 기준 약 4.8~6m 이동. */
+const TRAVEL_MS = 900
+/** 이동 정지 후 위치가 안정화될 때까지 기다리는 여유(수 틱, 33ms×n). */
+const SETTLE_MS = 200
+/** 재사격 시도 사이 아주 짧은 간격(명백히 150ms 미만) — rate-limit 거부 확인용. */
+const RAPID_REFIRE_MS = 40
+/** rate-limit 해제를 명백히 보장하는 여유(150ms 및 30Hz 양자화 오차 모두 충분히 초과). */
+const RATE_LIMIT_CLEAR_MS = 400
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 모든 대기에 상한을 강제하는 래퍼 — 상한 초과는 hang이 아니라 즉시 실패다. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`[timeout ${ms}ms] ${label}`))
+    }, ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  })
+}
+
+interface RunningServer {
+  app: FastifyInstance
+  endpoint: string
+}
+
+async function startServer(): Promise<RunningServer> {
+  const app = buildServer({ logger: false })
+  const address = await withTimeout(
+    app.listen({ port: 0, host: '127.0.0.1' }),
+    LISTEN_TIMEOUT_MS,
+    'app.listen({ port: 0 })',
+  )
+  const { port } = new URL(address)
+  return { app, endpoint: `ws://127.0.0.1:${port}` }
+}
+
+async function stopServer(server: RunningServer): Promise<void> {
+  await withTimeout(server.app.close(), CLOSE_TIMEOUT_MS, 'app.close()')
+}
+
+function newClient(server: RunningServer): Client {
+  return new Client(server.endpoint)
+}
+
+async function joinGame(client: Client): Promise<Room> {
+  return withTimeout(client.joinOrCreate(ROOM_NAME), JOIN_TIMEOUT_MS, `joinOrCreate('${ROOM_NAME}')`)
+}
+
+async function leaveRoom(room: Room): Promise<void> {
+  await withTimeout(room.leave(true), LEAVE_TIMEOUT_MS, 'room.leave(true)')
+}
+
+interface PlayerFields {
+  x: number
+  y: number
+  z: number
+  hp: number
+}
+
+function readPlayer(room: Room, sessionId: string): PlayerFields | undefined {
+  const state = room.state as {
+    players?: { get?: (key: string) => { x?: unknown; y?: unknown; z?: unknown; hp?: unknown } | undefined }
+  } | null
+  const player = state?.players?.get?.(sessionId)
+  if (
+    typeof player?.x === 'number' &&
+    typeof player?.y === 'number' &&
+    typeof player?.z === 'number' &&
+    typeof player?.hp === 'number'
+  ) {
+    return { x: player.x, y: player.y, z: player.z, hp: player.hp }
+  }
+  return undefined
+}
+
+function waitForDefinedPlayer(room: Room, sessionId: string): Promise<PlayerFields> {
+  return withTimeout(
+    new Promise<PlayerFields>((resolve) => {
+      const tryResolve = (): void => {
+        const current = readPlayer(room, sessionId)
+        if (current) resolve(current)
+      }
+      tryResolve()
+      room.onStateChange(() => tryResolve())
+    }),
+    HP_TIMEOUT_MS,
+    `초기 스냅샷(hp 포함, sessionId=${sessionId}) 관측`,
+  )
+}
+
+/** hp가 predicate를 만족할 때까지 관측한다("다음 한 번의 onStateChange"만
+ * 신뢰하면 무관한 갱신(RQ-60 tick)을 우리가 기다리는 변화로 착각한다). */
+function waitForHpCondition(
+  room: Room,
+  sessionId: string,
+  predicate: (hp: number) => boolean,
+  label: string,
+): Promise<PlayerFields> {
+  return withTimeout(
+    new Promise<PlayerFields>((resolve) => {
+      const tryResolve = (): void => {
+        const current = readPlayer(room, sessionId)
+        if (current && predicate(current.hp)) resolve(current)
+      }
+      tryResolve()
+      room.onStateChange(() => tryResolve())
+    }),
+    HP_TIMEOUT_MS,
+    label,
+  )
+}
+
+/** B를 +X로 TRAVEL_MS만큼 이동시킨 뒤 정지시키고, 실제 도달한 최종 위치를
+ * 읽는다(가정한 거리에 결합하지 않는다). */
+async function travelAndSettle(mover: Room): Promise<PlayerFields> {
+  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
+  await sleep(TRAVEL_MS)
+  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false }) // 정지
+  await sleep(SETTLE_MS)
+  const settled = readPlayer(mover, mover.sessionId)
+  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
+  return settled
+}
+
+/** shooter(원점 고정, y=0)에서 target(발 위치)의 바디 또는 헤드 중심을
+ * 정확히 조준하는 방향 벡터(정규화)를 계산한다. */
+function aimAt(targetXOffsetFromShooter: number, verticalCenterM: number): { dirX: number; dirY: number; dirZ: number } {
+  const dz = 0 // 이 파일의 모든 시나리오는 z축 이동 없음(순수 +X 분리)
+  const dy = verticalCenterM - DEFAULT_HITBOX.eyeHeightM
+  const dx = targetXOffsetFromShooter
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
+}
+
+function bodyCenterM(): number {
+  return (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+}
+
+describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 그 결과만 HP에 반영된다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-12/GA-05: A가 B를 정확히 조준해 사격하면, 서버가 계산한 hitscan 결과로 B의 HP가 바디 데미지만큼 감소한다',
+    async () => {
+      const roomA = await joinGame(newClient(server)) // 원점 고정, 사수
+      const roomB = await joinGame(newClient(server)) // +X로 이동, 피격자
+
+      const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
+      expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+      const settledB = await travelAndSettle(roomB)
+      expect(settledB.x).toBeGreaterThan(0) // 실제로 분리됐다는 전제 확인
+
+      const aim = aimAt(settledB.x, bodyCenterM())
+      roomA.send('fire', { dirX: aim.dirX, dirY: aim.dirY, dirZ: aim.dirZ })
+
+      const afterShot = await waitForHpCondition(
+        roomB,
+        roomB.sessionId,
+        (hp) => hp < PLAYER.MAX_HP,
+        'A의 조준 사격 후 B의 HP 감소 대기',
+      )
+      expect(afterShot.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    30_000,
+  )
+
+  it(
+    'RQ-12/GA-05: A가 B와 무관한 방향(반대쪽)으로 사격하면, 실제로 명중하지 못했으므로 B의 HP는 그대로다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomB = await joinGame(newClient(server))
+
+      const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
+      await travelAndSettle(roomB) // B를 +X로 분리(A의 조준 실패를 의미있게 만드는 전제)
+
+      // B는 +X 방향에 있는데, A는 -X 방향으로 사격 — 기하학적으로 명중 불가능.
+      roomA.send('fire', { dirX: -1, dirY: 0, dirZ: 0 })
+
+      // "변화가 없음"은 순간 스냅샷 하나로 증명할 수 없다 — 몇 차례의 상태
+      // 갱신(RQ-60 tick 포함)을 거치는 동안에도 hp가 그대로인지 확인한다.
+      await sleep(500)
+      const stillBaseline = readPlayer(roomB, roomB.sessionId)
+      expect(stillBaseline?.hp).toBe(baselineB.hp)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    20_000,
+  )
+})
+
+describe('RQ-12/ADR-0005: 발사 속도 제한(rate-limit) — 150ms 미만 간격의 재사격은 무시된다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    `RQ-12/ADR-0005: 첫 사격은 명중 처리되고, ${RAPID_REFIRE_MS}ms 뒤(150ms 미만)의 재사격은 무시되며, 그 뒤(150ms 초과 경과 후) 사격은 다시 명중 처리된다`,
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomB = await joinGame(newClient(server))
+
+      await waitForDefinedPlayer(roomB, roomB.sessionId)
+      const settledB = await travelAndSettle(roomB)
+      const aim = aimAt(settledB.x, bodyCenterM())
+
+      // 1발 — 명중 처리(HP: 100 → 75).
+      roomA.send('fire', aim)
+      const afterFirst = await waitForHpCondition(
+        roomB,
+        roomB.sessionId,
+        (hp) => hp < PLAYER.MAX_HP,
+        '1발 사격 후 HP 감소 대기',
+      )
+      expect(afterFirst.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY)
+
+      // 2발(150ms보다 훨씬 짧은 간격) — rate-limit에 걸려 무시돼야 한다.
+      roomA.send('fire', aim)
+      await sleep(RAPID_REFIRE_MS)
+      const afterRapidRefire = readPlayer(roomB, roomB.sessionId)
+      expect(afterRapidRefire?.hp).toBe(afterFirst.hp) // 변화 없음 — 거부됨
+
+      // rate-limit이 확실히 풀릴 만큼 충분히 기다린 뒤 3발 — 다시 명중 처리(HP: 75 → 50).
+      await sleep(RATE_LIMIT_CLEAR_MS)
+      roomA.send('fire', aim)
+      const afterThird = await waitForHpCondition(
+        roomB,
+        roomB.sessionId,
+        (hp) => hp < afterFirst.hp,
+        '충분한 대기 후 3발째 사격의 HP 감소 대기',
+      )
+      expect(afterThird.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 2)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    30_000,
+  )
+})

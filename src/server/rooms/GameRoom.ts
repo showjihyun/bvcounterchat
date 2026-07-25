@@ -1,11 +1,20 @@
 import type { Client } from 'colyseus'
 import { Room } from 'colyseus'
 import { GameState, Player, Spectator } from '@shared/schema/GameState'
-import { CAPACITY, NET } from '@shared/constants'
+import { CAPACITY, NET, WEAPON } from '@shared/constants'
 import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import {
+  applyDamage,
+  canFire,
+  damageForRegion,
+  findClosestHit,
+  type HitCandidate,
+  type Ray,
+} from '@shared/sim/combat'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
@@ -49,6 +58,28 @@ function sanitizeMoveInput(payload: unknown): MoveInput {
 function parseInputSeq(payload: unknown): number | undefined {
   const raw = payload as { seq?: unknown } | null | undefined
   return typeof raw?.seq === 'number' && Number.isFinite(raw.seq) ? raw.seq : undefined
+}
+
+interface FireInput {
+  dirX: number
+  dirY: number
+  dirZ: number
+}
+
+/**
+ * `fire` 메시지 payload에서 조준 방향(`dirX`·`dirY`·`dirZ`)만 뽑는다.
+ * 클라이언트가 같은 payload에 명중·데미지·헤드샷·대상 주장 필드(RQ-12
+ * GA-06 — 악의적 클라이언트가 실어 보낼 수 있는 필드)를 실어도 여기서
+ * 아예 읽지 않으므로 서버 상태에 닿을 경로가 없다(RQ-61) —
+ * `sanitizeMoveInput`과 동일한 패턴.
+ */
+function sanitizeFireInput(payload: unknown): FireInput {
+  const raw = payload as { dirX?: unknown; dirY?: unknown; dirZ?: unknown } | null | undefined
+  return {
+    dirX: typeof raw?.dirX === 'number' ? raw.dirX : 0,
+    dirY: typeof raw?.dirY === 'number' ? raw.dirY : 0,
+    dirZ: typeof raw?.dirZ === 'number' ? raw.dirZ : 0,
+  }
 }
 
 /**
@@ -114,6 +145,9 @@ export class GameRoom extends Room<GameState> {
    * 메시지 수신 즉시 기록 방식에서 "seq는 갱신됐지만 위치는 아직 그
    * 입력을 반영하지 못한" 불일치 스냅샷이 나갈 수 있었다). */
   private readonly pendingSeqs = new Map<string, number>()
+  /** 사수(세션)별 마지막 발사 시각(ms) — ADR-0005 rate-limit(150ms)을 사수
+   * 독립으로 추적한다(가정 D, RQ-17이 이 독립성에 의존). */
+  private readonly lastFireAtMs = new Map<string, number>()
 
   override onCreate(): void {
     this.state = new GameState()
@@ -142,6 +176,58 @@ export class GameRoom extends Room<GameState> {
         this.pendingSeqs.set(client.sessionId, seq)
       }
     })
+
+    this.onMessage('fire', (client, payload: unknown) => {
+      this.handleFire(client.sessionId, sanitizeFireInput(payload))
+    })
+  }
+
+  /**
+   * RQ-12(서버 hitscan) + RQ-13(헤드샷 배율) + RQ-14(HP·사망·킬) + RQ-17
+   * (팀 없음 — 사수 자신을 제외한 전원이 대상) + ADR-0005(rate-limit).
+   *
+   * **즉시 판정(가정 D)**: 다음 시뮬레이션 틱을 기다리지 않고 수신 즉시
+   * 판정한다 — RQ-12 원문 "hitscan(즉시 판정 레이캐스트)"의 직역.
+   * **레이 원점**: 사수의 현재 추적 위치(`moveStates`, RQ-20)에
+   * `DEFAULT_HITBOX.eyeHeightM`만큼 y축 오프셋을 더한 지점(가정 3).
+   * **rate-limit 시각 조달**: `Date.now()` — `src/server`는 `src/shared`와
+   * 달리 ADR-0008 lint 대상이 아니다(순수 판정 자체는 `canFire`로 위임해
+   * 결정론을 지킨다).
+   */
+  private handleFire(shooterId: string, input: FireInput): void {
+    const now = Date.now()
+    const lastFireAt = this.lastFireAtMs.get(shooterId)
+    if (!canFire(lastFireAt, now, WEAPON.FIRE_INTERVAL_MS)) return
+    this.lastFireAtMs.set(shooterId, now)
+
+    const shooterState = this.moveStates.get(shooterId)
+    const shooterPlayer = this.state.players.get(shooterId)
+    if (!shooterState || !shooterPlayer) return // 관전자는 moveStates·players에 없다 — 사격 불가
+
+    const ray: Ray = {
+      origin: { x: shooterState.x, y: shooterState.y + DEFAULT_HITBOX.eyeHeightM, z: shooterState.z },
+      direction: { x: input.dirX, y: input.dirY, z: input.dirZ },
+    }
+
+    const candidates: HitCandidate[] = []
+    this.state.players.forEach((_player, sessionId) => {
+      if (sessionId === shooterId) return // RQ-17: 팀 없음 — 사수 자신만 제외, 그 외 전원이 대상
+      const targetState = this.moveStates.get(sessionId)
+      if (!targetState) return
+      candidates.push({ id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } })
+    })
+
+    const closest = findClosestHit(ray, candidates, DEFAULT_HITBOX)
+    if (!closest || !closest.result.region) return
+
+    const victim = this.state.players.get(closest.id)
+    if (!victim) return
+
+    const outcome = applyDamage(victim.hp, damageForRegion(closest.result.region))
+    victim.hp = outcome.hp
+    if (outcome.died) {
+      shooterPlayer.kills += 1
+    }
   }
 
   /**
@@ -299,6 +385,7 @@ export class GameRoom extends Room<GameState> {
     this.moveStates.delete(client.sessionId)
     this.pendingInputs.delete(client.sessionId)
     this.pendingSeqs.delete(client.sessionId)
+    this.lastFireAtMs.delete(client.sessionId)
   }
 
   /**
