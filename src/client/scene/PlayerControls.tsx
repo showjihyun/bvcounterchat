@@ -8,6 +8,7 @@ import { createMouseLookController, type MouseLookController } from '@client/inp
 import { createMovementInputTracker } from '@client/input/movementInput'
 import { createLocalFireCooldown } from '@client/input/fireControl'
 import { rotateLocalMoveDirection, yawPitchToDirection } from '@client/input/aimMath'
+import { applyLookToCamera } from '@client/input/cameraLook'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { NET } from '@shared/constants'
 
@@ -49,13 +50,6 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
   const mouseLookRef = useRef<MouseLookController | null>(null)
 
   useEffect(() => {
-    // Euler 순서 'YXZ' — `@client/input/aimMath`가 이 순서를 전제로 조준
-    // 방향을 유도했다(모듈 상단 코멘트). 카메라 자체 소유 Euler 객체의
-    // 프로퍼티만 바꾸므로 할당이 아니다.
-    camera.rotation.order = 'YXZ'
-  }, [camera])
-
-  useEffect(() => {
     const canvas = gl.domElement
     const detachPointerLock = attachPointerLock(canvas)
     const mouseLook = createMouseLookController(canvas)
@@ -68,11 +62,11 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
       // 주 버튼(좌클릭)만 발사한다 — 우클릭·휠클릭은 조준경(스펙 없음)이나
       // 브라우저 기본 동작이라 발사로 해석하지 않는다.
       if (event.button !== 0) return
-      // 락이 걸리기 전(입장 직후 첫 클릭)에는 발사하지 않는다 — 그 클릭은
-      // `attachPointerLock`의 리스너가 락 요청에 이미 쓴다. 두 리스너가
-      // 같은 마우스 입력을 공유해도 충돌하지 않는다: 락 요청은
-      // 비동기(`requestPointerLock()`)라 같은 이벤트 처리 중에는 아직
-      // `document.pointerLockElement`가 갱신되지 않는다.
+      // 락이 걸리기 전(입장 직후 첫 누름)에는 발사하지 않는다. 락 요청은
+      // `attachPointerLock`이 'click'에서, 발사는 여기 'mousedown'에서
+      // 처리하므로 이벤트 자체가 다르다 — 브라우저 순서가
+      // mousedown → mouseup → click이라, 첫 누름 시점에는 락 요청이 아직
+      // 일어나지도 않아 이 가드에서 확실히 걸린다.
       if (document.pointerLockElement !== canvas) return
       // 'click'이 아니라 'mousedown'을 쓴다(리뷰 minor 2) — click은
       // mousedown+mouseup 완결 시 발생해 **버튼을 떼는 순간** 발사된다.
@@ -112,9 +106,13 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
     const mouseLook = mouseLookRef.current
     if (!mouseLook) return
     const { yaw, pitch } = mouseLook.getAngles()
+    // 카메라 회전 적용은 `@client/input/cameraLook`이 유일한 지점이다 —
+    // 회귀 가드 테스트(`tests/unit/22b-aim-camera-binding.test.ts`)가 **같은
+    // 함수**를 호출해 조준 벡터와의 정합을 검사하므로, 여기서 인라인으로
+    // 돌리면 그 가드가 배선을 놓친다(모듈 주석 참고).
     // Euler.set/Vector3.set은 기존 객체를 갱신할 뿐 새 객체를 만들지
     // 않는다(프레임 예산 규칙, `harness/workflow/fe.md`).
-    camera.rotation.set(pitch, yaw, 0)
+    applyLookToCamera(camera, yaw, pitch)
 
     const state = store.getState()
     const predicted = state.selfPredictedState
