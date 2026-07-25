@@ -35,6 +35,23 @@ function escapeForRegExp(input: string): string {
 }
 
 /**
+ * 단어별 매칭 패턴을 모듈 로드 시 1회만 컴파일한다(리뷰 minor m4,
+ * `_workspace/review/feat-RQ-40-chat.md`) — 이전엔 `filterProfanity` 호출
+ * (메시지 1건)마다 목록 전체를 `new RegExp`로 재컴파일했다. 재사용이
+ * 안전한 이유: 아래에서 `RegExp.prototype.exec`/`test`를 직접 반복 호출하지
+ * 않고 `String.prototype.replace(regexp, ...)`만 쓴다 — 스펙(ECMA-262
+ * `RegExp.prototype[Symbol.replace]`)이 전역(`g`) 플래그일 때 매 호출
+ * 시작 시 `lastIndex`를 0으로 리셋하므로, 인스턴스를 재사용해도 이전
+ * 문자열 매칭이 다음 호출에 새어들지 않는다(m4가 경고한 함정은
+ * `exec`/`test`를 직접 루프 도는 경우에만 발생한다).
+ */
+const PROFANITY_PATTERNS: ReadonlyArray<{ readonly mask: string; readonly pattern: RegExp }> =
+  DEFAULT_PROFANITY_WORDS.filter((word) => word.length > 0).map((word) => ({
+    mask: '*'.repeat(word.length),
+    pattern: new RegExp(escapeForRegExp(word), 'giu'),
+  }))
+
+/**
  * `DEFAULT_PROFANITY_WORDS`에 담긴 각 단어를 대소문자 무관하게 찾아 같은
  * 길이의 `*` 문자열로 치환한다. 원본에 없는 단어는 전혀 건드리지 않는다
  * (양성 대조군 — 과잉 필터링 방지). 반환값은 원본 금칙어를 원문 그대로
@@ -42,10 +59,8 @@ function escapeForRegExp(input: string): string {
  */
 export function filterProfanity(text: string): string {
   let result = text
-  for (const word of DEFAULT_PROFANITY_WORDS) {
-    if (word.length === 0) continue
-    const pattern = new RegExp(escapeForRegExp(word), 'giu')
-    result = result.replace(pattern, '*'.repeat(word.length))
+  for (const { mask, pattern } of PROFANITY_PATTERNS) {
+    result = result.replace(pattern, mask)
   }
   return result
 }

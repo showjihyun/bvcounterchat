@@ -89,7 +89,7 @@ export function App() {
             <span className="hud__crosshair" aria-hidden="true" />
             <span className="hud__placeholder">ChatStrike — 접속됨</span>
             {/* RQ-40/41/95 최소 채팅 패널(RQ-52 자리) — ChatPanel.tsx 참고. */}
-            <ChatPanel connection={connection} uiStore={uiStore} />
+            <ChatPanel store={store} connection={connection} uiStore={uiStore} />
           </div>
         </>
       ) : (

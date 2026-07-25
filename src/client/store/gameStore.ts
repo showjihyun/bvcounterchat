@@ -1,6 +1,7 @@
 import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
 import type { MoveState } from '@shared/sim/movement'
+import { UI } from '@shared/constants'
 
 /**
  * game state 레이어(`harness/workflow/fe.md`) — 서버 스냅샷의 클라이언트
@@ -21,6 +22,13 @@ export interface ClientPlayer {
 
 export interface ClientSpectator {
   nickname: string
+}
+
+/** RQ-40 채팅 브로드캐스트·이력 항목 shape — 서버(`GameRoom.ts`의
+ * `ChatMessage`)와 동일 필드. */
+export interface ChatMessage {
+  nickname: string
+  text: string
 }
 
 /**
@@ -45,9 +53,26 @@ export interface GameStoreState {
    * 첫 예측·재조정 전에는 null — scene 레이어(`PlayerMeshes`)는 null이면
    * 서버 스냅샷(`players`)으로 폴백해 렌더링한다. */
   selfPredictedState: MoveState | null
+  /**
+   * RQ-40 채팅 로그(리뷰 M1·M3, `_workspace/review/feat-RQ-40-chat.md`) —
+   * netcode 레이어(`src/client/net/connection.ts`)가 서버 브로드캐스트·
+   * 이력 복원을 반영하는 **유일한** 곳. HUD(`ChatPanel.tsx`)는 이 값을
+   * `useStore()`로 구독만 한다(fe.md 레이어 단방향 규칙 — netcode → game
+   * state → HUD). RQ-61: 클라이언트가 스스로 메시지를 추가하지 않는다
+   * (자기 메시지도 서버 브로드캐스트로만 들어온다). 최근
+   * `UI.CHAT_HISTORY`(50)개로 상한 — 서버(`GameRoom.ts`)와 같은 상수를
+   * 재사용한다(ADR-0010 값 복제 금지, M3). 상설 세션(RQ-04)에서 무제한
+   * 누적을 막는다.
+   */
+  chatLog: ChatMessage[]
   setSelfSessionId(sessionId: string): void
   setSelfPredictedState(state: MoveState): void
   applyServerState(state: ServerStateSnapshot): void
+  /** 실시간 'chat' 브로드캐스트 1건을 로그 끝에 추가한다(상한 적용). */
+  addChatMessage(message: ChatMessage): void
+  /** 'chat-history' 이력 복원(접속·재접속 시 1회) — 로그 전체를 교체한다
+   * (상한 적용, 서버가 이미 50개 이하로 보내지만 방어적으로 다시 자른다). */
+  setChatLog(messages: ChatMessage[]): void
 }
 
 export function createGameStore(): StoreApi<GameStoreState> {
@@ -57,6 +82,7 @@ export function createGameStore(): StoreApi<GameStoreState> {
     players: new Map(),
     spectators: new Map(),
     selfPredictedState: null,
+    chatLog: [],
 
     setSelfSessionId(sessionId) {
       set({ selfSessionId: sessionId })
@@ -64,6 +90,14 @@ export function createGameStore(): StoreApi<GameStoreState> {
 
     setSelfPredictedState(state) {
       set({ selfPredictedState: state })
+    },
+
+    addChatMessage(message) {
+      set((state) => ({ chatLog: [...state.chatLog, message].slice(-UI.CHAT_HISTORY) }))
+    },
+
+    setChatLog(messages) {
+      set({ chatLog: messages.slice(-UI.CHAT_HISTORY) })
     },
 
     // 스냅샷 전체 교체 계약 — 이전 호출엔 있었지만 이번 스냅샷에 없는

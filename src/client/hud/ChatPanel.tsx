@@ -1,15 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { useStore } from 'zustand'
 import type { StoreApi } from 'zustand/vanilla'
 import type { GameConnection } from '@client/net/connection'
+import type { GameStoreState } from '@client/store/gameStore'
 import type { UiStoreState } from '@client/store/uiStore'
 
-interface ChatMessage {
-  nickname: string
-  text: string
-}
-
 interface ChatPanelProps {
+  store: StoreApi<GameStoreState>
   connection: GameConnection
   uiStore: StoreApi<UiStoreState>
 }
@@ -21,49 +19,53 @@ interface ChatPanelProps {
  * 시각 디자인은 `docs/design/DESIGN.md`(🟡 아직 없음) 확정 이후로 유예한다
  * (22b 임시 크로스헤어 선례와 동일한 절제).
  *
- * **채널(`_workspace/RQ-40/01_test-writer_red.md` §3.3 계약)**: 전송은
- * `room.send('chat', { text })`, 실시간 수신은 `room.onMessage('chat', ...)`
- * (서버가 필터링·닉네임 확정 후 전송자 포함 전원에게 브로드캐스트한 값을
- * 그대로 렌더링 — RQ-61: 클라이언트가 닉네임·필터링을 다시 계산하지
- * 않는다), 이력 복원은 `room.onMessage('chat-history', ...)`(접속 직후
- * 1회, 전체 배열로 로그를 교체).
+ * **읽기(리뷰 M1, `_workspace/review/feat-RQ-40-chat.md`)**: 이 컴포넌트는
+ * `room.onMessage`를 더 이상 직접 구독하지 않는다 — `store.chatLog`
+ * (netcode 레이어 `connection.ts`가 'chat'·'chat-history' 양쪽을 반영)를
+ * `useStore()`로 구독만 한다(fe.md: HUD는 이 구독 방식이 허용 예외).
+ * 이전 직접 구독 방식은 레이어 규칙 위반이었을 뿐 아니라, HUD가 React
+ * effect 스케줄링을 거쳐야 등록되는 타이밍 탓에 접속 직후 도착하는
+ * 일회성 `chat-history`를 놓칠 위험이 있었다(M1 근거 — 재발 방지를 위해
+ * 구독은 `connection.ts` 한 곳에만 둔다). 로그 상한(50, `UI.CHAT_HISTORY`)도
+ * `gameStore`가 일괄 적용한다(M3) — 이 컴포넌트는 신경 쓰지 않는다.
+ *
+ * **쓰기(전송)**: `connection.room.send('chat', { text })`는 이 컴포넌트가
+ * 직접 호출한다 — fe.md의 단방향 규칙은 **서버 → 클라 데이터 흐름**
+ * (netcode → game state → scene/HUD)에 대한 것이라, 사용자 입력을 서버로
+ * 내보내는 것(scene의 `PlayerControls`가 `connection.sendMoveInput`을
+ * 직접 부르는 것과 동일한 패턴)은 이 규칙의 대상이 아니다.
  *
  * **입력 차단 배선(RQ-40, fe.md 입력 처리 규칙)**: 이 입력창이 포커스를
  * 얻으면(`onFocus`) `uiStore.setChatFocused(true)`로 게임 입력을 차단하고,
- * 포커스를 잃으면(`onBlur`) 해제한다. 실제 게이트 적용(이동·사격 핸들러
- * 최상단에서 `@client/input/chatInputGate` 호출)은 `PlayerControls.tsx`
- * 책임이다 — 이 컴포넌트는 포커스 신호를 UI 상태에 쓰기만 한다(개별
- * 핸들러 분산 체크 금지 규칙과 동일한 정신으로, 신호 발행처와 소비처를
- * 분리한다).
+ * 포커스를 잃으면(`onBlur`) 해제한다. 실제 게이트 적용(게임 레이어 출구
+ * 단일 choke point)은 `@client/input/chatInputGate`의 `createChatGatedActions`
+ * (`PlayerControls.tsx`가 사용, 리뷰 M4)의 책임이다 — 이 컴포넌트는 포커스
+ * 신호를 UI 상태에 쓰기만 한다.
+ *
+ * **포커스 수명주기(리뷰 M2)**: 언마운트(접속 종료로 `GameScene`이 통째로
+ * 사라지는 경우 포함)에서 `blur` 이벤트가 발생한다는 보장이 없다(DOM에서
+ * 포커스된 엘리먼트가 제거되면 브라우저는 포커스를 body로 옮기되 `blur`
+ * 이벤트를 발생시키지 않는다) — `uiStore`는 `App`이 접속 사이클을 넘어
+ * 계속 소유하므로, 이 cleanup이 없으면 재접속한 사용자가 `chatFocused
+ * === true`로 시작해 이동·사격이 영구 차단될 수 있었다. 언마운트 시
+ * 명시적으로 해제한다.
  */
-export function ChatPanel({ connection, uiStore }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+export function ChatPanel({ store, connection, uiStore }: ChatPanelProps) {
+  const messages = useStore(store, (state) => state.chatLog)
   const [draft, setDraft] = useState('')
   const logRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    const { room } = connection
-
-    const unbindChat = room.onMessage<ChatMessage>('chat', (message) => {
-      setMessages((prev) => [...prev, message])
-    })
-    // 이력 복원(가정 2) — 접속 직후 서버가 단일 대상 전송으로 1회 보낸다.
-    // 전체 배열로 로그를 교체한다(누적이 아니다 — 이 시점 이전엔 로그가
-    // 비어 있으므로 교체와 누적이 동치이지만, 계약대로 교체를 명시한다).
-    const unbindHistory = room.onMessage<ChatMessage[]>('chat-history', (history) => {
-      setMessages(history)
-    })
-
-    return () => {
-      unbindChat()
-      unbindHistory()
-    }
-  }, [connection])
+  const inputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     const log = logRef.current
     if (log) log.scrollTop = log.scrollHeight
   }, [messages])
+
+  useEffect(() => {
+    return () => {
+      uiStore.getState().setChatFocused(false)
+    }
+  }, [uiStore])
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -71,6 +73,10 @@ export function ChatPanel({ connection, uiStore }: ChatPanelProps) {
     if (text.length === 0) return
     connection.room.send('chat', { text })
     setDraft('')
+    // 리뷰 minor m5 — 전송 후에도 포커스가 남으면 이동·사격 게이트가 계속
+    // 걸린다(캔버스를 다시 클릭해야 풀림). blur()로 즉시 해제한다 — 이
+    // `blur` 이벤트가 `onBlur`의 `setChatFocused(false)`를 자연히 호출한다.
+    inputRef.current?.blur()
   }
 
   return (
@@ -87,6 +93,7 @@ export function ChatPanel({ connection, uiStore }: ChatPanelProps) {
       </div>
       <form className="hud__chat-form" onSubmit={handleSubmit}>
         <input
+          ref={inputRef}
           className="hud__chat-input"
           type="text"
           value={draft}
