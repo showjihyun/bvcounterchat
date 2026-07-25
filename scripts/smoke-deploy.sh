@@ -53,6 +53,26 @@ PERSIST_LOG=""
 
 log() { printf '[smoke-deploy] %s\n' "$*"; }
 
+# PID 하나가 종료할 때까지 최대 timeout_s초 폴링으로 기다린다. bash 내장
+# `wait`는 타임아웃 인자가 없어 그냥 쓰면 프로세스가 안 죽는 한 무한정
+# 블로킹한다(ADR-0008 "모든 대기에 상한" 위반 — 델타 재리뷰 minor D5,
+# 이 스크립트에서 유일하게 뚫려 있던 지점). 상한을 넘기면 강제 종료
+# (SIGKILL) 후 반환해 좀비를 남기지 않으면서도 상한을 지킨다.
+wait_pid_bounded() {
+  local pid="$1"
+  local timeout_s="$2"
+  local deadline=$((SECONDS + timeout_s))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      log "PID ${pid}가 상한(${timeout_s}s) 내 스스로 종료하지 않아 강제 종료합니다."
+      kill -9 "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
 # EXIT 트랩 — 성공·실패 어느 경로로 끝나든 반드시 실행된다(bash 트랩 의미).
 # 실패로 끝나는 경우에만 로그를 먼저 남긴 뒤, 항상 스택과 백그라운드
 # 프로세스를 정리한다.
@@ -62,7 +82,7 @@ cleanup() {
   if [ -n "$PERSIST_PID" ] && kill -0 "$PERSIST_PID" 2>/dev/null; then
     log "정리 — 아직 살아있는 접속 유지 클라이언트(PID ${PERSIST_PID}) 종료"
     kill "$PERSIST_PID" 2>/dev/null || true
-    wait "$PERSIST_PID" 2>/dev/null || true
+    wait_pid_bounded "$PERSIST_PID" 10
   fi
 
   if [ "$exit_code" -ne 0 ]; then
@@ -213,7 +233,11 @@ while [ "$SECONDS" -lt "$leave_deadline" ]; do
   fi
   sleep 1
 done
-wait "$PERSIST_PID" 2>/dev/null || true
+# 위 폴링 루프가 상한(leave_deadline) 초과로 빠져나왔는데 프로세스가 아직
+# 살아있을 수 있다 — 그 경우를 포함해 이 대기도 반드시 상한이 있어야
+# 한다(리뷰 델타 minor D5). 10초는 이미 최대 RESTART_TIMEOUT_S만큼 기다린
+# 뒤의 추가 유예일 뿐이라 짧게 잡는다.
+wait_pid_bounded "$PERSIST_PID" 10
 PERSIST_PID=""
 
 if [ -z "$persist_left" ]; then
