@@ -22,6 +22,12 @@ import type { Object3D } from 'three'
  * `useFrame`에서 매 프레임 호출해도 프레임 예산(`fe.md`)에 영향이 없다.
  */
 export function applyLookToCamera(camera: Object3D, yaw: number, pitch: number): void {
-  camera.rotation.order = 'YXZ'
+  // 조건부 대입 — `Euler`의 order 세터는 값이 같아도 변경 콜백을 부르고,
+  // `Object3D`가 그 콜백에 `quaternion.setFromEuler()`를 걸어둔다(three
+  // 소스 실측, 리뷰 minor B). 무조건 대입하면 프레임당 `setFromEuler`가
+  // 2회 돈다 — 할당은 없지만(프레임 예산 위반 아님) 순수한 중복 연산이다.
+  // 값이 다를 때만 고쳐도 "외부에서 오염된 order를 교정한다"는 목적은
+  // 그대로 달성된다(가드 테스트의 오염 카메라 케이스가 이를 단언한다).
+  if (camera.rotation.order !== 'YXZ') camera.rotation.order = 'YXZ'
   camera.rotation.set(pitch, yaw, 0)
 }
