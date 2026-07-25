@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { buildServer } from '@server/index'
@@ -58,6 +58,23 @@ import { DEFAULT_PROFANITY_WORDS } from '@shared/chat/profanityFilter'
  * 것을 임의 슬립 없이 결정론적으로 확인한다(각 'chat' 핸들러는 히스토리
  * 갱신 → 브로드캐스트를 같은 동기 처리 안에서 마친다고 가정 — 비동기 처리로
  * 순서가 흐트러지는 문제는 `rq-40-chat-ordering.test.ts`가 별도로 잡는다).
+ *
+ * **격리 주의(REV — 이 파일에 `it()`을 추가하는 사람에게)**: `GameRoom`은
+ * `autoDispose = false`이고(GA-29 단일 룸) RQ-04가 "서버는 플레이어가
+ * 0명이어도 종료되지 않아야 한다"를 명시하므로, 룸이 살아있는 한
+ * `chatHistory`(서버 내부 배열, `GameRoom.ts`)는 `it()` 사이에 리셋되지
+ * **않고 계속 누적된다**. "룸이 비면 이력을 리셋한다"는 서버 쪽 해결책은
+ * 불가능하다 — 그러면 `it 2`(재접속 복원)가 검증하려는 대상 자체(퇴장 후
+ * 재접속해도 이력이 남아있어야 한다)가 성립하지 않게 된다. 이 파일의
+ * 단언들(`toEqual`로 이력 배열 **정확히 일치**, `history.length`로 **정확한
+ * 개수**)은 "그 `it()` 안에서 보낸 메시지만" 들어있다고 가정하므로, 다른
+ * `it()`이 이미 보낸 메시지가 같은 룸에 섞여 들어오면 거짓으로 실패한다.
+ * 그래서 이 파일은 (다른 통합 테스트 파일들과 달리) `beforeAll`/`afterAll`로
+ * 서버 1개를 파일 전체가 공유하지 않고, **`beforeEach`/`afterEach`로 매
+ * `it()`마다 서버(=룸)를 새로 기동·종료**한다 — 매 테스트가 빈 `chatHistory`
+ * 에서 시작한다는 전제를 실제로 보장하기 위해서다. 새 `it()`을 추가할 때
+ * 이 전제를 깨지 마라(예: 이 describe 밖에서 별도로 room을 재사용하는
+ * 헬퍼를 만들지 말 것).
  */
 
 const ROOM_NAME = 'game'
@@ -172,11 +189,16 @@ function waitForChatHistory(room: Room, timeoutMs: number, label: string): Promi
 describe('RQ-40 Global Chat — 최근 50개 이력 + 접속/재접속 시 복원', () => {
   let server: RunningServer
 
-  beforeAll(async () => {
+  // 이 파일의 단언은 "그 it() 안에서 보낸 메시지만 이력에 있다"는 정확
+  // 일치를 요구한다 — 룸(=chatHistory)이 it() 사이에 살아남으면 앞선
+  // it()의 메시지가 섞여 거짓 실패한다(위 docblock "격리 주의" 참고).
+  // 그래서 beforeAll/afterAll(파일 전체 공유)이 아니라 beforeEach/afterEach로
+  // 매 it()마다 서버를 새로 기동·종료해 빈 이력에서 시작하게 만든다.
+  beforeEach(async () => {
     server = await startServer()
   }, LISTEN_TIMEOUT_MS + 5_000)
 
-  afterAll(async () => {
+  afterEach(async () => {
     await stopServer(server)
   })
 
