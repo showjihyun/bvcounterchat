@@ -19,6 +19,8 @@ netcode (Colyseus 수신·예측·보간) → game state (Zustand store) → sce
 | game state | 정규화된 게임 상태 저장소 | `src/client/store/` (Zustand) | 진실 공급원은 서버(RQ-61) — 이 store는 캐시일 뿐, 클라이언트가 새 진실을 만들지 않는다. |
 | scene | R3F 컴포넌트 트리, 3D 렌더링 | `src/client/scene/` | 캔버스 안. 매 프레임 실행되는 코드가 있다 — 아래 프레임 예산 규칙 적용. |
 | HUD | 일반 React DOM | `src/client/hud/` | 캔버스 밖. RQ-50~55. |
+| input | DOM 입력 캡처(키보드·마우스·포인터 락)와 그 순수 산술 | `src/client/input/` | DOM 결합부(리스너 배선)와 순수 함수(조준 벡터·이동 회전·쿨다운 판정)를 **파일로 분리**한다 — 순수 쪽은 단위 테스트 대상이고 배선 쪽은 면제다. 22b 선례: `aimMath.ts`(순수) ↔ `mouseLook.ts`(배선). |
+| config | 스펙 미기재 클라 전용 튜닝 슬롯 | `src/client/config/` | 값이 `src/shared`에 대응 상수를 가지면 **그쪽을 재사용**한다(ADR-0010 값 복제 금지). 여기에는 클라에만 존재하는 값만 둔다(예: 마우스 감도). 키 바인딩(`input/keymap.ts`)과 같은 성격의 고정값 슬롯. |
 
 **HUD는 R3F 캔버스 밖의 DOM으로 만든다 (RQ-50~55).** 이유: 텍스트 렌더링
 품질(서브픽셀 안티에일리어싱)·접근성(스크린리더·시맨틱 마크업)·리렌더 비용
