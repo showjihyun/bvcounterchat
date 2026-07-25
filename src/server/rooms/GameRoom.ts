@@ -1,7 +1,7 @@
 import type { Client } from 'colyseus'
 import { Room } from 'colyseus'
 import { GameState, Player, Spectator } from '@shared/schema/GameState'
-import { CAPACITY, NET, PLAYER, WEAPON } from '@shared/constants'
+import { CAPACITY, NET, PLAYER, UI, WEAPON } from '@shared/constants'
 import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
@@ -25,6 +25,7 @@ import {
 } from '@shared/sim/lifecycle'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
+import { filterProfanity } from '@shared/chat/profanityFilter'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
  * 지점이라 임의로 정한다 — 어떤 값이든 자동 접미사 로직으로 고유화된다. */
@@ -73,6 +74,26 @@ interface FireInput {
   dirX: number
   dirY: number
   dirZ: number
+}
+
+/**
+ * RQ-40 채팅 브로드캐스트·이력 항목 공통 shape(test-writer 계약 §3.3,
+ * `_workspace/RQ-40/01_test-writer_red.md`) — `broadcast('chat', ...)`와
+ * `client.send('chat-history', ...)` 양쪽이 같은 원소 타입을 쓴다.
+ */
+interface ChatMessage {
+  nickname: string
+  text: string
+}
+
+/**
+ * `chat` 메시지 payload에서 본문 텍스트만 뽑는다. 문자열이 아니면(조작된
+ * 페이로드) 빈 문자열로 대체한다 — `sanitizeMoveInput`/`sanitizeFireInput`과
+ * 동일한 방어적 파싱 패턴(RQ-61: 크래시·틱 정지보다 안전한 기본값).
+ */
+function sanitizeChatText(payload: unknown): string {
+  const raw = payload as { text?: unknown } | null | undefined
+  return typeof raw?.text === 'string' ? raw.text : ''
 }
 
 /**
@@ -170,6 +191,15 @@ export class GameRoom extends Room<GameState> {
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
   private spawnCursor: number | undefined
+  /** RQ-40: 최근 채팅 이력 — 오래된 것이 배열 앞쪽(도착 순서 그대로), 최대
+   * `UI.CHAT_HISTORY`(50)개만 유지한다(초과분은 앞에서 폐기). 저장되는
+   * 텍스트는 이미 `filterProfanity`를 거친 값이다(RQ-95) — 브로드캐스트
+   * 시점에만 필터링하고 이력을 원문으로 저장하면 재접속자에게 원문이
+   * 새어나가는 우회로가 생긴다(`_workspace/RQ-40/01_test-writer_red.md`
+   * "금칙어 필터와의 상호작용" 경고). 관전자를 포함해 룸에 연결된 모든
+   * 클라이언트가 발신·수신 양쪽에 참여한다(RQ-41).
+   */
+  private readonly chatHistory: ChatMessage[] = []
 
   override onCreate(): void {
     this.state = new GameState()
@@ -201,6 +231,10 @@ export class GameRoom extends Room<GameState> {
 
     this.onMessage('fire', (client, payload: unknown) => {
       this.handleFire(client.sessionId, sanitizeFireInput(payload))
+    })
+
+    this.onMessage('chat', (client, payload: unknown) => {
+      this.handleChat(client.sessionId, sanitizeChatText(payload))
     })
   }
 
@@ -286,6 +320,45 @@ export class GameRoom extends Room<GameState> {
       shooterPlayer.kills += 1
       this.diedAtTick.set(closest.id, this.state.tick)
     }
+  }
+
+  /**
+   * RQ-40(Global Chat) + RQ-95(금칙어 필터) + RQ-41(관전자 참여) —
+   * ADR-0002 "같은 Colyseus 룸의 메시지 채널" 설계(`_workspace/RQ-40/
+   * 01_test-writer_red.md` §3.3).
+   *
+   * **순서 보장(GA-12)**: 이 핸들러가 동기적으로 이력 갱신 →
+   * 브로드캐스트를 마친다 — 별도 큐·비동기 처리를 두지 않으므로, Colyseus의
+   * 단일 룸·단일 이벤트 루프 전제(ADR-0002) 위에서 메시지 도착 순서가 곧
+   * 브로드캐스트 순서다.
+   * **필터(RQ-95)**: 브로드캐스트하기 **전에** `filterProfanity`를 적용한다
+   * — 원문이 네트워크를 타지 않는다. 필터링된 값을 이력에도 저장해(아래
+   * `chatHistory.push`) 실시간 경로와 이력 복원 경로 양쪽에서 같은 필터
+   * 적용 지점 하나를 공유한다(원문 유출 우회로 차단).
+   * **전원 브로드캐스트(RQ-41)**: `this.broadcast()`는 `players`/
+   * `spectators` 컬렉션과 무관하게 이 룸에 연결된 모든 클라이언트에
+   * 전송한다 — 관전자도 발신·수신 양쪽에 참여하고, 전송자 자신도 포함된다
+   * (자기 메시지도 서버 확정 형태로 동일 채널에서 렌더링하기 위함).
+   * **상한(50, `UI.CHAT_HISTORY`)**: 초과분은 배열 앞(가장 오래된 것)부터
+   * 폐기한다.
+   */
+  private handleChat(senderId: string, text: string): void {
+    const nickname = this.resolveNickname(senderId)
+    if (nickname === undefined) return // onLeave와 경합해 이미 나간 세션 — 방어적 가드
+
+    const message: ChatMessage = { nickname, text: filterProfanity(text) }
+    this.chatHistory.push(message)
+    if (this.chatHistory.length > UI.CHAT_HISTORY) {
+      this.chatHistory.shift()
+    }
+
+    this.broadcast('chat', message)
+  }
+
+  /** 발신자의 확정 닉네임을 `players`·`spectators` 어느 쪽에 있든 찾는다
+   * (RQ-41: 채팅 발신 주체가 둘 중 하나로 고정되지 않는다). */
+  private resolveNickname(sessionId: string): string | undefined {
+    return this.state.players.get(sessionId)?.nickname ?? this.state.spectators.get(sessionId)?.nickname
   }
 
   /**
@@ -478,6 +551,13 @@ export class GameRoom extends Room<GameState> {
    * (`allocateSpawnPoint`)에서 스폰 지점을 받고, 그 지점 기준으로 스폰
    * 보호 타이머를 시작한다(item C — GA-10 "최초 입장도 보호" 보강 테스트가
    * 이 초기화에 의존한다).
+   *
+   * RQ-40: 정원 판정과 무관하게(플레이어든 관전자든) 입장이 확정된
+   * 클라이언트에게 단일 대상 전송(`client.send`, 브로드캐스트 아님)으로
+   * 보관 중인 채팅 이력을 즉시 보낸다 — "재접속"도 새 연결로 다시
+   * `joinOrCreate`하는 것이라 이 한 지점이 최초 입장·재접속 양쪽을 자동으로
+   * 충족한다(test-writer 계약 §3.3 "가정 3"). 복사본(`[...this.chatHistory]`)을
+   * 보내 이후 서버 쪽 배열 변경이 이미 보낸 값에 영향을 주지 않게 한다.
    */
   override onJoin(client: Client, options?: { nickname?: unknown }): void {
     const rawNickname = typeof options?.nickname === 'string' ? options.nickname : ''
@@ -496,6 +576,7 @@ export class GameRoom extends Room<GameState> {
       this.moveStates.set(client.sessionId, spawnMoveState(point))
       this.spawnedAtTick.set(client.sessionId, this.state.tick)
       this.firedSinceSpawn.set(client.sessionId, false)
+      client.send('chat-history', [...this.chatHistory])
       return
     }
 
@@ -503,6 +584,7 @@ export class GameRoom extends Room<GameState> {
       const spectator = new Spectator()
       spectator.nickname = nickname
       this.state.spectators.set(client.sessionId, spectator)
+      client.send('chat-history', [...this.chatHistory])
       return
     }
 

@@ -4,12 +4,14 @@ import { WORLD } from '@shared/constants'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
+import type { UiStoreState } from '@client/store/uiStore'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
 import { PlayerControls } from '@client/scene/PlayerControls'
 
 interface GameSceneProps {
   store: StoreApi<GameStoreState>
   connection: GameConnection
+  uiStore: StoreApi<UiStoreState>
 }
 
 /**
@@ -25,7 +27,7 @@ interface GameSceneProps {
  * 덮어쓰므로(1인칭 위치로) 의미 있는 값은 아니다 — 접속 첫 프레임까지의
  * 짧은 과도 상태일 뿐이다.
  */
-export function GameScene({ store, connection }: GameSceneProps) {
+export function GameScene({ store, connection, uiStore }: GameSceneProps) {
   return (
     <Canvas
       // ADR-0001: WebGL2 고정. WebGPU는 쓰지 않는다.
@@ -44,7 +46,7 @@ export function GameScene({ store, connection }: GameSceneProps) {
       </mesh>
       <gridHelper args={[WORLD.SIZE_M, WORLD.SIZE_M]} />
       <PlayerMeshes store={store} connection={connection} />
-      <PlayerControls store={store} connection={connection} />
+      <PlayerControls store={store} connection={connection} uiStore={uiStore} />
     </Canvas>
   )
 }

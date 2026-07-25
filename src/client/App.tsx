@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createGameStore } from '@client/store/gameStore'
+import { createUiStore } from '@client/store/uiStore'
 import { connectToGame } from '@client/net/connection'
 import type { GameConnection } from '@client/net/connection'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
+import { ChatPanel } from '@client/hud/ChatPanel'
 
 /**
  * 클라이언트 → Colyseus 접속 엔드포인트. 같은 오리진의 ws(s) 주소를
@@ -39,6 +41,7 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  */
 export function App() {
   const [store] = useState(() => createGameStore())
+  const [uiStore] = useState(() => createUiStore())
   const [connection, setConnection] = useState<GameConnection | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -77,14 +80,16 @@ export function App() {
     <div className="app">
       {connection ? (
         <>
-          <GameScene store={store} connection={connection} />
-          {/* HUD 레이어 — 캔버스 밖 DOM. RQ-50~55는 이후 단계에서 붙인다. */}
+          <GameScene store={store} connection={connection} uiStore={uiStore} />
+          {/* HUD 레이어 — 캔버스 밖 DOM. RQ-51/53~55는 이후 단계에서 붙인다. */}
           <div className="hud" aria-live="polite">
             {/* 22b 임시 크로스헤어(RQ-54 자리표시) — 조준점이 없으면 어디를
                 쏘는지 알 수 없어 사격 자체를 확인할 수 없다. 정식 디자인·
                 탄퍼짐 시각화는 DESIGN.md 확정 이후(fe.md HUD 체크리스트). */}
             <span className="hud__crosshair" aria-hidden="true" />
             <span className="hud__placeholder">ChatStrike — 접속됨</span>
+            {/* RQ-40/41/95 최소 채팅 패널(RQ-52 자리) — ChatPanel.tsx 참고. */}
+            <ChatPanel connection={connection} uiStore={uiStore} />
           </div>
         </>
       ) : (

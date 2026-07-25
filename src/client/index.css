@@ -57,6 +57,51 @@ body {
   opacity: 0.6;
 }
 
+/* RQ-40/41/95 채팅 패널(RQ-52 자리, 좌하단) — 기능 최소, 시각 디자인은
+   DESIGN.md 확정 이후 유예. `.hud`가 pointer-events: none이므로 입력을
+   받는 요소는 여기서 개별적으로 되살린다. */
+.hud__chat {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  width: 22rem;
+  max-width: calc(100vw - 2rem);
+  pointer-events: auto;
+}
+
+.hud__chat-log {
+  max-height: 8rem;
+  overflow-y: auto;
+  margin-bottom: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: rgb(0 0 0 / 35%);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.hud__chat-message {
+  margin: 0.15rem 0;
+  word-break: break-word;
+}
+
+.hud__chat-nickname {
+  font-weight: 600;
+}
+
+.hud__chat-form {
+  display: flex;
+}
+
+.hud__chat-input {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  background: rgb(0 0 0 / 45%);
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 4px;
+  color: inherit;
+  font-size: 0.85rem;
+}
+
 /* 닉네임 입장 화면 — 기능 최소, 시각 디자인은 DESIGN.md 확정 이후 유예
    (`harness/workflow/fe.md`). */
 .join-screen {
