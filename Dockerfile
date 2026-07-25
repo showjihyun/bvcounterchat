@@ -54,7 +54,12 @@ EXPOSE 2567
 
 # ADR-0009: 이 헬스체크가 GA-41·GA-43(재시작 후 /health 200 복구)이 기대하는
 # 컨테이너 상태 신호다. curl은 alpine 기본 이미지에 없어 busybox wget을 쓴다.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+# retries=5는 docker-compose.yml의 app healthcheck와 같은 값이다(리뷰 minor
+# 5) — compose가 이 이미지 기본값을 덮어쓰므로(compose 안에서 기동하는 한
+# compose 쪽이 유효), 두 값이 갈리면 어느 쪽이 실제로 적용되는지 읽는
+# 사람이 헷갈린다. 이 HEALTHCHECK 자체는 `docker run`으로 compose 없이
+# 단독 기동할 때를 위해 남겨둔다.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
   CMD wget -q -O /dev/null --spider http://127.0.0.1:2567/health || exit 1
 
 CMD ["node", "dist/server/index.js"]
@@ -69,6 +74,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # 있어야 하므로, 이 헬스체크가 app 프록시 경로(/health)에 의존하면
 # 두 컨테이너의 장애가 뒤섞여 원인 파악이 어려워진다. app 자체의 헬스
 # (GA-41·GA-43)은 스모크 스크립트가 nginx를 거쳐 /health를 직접 요청해
-# 별도로 검증한다.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+# 별도로 검증한다. retries=5는 docker-compose.yml의 nginx healthcheck와
+# 같은 값이다(리뷰 minor 5, server 스테이지와 동일한 이유).
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
   CMD wget -q -O /dev/null --spider http://127.0.0.1/ || exit 1

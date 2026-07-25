@@ -8,6 +8,14 @@
   (RQ-90 무기 수치, RQ-92 이동 수치처럼 🟡 PENDING인 정확한 값에 의존하는
   케이스만 blocked_on_spec으로 표시한다 — 관계·순서·권위 같은 이미 ✅확정된
   규칙은 임의 수치 없이도 검증 가능하므로 todo로 둔다.)
+  **예외(RQ-80, GA-41~43, 리뷰 minor 7)**: 배포 인프라(Docker/Nginx) 검증은
+  vitest 통합 테스트 경계 밖이라 `verify`가 테스트 파일이 아니라 **셸
+  스크립트**(`scripts/smoke-deploy.sh`)다. 이 스크립트는 `scripts/check.sh`·
+  CI 워크플로 어디에도 연결돼 있지 않다(ADR-0008 §7의 3분 예산상 실 Docker
+  빌드·기동을 CI에 넣는 건 부적절 — 제외가 의도적 설계). 즉 **사람이 배포
+  전 수동으로 실행**해야 하는 게이트이며, `nginx.conf`·`Dockerfile`의 회귀는
+  일반 PR의 `check.sh`가 잡지 못한다 — 이 인프라 파일을 건드리는 PR은
+  리뷰어가 별도로 `bash scripts/smoke-deploy.sh` 실행을 요구해야 한다.
 - **트랙 B** (`golden/track-b-harness.jsonl`): 하네스 행동. CLAUDE.md·hook·skill을
   바꿨을 때 새 세션에서 태스크를 던져보고 rubric을 사람이 체크한다.
   (자동화하고 싶어지면 그때 LLM judge를 붙인다 — 지금은 수동으로 충분)

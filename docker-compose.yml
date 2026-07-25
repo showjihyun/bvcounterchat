@@ -17,6 +17,16 @@ services:
       # 컨테이너 기본값(src/server/index.ts: PORT=2567, HOST=0.0.0.0)과
       # 동일하지만, 배포 계약을 이 파일에 명시적으로 남겨 운영자가 서버
       # 소스를 열어보지 않아도 알 수 있게 한다.
+      #
+      # 주의(리뷰 minor 4): 이 값은 겉보기와 달리 단독으로 오버라이드할 수
+      # 없다 — 바꾸면 아래 healthcheck의 URL(2567 하드코딩)과
+      # `nginx.conf`의 `upstream chatstrike_app { server app:2567; }`도
+      # **함께** 바꿔야 한다. 셋 중 하나만 바꾸면 healthcheck 실패(→
+      # nginx가 `depends_on: service_healthy`로 영영 대기) 또는 nginx→app
+      # 프록시 연결 실패로 이어진다. 지금은 세 곳이 상수를 중복 보유한
+      # 상태를 "env로 바꿀 수 있다"는 착각 없이 명시해두는 것으로 대응한다
+      # (실제 동적화는 nginx 템플릿(envsubst) 도입이 필요 — 이번 라운드
+      # 스코프 밖).
       - PORT=2567
       - HOST=0.0.0.0
       - NODE_ENV=production
@@ -47,6 +57,20 @@ services:
       # 호스트에 노출하는 유일한 포트 — HTTP/WS 동일 오리진(ADR-0009).
       # app은 nginx를 통해서만 도달 가능하다(직접 포트 게시 없음).
       - '${HOST_HTTP_PORT:-8080}:80'
+      # --- TLS 종단(현재 비활성) — ADR-0009 결정 2, 리뷰 major 2(a안).
+      # `nginx.conf` 하단의 주석 처리된 `listen 443 ssl` 서버 블록과 짝을
+      # 이룬다. 활성화 절차는 nginx.conf 쪽 주석에 번호로 정리했다 —
+      # 여기서는 포트 게시만 주석 해제하면 된다(코드 변경 불필요).
+      # - '443:443'
+    # volumes:
+    #   # TLS 인증서(현재 비활성) — 호스트 ./certs/에 fullchain.pem·
+    #   # privkey.pem을 두고 이 블록 전체(volumes: 포함)의 주석을 해제하면
+    #   # nginx.conf의 `/etc/nginx/certs/...` 경로가 그 파일을 가리킨다
+    #   # (ADR-0009 결정 2 "인증서 경로를 환경변수/볼륨으로"). 빈 `volumes:`
+    #   # 키는 YAML상 무효(compose가 "must be a array"로 거부)라 지금은
+    #   # 키 자체를 통째로 주석 처리해뒀다 — 활성화 시 아래 두 줄의 `#`를
+    #   # 모두 지운다.
+    #   - ./certs:/etc/nginx/certs:ro
     healthcheck:
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', '--spider', 'http://127.0.0.1/']
       interval: 10s
