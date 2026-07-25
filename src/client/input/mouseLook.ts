@@ -15,7 +15,14 @@ import { MOUSE_SENSITIVITY_RAD_PER_PX } from '@client/config/look-tuning'
  * 경우, ESC로 락 해제 후 UI 조작 중인 경우).
  */
 export interface MouseLookController {
-  getAngles(): LookAngles
+  /**
+   * 현재 각도. **내부 상태 객체의 참조를 그대로 반환한다** — `useFrame`에서
+   * 매 프레임 호출되므로 복사본을 만들면 프레임당 할당이 된다(프레임 예산
+   * 규칙). 대신 `Readonly`로 좁혀 호출자가 변형하지 못하게 한다(리뷰
+   * minor 4). `accumulateLook`은 새 객체를 반환하므로 이전에 받아둔 참조는
+   * stale이 될 뿐 오염되지 않는다 — 호출자는 매번 새로 읽는다.
+   */
+  getAngles(): Readonly<LookAngles>
   dispose(): void
 }
 
@@ -30,7 +37,7 @@ export function createMouseLookController(canvas: HTMLCanvasElement, doc: Docume
   doc.addEventListener('mousemove', onMouseMove)
 
   return {
-    getAngles(): LookAngles {
+    getAngles(): Readonly<LookAngles> {
       return angles
     },
     dispose(): void {

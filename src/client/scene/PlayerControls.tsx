@@ -64,18 +64,29 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
     const movementTracker = createMovementInputTracker()
     const fireCooldown = createLocalFireCooldown()
 
-    function handleFireClick(): void {
+    function handleFireDown(event: MouseEvent): void {
+      // 주 버튼(좌클릭)만 발사한다 — 우클릭·휠클릭은 조준경(스펙 없음)이나
+      // 브라우저 기본 동작이라 발사로 해석하지 않는다.
+      if (event.button !== 0) return
       // 락이 걸리기 전(입장 직후 첫 클릭)에는 발사하지 않는다 — 그 클릭은
       // `attachPointerLock`의 리스너가 락 요청에 이미 쓴다. 두 리스너가
-      // 같은 'click' 이벤트를 공유해도 충돌하지 않는다: 락 요청은
+      // 같은 마우스 입력을 공유해도 충돌하지 않는다: 락 요청은
       // 비동기(`requestPointerLock()`)라 같은 이벤트 처리 중에는 아직
       // `document.pointerLockElement`가 갱신되지 않는다.
       if (document.pointerLockElement !== canvas) return
-      if (!fireCooldown.tryFire(performance.now())) return
+      // 'click'이 아니라 'mousedown'을 쓴다(리뷰 minor 2) — click은
+      // mousedown+mouseup 완결 시 발생해 **버튼을 떼는 순간** 발사된다.
+      // 길게 누른 클릭이 그만큼 늦게 나가고, RQ-90의 400 RPM 리듬 실측에도
+      // 잡음이 섞인다. 누르는 순간 나가는 것이 FPS의 기대 동작이다.
+      //
+      // 시각은 `connection.now()` 한 곳에서만 읽는다(리뷰 minor 1) —
+      // `connection.ts`가 "성능 시계를 읽는 유일한 지점"으로 스스로를
+      // 규정했고, 스냅샷 수신 시각·보간 렌더 시각과 같은 축을 쓰게 된다.
+      if (!fireCooldown.tryFire(connection.now())) return
       const { yaw, pitch } = mouseLook.getAngles()
       connection.room.send('fire', yawPitchToDirection(yaw, pitch))
     }
-    canvas.addEventListener('click', handleFireClick)
+    canvas.addEventListener('mousedown', handleFireDown)
 
     // RQ-62 이동 입력 전송 루프와 동일한 주기(NET.TICK_MS, 30Hz) —
     // `App.tsx`에 있던 루프를 여기로 옮겼다(yaw 회전에 `mouseLook`이
@@ -92,7 +103,7 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
       mouseLook.dispose()
       mouseLookRef.current = null
       movementTracker.dispose()
-      canvas.removeEventListener('click', handleFireClick)
+      canvas.removeEventListener('mousedown', handleFireDown)
       window.clearInterval(movementIntervalId)
     }
   }, [gl, connection])
