@@ -527,6 +527,21 @@ export class GameRoom extends Room<GameState> {
    * 보낸 것이 맞다 — 다음 `move` 메시지가 오면 자연히 갱신된다). 여기서
    * 지우면 스키마 `lastProcessedInputSeq` 값과 어긋나 클라 예측 버퍼
    * 정리(trim) 로직에 불필요한 혼란을 준다.
+   *
+   * **리뷰 minor 5 — 암묵 의존**: 이 함수가 `reloadStartedAtTick`을 지우지
+   * 않는 안전성("살아있을 때 시작한 재장전이 죽고 나서도 리스폰을 넘어가지
+   * 않는다")은 `RELOAD_TICKS`(`WEAPON.RELOAD_MS`=2000ms) <
+   * `RESPAWN_TICKS`(`PLAYER.RESPAWN_MS`=3000ms)라는 관계에 암묵적으로
+   * 의존한다 — major 1의 `canAct` 가드(`handleReload`)는 *시신이* 새
+   * 재장전을 거는 것만 막을 뿐, 사망 자체는 이미 진행 중이던 재장전을
+   * 취소하지 않는다. 사망 틱에 막 시작한 재장전이라도 현재 값으로는
+   * 리스폰(3초=90틱) 전에 항상 완료된다(2초=60틱 < 90틱). **이 부등식이
+   * 뒤집히면**(예: 재장전을 4초로 튜닝) 죽기 직전 건 정상 재장전 잠금이
+   * 리스폰을 넘어 살아남아, 방금 부활한 멀쩡한 플레이어가 다시 사격 불가
+   * 에 빠질 수 있다 — **그때는 이 함수가 `reloadStartedAtTick`도 지워야
+   * 한다.** 지금은 그 값을 보존하는 편이 "재장전 중 사망해도 리스폰하면
+   * 남은 재장전이 계속 진행돼 그대로 완료된다"는 게임 감각과 일치하고
+   * 스펙이 이 경로에 침묵하므로 바꾸지 않는다.
    */
   private respawnPlayer(sessionId: string, player: Player, currentTick: number): void {
     const point = this.allocateSpawnPoint()
