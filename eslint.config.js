@@ -16,6 +16,13 @@ export default tseslint.config(
     files: ['src/server/**/*.ts', 'tests/**/*.ts', '*.config.ts', 'vite.alias.ts'],
     languageOptions: { globals: globals.node },
   },
+  {
+    // RQ-80: 배포 스모크 헬퍼(scripts/smoke-ws-check.mjs)는 컨테이너
+    // 밖(호스트 node)에서 실행하는 인프라 스크립트다 — src/server와 동일하게
+    // Node 전역이 필요하다.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: globals.node },
+  },
 
   // ADR-0010: src/shared는 런타임 환경 중립이어야 한다. 브라우저 전용
   // (window·document)도 Node 전용(process·fs)도 쓰면 안 된다 — 양쪽에서
