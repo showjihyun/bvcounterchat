@@ -95,8 +95,23 @@ const RELOAD_TOTAL_WAIT_MS = WEAPON.RELOAD_MS + 400
 /** REV2(major-2 재현): 최초 재장전 요청으로부터 두 번째 `'reload'`를
  * 보내는 지연 — 재장전 완료(`WEAPON.RELOAD_MS`=2000ms) 한참 전이라
  * "재장전 진행 중" 재요청임이 보장된다(타이머 재시작 결함이 성립하려면
- * 필수 전제). */
-const SECOND_RELOAD_DELAY_MS = 800
+ * 필수 전제).
+ *
+ * **리뷰 minor 6** (`_workspace/review/feat-RQ-10-11-ammo-reload.md`):
+ * 이 상수(`d`)가 이 `it`의 판별 여유를 정한다 — 검사 시점은
+ * `RELOAD_TOTAL_WAIT_MS`(=2400ms, 최초 요청 기준). 두 조건 모두 만족해야
+ * 하는데 여유가 서로 다른 방향으로 움직인다:
+ *   - 조건 A(두 번째 요청이 재장전 **중**에 도착): `d < 2000`
+ *     → 여유 = `2000 - d`
+ *   - 조건 B(결함이 있으면 검사 시점에 **아직** 잠겨 있어야 함,
+ *     즉 `d + 2000 > 2400`): `d > 400` → 여유 = `d - 400`
+ * `d`를 키우면 A가 좁아지고 B가 넓어진다(반대 방향) — 두 여유를 동시에
+ * 최대화하는 지점은 `2000-d = d-400` → `d=1200`이고, 그때 각각 800ms다.
+ * 원래 값 800은 A=1200ms/B=400ms로 불균형해 B가 병목이었다(클라이언트
+ * 스톨 한 번에 거짓 음성 가능) — 1200으로 올려 최소 여유를 400→800ms로
+ * 넓힌다. **이 값을 임의로 줄이지 말 것** — 줄이면 조건 B의 여유가
+ * 선형으로 줄어 가드가 다시 좁아진다. */
+const SECOND_RELOAD_DELAY_MS = 1200
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
