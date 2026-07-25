@@ -53,6 +53,18 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 피해자의 `hp`가 "생존(>0) → 사망(<=0)"으로 **전이**하는 그 사격에서만
  * `kills`를 1 증가시킨다 — 이미 hp<=0인 대상에 대한 추가 사격은 몇 번을
  * 맞아도 `kills`를 다시 올리지 않는다.
+ *
+ * **REV(구현 후 셋업 적응, RQ-15~16 라운드, team-lead 지시)**: RQ-15/16이
+ * 이 파일이 "스코프 제외"라 적었던 리스폰·스폰 보호를 실제로 구현하면서
+ * (위 스코프 제외 문구는 "이 파일이 그 사후 상태를 검증하지 않는다"는
+ * 의미로 여전히 유효하다 — 사망 **이후**의 재배치·보호는 여전히 이 파일의
+ * 관측 대상이 아니다), 두 전제가 깨졌다: B는 접속 직후 3초간 보호돼
+ * 킬-셋업의 첫 발이 무효화됐고, A는 더 이상 원점에 고정되지 않는다
+ * (`_workspace/RQ-15-16/02_coder_green.md` §3.3). 대응은 다른 legacy 파일과
+ * 동일: B가 킬 시퀀스 전에 스스로(빗나가는 방향으로) 한 발 쏴 자신의
+ * 최초 입장 보호를 즉시 해제하고, `aimAtBody`가 A의 실제 위치를 읽어
+ * 상대 오프셋을 계산하도록 일반화했다. 두 `it()`의 단언(HP 감소량·킬
+ * 크레딧·재사격 킬 불변)은 전혀 손대지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -67,6 +79,11 @@ const SETTLE_MS = 200
 const BETWEEN_SHOTS_MS = 300
 /** "변화 없음"을 확인하기 위한 관찰 구간(여러 상태 갱신을 거치기 충분한 여유). */
 const NO_CHANGE_OBSERVATION_MS = 500
+
+/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
+ * 위치와 무관하게 안전하다. REV: B가 이 방향으로 자기 자신을 쏘면 자신의
+ * 스폰 보호가 즉시 해제된다(RQ-16). */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -124,6 +141,7 @@ async function leaveRoom(room: Room): Promise<void> {
 
 interface VictimFields {
   x: number
+  z: number
   hp: number
 }
 
@@ -131,13 +149,18 @@ interface KillerFields {
   kills: number
 }
 
+/** REV: `z` 필드를 추가했다 — A가 더 이상 원점에 고정되지 않아(RQ-31
+ * onJoin 로테이션) 조준 벡터 계산에 두 플레이어의 z좌표가 모두 필요하다
+ * (파일 상단 REV 참고). 이 함수는 "피해자"뿐 아니라 사수 A의 위치를 읽는
+ * 데도 재사용한다(구조적으로 x·z·hp만 필요하면 되므로 `readKiller`와
+ * 별도로 새 헬퍼를 만들지 않았다). */
 function readVictim(room: Room, sessionId: string): VictimFields | undefined {
   const state = room.state as {
-    players?: { get?: (key: string) => { x?: unknown; hp?: unknown } | undefined }
+    players?: { get?: (key: string) => { x?: unknown; z?: unknown; hp?: unknown } | undefined }
   } | null
   const player = state?.players?.get?.(sessionId)
-  if (typeof player?.x === 'number' && typeof player?.hp === 'number') {
-    return { x: player.x, hp: player.hp }
+  if (typeof player?.x === 'number' && typeof player?.z === 'number' && typeof player?.hp === 'number') {
+    return { x: player.x, z: player.z, hp: player.hp }
   }
   return undefined
 }
@@ -233,12 +256,18 @@ async function travelAndSettle(mover: Room): Promise<VictimFields> {
   return settled
 }
 
-function aimAtBody(targetXOffset: number): { dirX: number; dirY: number; dirZ: number } {
+/** REV: A가 더 이상 원점에 고정되지 않으므로(RQ-31 onJoin 로테이션) 두
+ * 위치 모두를 인자로 받는 일반형이다(`rq-15`·`rq-16`과 동일 패턴). */
+function aimAtBody(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+): { dirX: number; dirY: number; dirZ: number } {
   const bodyCenterM = (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
   const dy = bodyCenterM - DEFAULT_HITBOX.eyeHeightM
-  const dx = targetXOffset
-  const magnitude = Math.sqrt(dx * dx + dy * dy)
-  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: 0 }
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
 describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자에게 킬이 1 기록된다', () => {
@@ -259,12 +288,14 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
       const roomB = await joinGame(newClient(server))
 
       const baselineB = await waitForDefinedVictim(roomB, roomB.sessionId)
+      const baselineAPosition = await waitForDefinedVictim(roomA, roomA.sessionId) // 위치 재사용(REV)
       const baselineA = await waitForDefinedKiller(roomA, roomA.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
       expect(baselineA.kills).toBe(0)
 
-      const settledB = await travelAndSettle(roomB)
-      const aim = aimAtBody(settledB.x)
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
+      const aim = aimAtBody(baselineAPosition, settledB)
 
       let lastHp = baselineB.hp
       for (let shot = 1; shot <= 3; shot += 1) {
@@ -320,6 +351,26 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
    * "최초 사망 시 킬 1 기록"에 이어, **그 뒤의 재사격이 킬 수를 더 올리지
    * 않는다**는 불변식만 추가로 확인한다(HP의 이후 진행치는 team-lead 지시대로
    * 관찰 범위 밖 — 킬 수 불변이 핵심 계약이다).
+   *
+   * **REV(RQ-15~16 라운드)**: 위 문단의 "RQ-15가 스코프 밖"은 이제
+   * 사실이 아니다(RQ-15가 구현됐다) — 다만 사망→재사격→관찰까지의 총
+   * 경과가 500~600ms 수준으로 `PLAYER.RESPAWN_MS`(3000ms)에 한참 못
+   * 미쳐 리스폰이 이 테스트의 타이밍에 개입하지 않는다. 이 문단은 역사적
+   * 맥락(리뷰가 왜 이 결함을 지적했는지)으로 그대로 남긴다.
+   *
+   * **REV2(델타 재리뷰 minor 대응 — 시신 통과 결정 이후 방어선 재정리)**:
+   * 시신 통과(minor-3, `rq-15-corpse-bullet-passthrough.test.ts`) 결정
+   * 이후 킬 파밍 방어는 **2층 구조**다 — ① `GameRoom.handleFire`의
+   * hitscan 후보 수집이 `canAct(player.hp)`로 시신을 아예 걸러내(사망자는
+   * `findClosestHit`의 후보 목록에 들어가지도 않는다), 재사격이 대상
+   * 자체에 닿지 않는다. ② 설령 후보에 남더라도(이 필터가 없던 시절, 혹은
+   * 향후 필터 정책이 바뀌는 경우를 대비한 두 번째 방어선) `applyDamage`의
+   * "생존→사망 **전이**에서만 `died` true" 규칙(`tests/unit/
+   * sim-combat.test.ts:420-429`가 A계층에서 직접 고정)이 막는다. 지금은
+   * ①에서 이미 막히므로 아래 사격은 대상 히트박스에 도달조차 하지
+   * 않는다 — `kills` 불변 단언은 여전히 참이지만, "여전히 히트박스에
+   * 명중한다"던 원래 설명(아래 사격 직전 주석)은 더 이상 사실이 아니다
+   * (정정 — 커버리지 구멍은 아니다, 방어가 ①로 옮겨갔을 뿐이다).
    */
   it(
     'RQ-14 리뷰 major 재현: B가 사망(킬 1 기록)한 뒤 A가 rate-limit 간격을 지켜 B의 시신을 재사격해도, A의 킬 수는 1로 불변이다',
@@ -327,11 +378,13 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))
 
+      const baselineAPosition = await waitForDefinedVictim(roomA, roomA.sessionId) // 위치 재사용(REV)
       await waitForDefinedVictim(roomB, roomB.sessionId)
       await waitForDefinedKiller(roomA, roomA.sessionId)
 
-      const settledB = await travelAndSettle(roomB)
-      const aim = aimAtBody(settledB.x)
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
+      const aim = aimAtBody(baselineAPosition, settledB)
 
       // GA-08과 동일한 절차로 B를 사망시킨다(바디샷 4회, rate-limit 간격 준수).
       for (let shot = 1; shot <= 4; shot += 1) {
@@ -354,9 +407,13 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
       )
       expect(afterDeath.kills).toBe(1) // 최초 사망 — 정상 크레딧(전제 확인)
 
-      // 핵심 재현 — RQ-15 미구현으로 B의 시신은 그대로 원위치에 남아 있어
-      // 동일 조준이 여전히 히트박스에 명중한다. rate-limit(150ms)을 확실히
-      // 지켜 재사격한다.
+      // 핵심 재현(REV2 정정 — 위 docblock REV2 참고): 이 사격은 더 이상
+      // B의 히트박스에 명중하지 않는다 — B(hp=0)가 handleFire의 후보 수집
+      // 단계에서 canAct 가드에 걸러져 findClosestHit 후보 목록에 아예
+      // 들어가지 않기 때문이다(①층 방어). 그래도 "재사격해도 kills가
+      // 오르지 않는다"는 이 테스트의 계약 자체는 변하지 않는다(방어가
+      // ①로 옮겨갔을 뿐 결과는 동일) — rate-limit(150ms)을 확실히 지켜
+      // 재사격한다.
       roomA.send('fire', aim)
 
       // "변화 없음"은 순간 스냅샷으로 증명할 수 없다 — 여러 상태 갱신을

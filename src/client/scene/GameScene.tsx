@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber'
 import type { StoreApi } from 'zustand/vanilla'
 import { WORLD } from '@shared/constants'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
@@ -29,7 +30,11 @@ export function GameScene({ store, connection }: GameSceneProps) {
     <Canvas
       // ADR-0001: WebGL2 고정. WebGPU는 쓰지 않는다.
       gl={{ powerPreference: 'high-performance', antialias: false }}
-      camera={{ fov: 75, position: [0, 1.7, 5], near: 0.1, far: WORLD.SIZE_M * 2 }}
+      // 초기 카메라 높이는 눈높이 상수를 그대로 쓴다(리뷰 minor 1 — 이전엔
+      // 리터럴 1.7이었고 `eyeHeightM`이 1.7로 복원되며 우연히 일치했다).
+      // 첫 프레임에 `PlayerControls`가 예측 위치로 덮어쓰므로 과도값이지만,
+      // 리터럴을 남기면 상수가 바뀔 때 조용히 어긋난다(ADR-0010).
+      camera={{ fov: 75, position: [0, DEFAULT_HITBOX.eyeHeightM, 5], near: 0.1, far: WORLD.SIZE_M * 2 }}
     >
       <color attach="background" args={['#c2b49a']} />
       <hemisphereLight intensity={1.2} groundColor="#8a7a5c" />

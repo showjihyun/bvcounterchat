@@ -20,19 +20,23 @@ export interface SpreadTuning {
  * 5개 필드는 그대로 타입 검사되면서, `.eyeHeightM` 접근도 `number`로(옵셔널이
  * 아니게) 타입이 잡힌다.
  *
- * 머리 볼륨 상단(`headCenterM + headRadiusM` = 1.80) 위로 여유를 두고
- * `eyeHeightM`을 잡은 이유: RQ-31(스폰 지점 로테이션)이 아직 없어 모든
- * 플레이어가 원점에 겹쳐 스폰한다(`GameRoom.spawnMoveState`). 눈높이가 머리
- * 볼륨 안이나 그 아래 있으면, 겹쳐 스폰한 상태에서 위쪽을 조준한 사격이
- * 상대의 머리(자기 자신이 서 있는 바로 그 자리)를 스스로 "관통"하며 명중으로
- * 오판정된다 — 눈높이를 머리 볼륨 위로 두면 이 겹쳐 스폰 시나리오에서도
- * 위쪽 조준은 항상 깨끗하게 빗나간다.
+ * **복원 완료(RQ-15~16 라운드, item E)**: 이전에는 `eyeHeightM`을 머리
+ * 볼륨 상단(`headCenterM + headRadiusM` = 1.80) 위로 인위적으로 띄워
+ * 뒀다 — RQ-31(스폰 지점 로테이션)이 아직 없어 모든 플레이어가 원점에
+ * 겹쳐 스폰했기 때문이다(`GameRoom.spawnMoveState`, 옛 구현). 눈높이가
+ * 머리 볼륨 안이나 그 아래 있으면, 겹쳐 스폰한 상태에서 위쪽을 조준한
+ * 사격이 상대의 머리(자기 자신이 서 있는 바로 그 자리)를 스스로 "관통"하며
+ * 명중으로 오판정됐다.
  *
- * **복원 조건(리뷰 minor, `_workspace/review/feat-RQ-12-14-combat-core.md`)**:
- * 1.9m는 평균 키(1.8m 이하)를 넘는 비현실값이다 — RQ-31(비겹침 스폰)이
- * 도입돼 플레이어들이 서로 다른 위치에서 시작하게 되면, 이 겹쳐 스폰
- * 회피 목적이 사라지므로 현실적인 눈높이(머리 볼륨 상단 이하)로 되돌리고
- * GA-06을 재검증해야 한다.
+ * **복원 조건 이행(리뷰 minor, `_workspace/review/feat-RQ-12-14-combat-core.md`
+ * → `_workspace/RQ-15-16/01_test-writer_red.md` §6이 GA-06 무관을 수식으로
+ * 재확인)**: RQ-31(선택 규칙)이 `@shared/sim/spawn`의 순환 로테이션으로
+ * 도입돼 플레이어들이 서로 다른 좌표에서 시작하므로, 겹쳐 스폰 회피
+ * 목적이 사라졌다 — 평균 키(1.8m 이하)를 넘지 않는 현실값(1.7m)으로
+ * 되돌렸다. GA-06(`rq-12-client-hit-claim-rejected.test.ts`)은 A·B의
+ * XZ 좌표가 다르기만 하면 `eyeHeightM` 값과 무관하게 성립한다(수식적
+ * 근거는 위 Red 보고서 §6) — 실측으로도 계속 Green(coder 실행 확인,
+ * `_workspace/RQ-15-16/02_coder_green.md` 참고).
  */
 export const DEFAULT_HITBOX: HitboxConfig & { eyeHeightM: number } = {
   bodyRadiusM: 0.3,
@@ -40,7 +44,7 @@ export const DEFAULT_HITBOX: HitboxConfig & { eyeHeightM: number } = {
   bodyTopM: 1.5,
   headRadiusM: 0.15,
   headCenterM: 1.65, // 머리 볼륨 [1.50, 1.80] — 바디 상단과 겹침 없이 맞닿는다(가정 A)
-  eyeHeightM: 1.9, // 머리 볼륨 상단(1.80) 위 0.1m 여유
+  eyeHeightM: 1.7, // 현실적인 평균 눈높이(RQ-31 비겹침 스폰 도입으로 복원, item E)
 }
 
 /** 탄퍼짐 콘 반경(RQ-90) — 실제 수치는 밸런싱 단계 결정(원장 22a, 이번 RQ

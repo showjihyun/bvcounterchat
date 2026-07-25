@@ -45,12 +45,24 @@ interface PlayerControlsProps {
  * 않아도 된다 — 예측도 회전된 입력을 그대로 받으므로 서버 판정(RQ-20,
  * `stepMovement`)과 같은 좌표계로 정합한다.
  *
- * 카메라 높이: `@shared/config/combat-tuning`의 `DEFAULT_HITBOX
+ * 카메라 높이와 서버 레이 원점의 정합: 서버는 `@shared/sim/combat`의
+ * `eyeOrigin(발 위치, eyeHeightM)`으로 hitscan 레이 원점을 만든다(RQ-15/16
+ * 라운드에서 도입한 단일 진실 공급원). 이 컴포넌트는 **같은 상수**를 쓰되
+ * 그 함수를 호출하지는 않는다 — `eyeOrigin`은 새 객체를 반환하는데 여기는
+ * `useFrame`(60fps)이라 프레임당 할당이 되어 `harness/workflow/fe.md`의
+ * 프레임 예산 규칙을 깬다. 즉 공유되는 것은 **값**이고, `발 + eyeHeightM`
+ * 이라는 한 줄 산술만 두 곳에 있다. 무할당 변형(`copyPositionInto` 선례의
+ * out-파라미터)을 `@shared`에 추가할지는 다음 FE 라운드 판단이며 원장에
+ * 이월돼 있다 — 그 전까지 이 파일과 `eyeOrigin`의 정의가 갈라지면 조준선과
+ * 서버 판정이 어긋난다는 점을 유지보수자가 알고 있어야 한다.
+ *
+ * 카메라 높이 값 자체: `@shared/config/combat-tuning`의 `DEFAULT_HITBOX
  * .eyeHeightM`을 그대로 재사용한다(값 복제 금지, ADR-0010) — 서버
  * `GameRoom.handleFire`의 레이 원점이 같은 상수를 쓰므로 1인칭 시점과
- * 서버 판정 레이 원점이 시각적으로 정합한다. 1.9m가 평균 키보다 높아
- * 보이는 이유는 `combat-tuning.ts`의 "복원 조건" 주석 참고(RQ-31 스폰
- * 로테이션 도입 전까지의 잠정값 — 겹쳐 스폰 회피).
+ * 서버 판정 레이 원점이 시각적으로 정합한다. 현재 값 1.7m는 현실적인 평균
+ * 눈높이다 — RQ-15/16 라운드에서 스폰 로테이션이 들어와 겹쳐 스폰이
+ * 사라지면서 잠정값 1.9m에서 복원했다(22a 후속 이월 ①, 경위는
+ * `combat-tuning.ts` 주석).
  */
 export function PlayerControls({ store, connection }: PlayerControlsProps) {
   const { camera, gl } = useThree()

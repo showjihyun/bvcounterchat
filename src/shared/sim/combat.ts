@@ -60,6 +60,21 @@ export interface HitscanResult {
   point?: Vec3
 }
 
+/**
+ * `footPosition`의 y에 `eyeHeightM`만큼 더한 지점(x·z는 불변) — 서버
+ * hitscan 레이 원점과 클라이언트 1인칭 카메라 높이가 공유해야 하는 유일한
+ * 계산(RQ-15~16 라운드 REV — `_workspace/RQ-15-16/01_test-writer_red.md`
+ * §12, 22b 교차 리뷰에서 발견된 계산 중복 지점을 단일 진실 공급원으로
+ * 통합). `eyeHeightM`을 함수 내부에서 `DEFAULT_HITBOX.eyeHeightM`으로 직접
+ * 읽지 않고 인자로 받는 이유: `combat-tuning.ts`가 "의존 방향은
+ * config→sim"이라고 명시했으므로, 이 함수가 그 값을 직접 참조하면 방향이
+ * 뒤집힌다 — 호출자(서버·클라 둘 다 이미 `DEFAULT_HITBOX`를 임포트한다)가
+ * 값을 넘긴다.
+ */
+export function eyeOrigin(footPosition: Vec3, eyeHeightM: number): Vec3 {
+  return { x: footPosition.x, y: footPosition.y + eyeHeightM, z: footPosition.z }
+}
+
 /** 레이 뒤쪽(t<0) 오탐을 배제하는 여유(가정 B). */
 const FORWARD_EPS = 1e-9
 /** 레이 방향이 y축에 사실상 평행한지 판정하는 임계 — 방향이 정규화된

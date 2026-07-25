@@ -4,6 +4,7 @@ import {
   applySpread,
   canFire,
   damageForRegion,
+  eyeOrigin,
   findClosestHit,
   raycastHitbox,
   type HitboxConfig,
@@ -13,7 +14,7 @@ import {
   type Vec3,
 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
-import { DEFAULT_SPREAD } from '@shared/config/combat-tuning'
+import { DEFAULT_HITBOX, DEFAULT_SPREAD } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
 
 /**
@@ -114,6 +115,45 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * **결정론·환경 중립**: `src/shared/sim/`이라 ADR-0008/ADR-0010 lint
  * 대상 — `Math.random()`·`Date.now()` 직접 호출 금지. 탄퍼짐은 주입된
  * `SeededRng`(`@shared/sim/rng`)만 쓴다.
+ *
+ * **REV(RQ-15~16 라운드, 계약 확장) — `eyeOrigin` 추가**: 22b(클라
+ * 조준·사격) 평가 세션이 변이 검증으로 실증한 교차 리뷰 발견 —
+ * 서버(`GameRoom.handleFire`)와 클라(`PlayerControls.tsx`, `feat/
+ * client-aim-fire` 브랜치)가 각각 **따로** `footPosition.y +
+ * DEFAULT_HITBOX.eyeHeightM`을 인라인 계산해 사격 레이 원점/1인칭 카메라
+ * 높이를 구한다 — 같은 상수를 참조하니 값 복제는 아니지만, 계산 **지점이
+ * 둘**이라 한쪽만 다른 식으로 바뀌어도(예: 헤드밥·앉기 높이 보정 추가)
+ * 아무 게이트에 걸리지 않고 "화면에 보이는 것 = 서버가 판정하는 것"이
+ * 조용히 어긋난다. `eyeOrigin(footPosition, eyeHeightM)`을 단일 진실
+ * 공급원으로 추가해 양쪽이 같은 함수를 부르게 하는 것이 목적이다.
+ *
+ * **파라미터화 근거(값을 감추지 않는 이유)**: `eyeHeightM`을 함수 내부에서
+ * `DEFAULT_HITBOX.eyeHeightM`으로 직접 읽지 않고 인자로 받는다 —
+ * `combat-tuning.ts`가 이미 "의존 방향은 config→sim이다(판정 엔진이
+ * 특정 기본값을 몰라도 되게 하기 위함)"라고 명시했으므로, `combat.ts`가
+ * `combat-tuning.ts`를 임포트하면 이 방향이 뒤집힌다. 호출자(서버·클라
+ * 둘 다 이미 `DEFAULT_HITBOX`를 임포트하고 있다)가 `eyeHeightM` 값을
+ * 넘기는 것이 기존 의존 방향을 지키는 유일한 선택이다.
+ *
+ * ```ts
+ * // src/shared/sim/combat.ts (확장)
+ * // footPosition의 y에 eyeHeightM만큼 더한 지점(x·z는 불변) — 서버
+ * // hitscan 레이 원점과 클라 1인칭 카메라 높이가 공유해야 하는 유일한
+ * // 계산.
+ * export function eyeOrigin(footPosition: Vec3, eyeHeightM: number): Vec3
+ * ```
+ *
+ * **범위 한계(명시)**: 이 계약은 **순수 함수 자체**만 고정한다.
+ * `GameRoom.handleFire`(서버, 이 워크트리 안)가 실제로 이 함수를 호출
+ * 하도록 배선하는지는 이 라운드의 관측 가능한 결과(HP·킬 등)를 바꾸지
+ * 않으므로(인라인 계산과 값이 동일) 통합 테스트로 강제할 수 없다 —
+ * coder가 배선하는 것을 assumption으로만 남긴다. `PlayerControls.tsx`
+ * (클라, `feat/client-aim-fire` 브랜치 — **이 워크트리에는 없다**,
+ * 별도 git worktree라 파일 자체를 읽을 수 없었다)의 배선은 이 세션이
+ * 검증할 수 없다 — R3F 렌더 코드는 애초에 단위/통합 테스트 대상이
+ * 아니고(ADR-0008 §6), 그 브랜치가 이 브랜치와 합쳐질 때 리뷰가 확인해야
+ * 한다. `_workspace/RQ-15-16/01_test-writer_red.md` §12에 이 한계를
+ * 상세히 남겼다.
  */
 
 function magnitude(v: Vec3): number {
@@ -229,6 +269,47 @@ describe('RQ-12 hitscan 판정 — 레이 × 2단 히트박스(헤드/바디) �
     const result = raycastHitbox(ray, ORIGIN_TARGET, TEST_HITBOX)
 
     expect(result.hit).toBe(false)
+  })
+})
+
+describe('eyeOrigin — 발 위치 + 눈높이로 사격 레이 원점을 계산(클라·서버 공유 계약, RQ-15~16 라운드 REV)', () => {
+  it('발 위치에서 y만 eyeHeightM만큼 올라간 지점을 반환한다(x·z는 불변)', () => {
+    const foot: Vec3 = { x: 3, y: 0, z: -5 }
+    expect(eyeOrigin(foot, 1.7)).toEqual({ x: 3, y: 1.7, z: -5 })
+  })
+
+  it('발이 원점(y=0)이 아니어도(예: 공중) 눈높이는 그 y값에 더해진다', () => {
+    const foot: Vec3 = { x: 0, y: 2.4, z: 0 }
+    expect(eyeOrigin(foot, 1.7)).toEqual({ x: 0, y: 4.1, z: 0 })
+  })
+
+  it('eyeHeightM이 0이면 발 위치와 동일하다(퇴화 케이스)', () => {
+    const foot: Vec3 = { x: 1, y: 0, z: 1 }
+    expect(eyeOrigin(foot, 0)).toEqual(foot)
+  })
+
+  it('DEFAULT_HITBOX.eyeHeightM(실제 설정값)을 그대로 넘겨도 동일한 산술로 동작한다 — 서버 hitscan·클라 1인칭 카메라가 공유해야 하는 계산', () => {
+    const foot: Vec3 = { x: 10, y: 0, z: -10 }
+    const result = eyeOrigin(foot, DEFAULT_HITBOX.eyeHeightM)
+
+    expect(result.x).toBe(foot.x)
+    expect(result.y).toBe(DEFAULT_HITBOX.eyeHeightM)
+    expect(result.z).toBe(foot.z)
+  })
+
+  it('반환값을 그대로 raycastHitbox의 ray.origin에 써도 기존 조준 계산과 동일한 명중 판정을 낸다(회귀 없음 확인)', () => {
+    // 이 파일 최상단 "바디 원통 범위 내 높이·중심축 관통 레이는 바디에
+    // 명중한다" 테스트와 동일한 시나리오를, origin의 y좌표만
+    // eyeOrigin으로 계산해 재현한다 — 인라인 산술(y: footY + eyeHeightM)과
+    // eyeOrigin(foot, eyeHeightM).y가 값으로 완전히 같다는 것을 실제
+    // 판정 경로로도 확인한다.
+    const foot: Vec3 = { x: 0, y: 1, z: -10 }
+    const origin = eyeOrigin(foot, 0) // eyeHeightM=0이므로 origin === foot
+    const ray: Ray = { origin, direction: { x: 0, y: 0, z: 1 } }
+    const result = raycastHitbox(ray, ORIGIN_TARGET, TEST_HITBOX)
+
+    expect(result.hit).toBe(true)
+    expect(result.region).toBe('body')
   })
 })
 
