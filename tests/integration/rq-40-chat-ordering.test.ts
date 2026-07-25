@@ -53,6 +53,15 @@ import { buildServer } from '@server/index'
  * 고정한다)이 보강한다: 도착 순서가 A,B,C로 고정된 걸 알고 있는 상태에서
  * 수신 순서가 정확히 A,B,C인지 하드코딩 단언한다.
  *
+ * **REV2(evaluator §7 지목 구멍 보강)**: `it 2`(교차 수신자 일관성)와 `it 3`
+ * (제어된 순차)만으로는 "그 순서가 곧 서버 도착 순서다"가 **동시 in-flight
+ * 구간**에서 비어 있었다 — `it 3`은 항상 "동시에 떠 있는 메시지가 1개뿐인"
+ * 상태만 만들어, 도착 순서를 뒤바꾼 채 전원에게 균일하게 전달하는 결함(예:
+ * 브로드캐스트 앞 배칭)을 놓쳤다(변이 프로브로 실증). `it 4`(단일 소켓
+ * 버스트)가 이 구멍을 메운다 — 한 소켓 안에서는 TCP 순서 보장 + Colyseus
+ * 동기 디스패치로 "도착 순서 == 송신 순서"가 결정론적으로 성립하므로, 여러
+ * 메시지를 동시에 in-flight로 만들면서도 순서를 하드코딩 단언할 수 있다.
+ *
  * **공허화 방지(team-lead 경고)**: `it 1`은 순서 검증 이전에 "메시지 전달
  * 자체가 실제로 동작하는가"를 양성 대조군으로 먼저 고정한다 — 이게 없으면
  * 브로드캐스트가 아예 고장나 아무도 메시지를 못 받는 상황에서도(모든 수신
@@ -321,6 +330,50 @@ describe('RQ-40 Global Chat — 도착 순서 보존', () => {
         expect(watcherC.received.map((m) => m.text)).toEqual(expectedOrder)
 
         await Promise.all([leaveRoom(roomA), leaveRoom(roomB), leaveRoom(roomC)])
+      },
+      25_000,
+    )
+
+    /**
+     * REV2(team-lead 보강 지시, evaluator §7): `it 2`(교차 수신자 일관성)와
+     * `it 3`(제어된 순차)만으로는 GA-12 then의 "그 순서가 곧 서버 도착
+     * 순서다"가 **동시 in-flight 구간**(=GA-12의 given 자체)에서 비어 있다
+     * — `it 3`은 매 송신이 이전 메시지의 전원 수신 확인 이후에만 일어나
+     * 동시에 떠 있는 메시지가 항상 1개뿐이라, "도착 순서와 다르지만 전원에게
+     * 동일하게" 전달하는 결함(예: 브로드캐스트 앞 배칭·비동기 단계 삽입)을
+     * 놓친다(evaluator 프로브 P2b가 균일 전역 역순 변이로 3건 전부 통과함을
+     * 실증). `it 2`는 3개의 독립 소켓이라 "실제 서버 도착 순서가 무엇이었나"
+     * 자체를 이 테스트가 모른다(그래서 하드코딩 단언이 불가능했다 — 파일
+     * 헤더 "설계 결정").
+     *
+     * 이 테스트는 **단일 TCP 소켓**에서 `await` 없이 5개를 연속 송신해 동시
+     * in-flight를 만들되, TCP가 단일 연결 내 도착 순서를 보장하고 Colyseus가
+     * 단일 이벤트 루프에서 메시지를 동기 디스패치하므로(`GameRoom.handleChat`
+     * docblock "순서 보장(GA-12)" 참고) **서버 도착 순서 == 송신 순서**가
+     * flaky 없이 성립한다 — 그래서 "송신 순서 그대로 도착"을 직접 하드코딩
+     * 단언할 수 있다. 이 기법은 이미 `rq-40-chat-history-restore.test.ts`
+     * (51개 연속 송신)가 쓰는 것과 동일하다. 다자 소켓에서 순서를
+     * 하드코딩하지 않는다는 원래 설계 결정과 충돌하지 않는다 — 여기서
+     * 하드코딩하는 것은 "단일 소켓의 송신 순서"이지 "여러 소켓 간 도착
+     * 순서"가 아니다.
+     */
+    it(
+      'RQ-40/GA-12(단일 소켓 버스트): 한 소켓에서 연속 송신한 5개가 수신자에게 송신 순서 그대로 도착한다',
+      async () => {
+        const sender = await joinWithNickname(server, 'burst-sender')
+        const receiver = await joinWithNickname(server, 'burst-receiver')
+        const watcher = watchChat(receiver)
+
+        const texts = ['b-1', 'b-2', 'b-3', 'b-4', 'b-5']
+        for (const text of texts) sender.send('chat', { text }) // await 없음 = 동시 in-flight
+
+        await waitForChatCount(receiver, watcher, texts.length, CHAT_TIMEOUT_MS, '수신자가 5개 전부 수신')
+
+        // GA-12 핵심(REV2로 보강되는 부분) — 도착 순서 == 송신 순서. 배칭·재정렬·
+        // 역순 브로드캐스트가 끼어들면 이 단언이 깨진다(evaluator P2b가 반례로 확인).
+        expect(watcher.received.map((m) => m.text)).toEqual(texts)
+
+        await Promise.all([leaveRoom(sender), leaveRoom(receiver)])
       },
       25_000,
     )
