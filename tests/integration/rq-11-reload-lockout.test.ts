@@ -57,6 +57,17 @@ import { PLAYER, WEAPON } from '@shared/constants'
  *
  * **제외**: 클라 탄약 HUD(RQ-53), 재장전 애니메이션·사운드, 리스폰 시
  * 탄창 초기화(스펙 침묵).
+ *
+ * **REV2 — 리뷰 major-2 재현(순증, 골든 신설 아님)**:
+ * `_workspace/review/feat-RQ-10-11-ammo-reload.md` major 2 —
+ * `handleReload`(`GameRoom.ts:229-237`)가 진행 중인 재장전을 확인하지 않고
+ * 매 수신마다 `reloadStartedAtTick`을 현재 tick으로 덮어써, 재장전 중
+ * `'reload'`를 반복 전송하면(현실적 트리거: RQ-53에서 R키를 바인딩하면
+ * 키 오토리피트가 이 경로를 그대로 밟는다) 관측되는 재장전 시간이 "2초"를
+ * 넘는다 — RQ-11 원문("시스템은 2초의 재장전을 수행해야 한다")·GA-04
+ * then("2초 경과 후에는 정상적으로 사격 가능하다")과 어긋난다. 아래
+ * describe (a)에 회귀 가드 `it()` 1건을 순증한다(ADR-0011 §3, 기존 단언
+ * 무변경) — 리뷰가 권고한 위치·문구 그대로.
  */
 
 const ROOM_NAME = 'game'
@@ -81,6 +92,11 @@ const RELOAD_REQUEST_SETTLE_MS = 200
 /** 재장전(WEAPON.RELOAD_MS=2000ms) 완료를 확실히 넘기는 여유(스케줄링
  * 지터 흡수, `rq-16` PROTECTION_EXPIRE_WAIT_MS 산정과 동일 정신). */
 const RELOAD_TOTAL_WAIT_MS = WEAPON.RELOAD_MS + 400
+/** REV2(major-2 재현): 최초 재장전 요청으로부터 두 번째 `'reload'`를
+ * 보내는 지연 — 재장전 완료(`WEAPON.RELOAD_MS`=2000ms) 한참 전이라
+ * "재장전 진행 중" 재요청임이 보장된다(타이머 재시작 결함이 성립하려면
+ * 필수 전제). */
+const SECOND_RELOAD_DELAY_MS = 800
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -271,6 +287,77 @@ describe('RQ-11/GA-04 (a): 명시적 재장전 요청 — 탄창이 남아 있�
       } finally {
         // allSettled — 정리 자체의 실패(예: 이미 끊긴 연결의 leave 타임아웃)가
         // try 블록에서 던져진 진짜 단언 실패를 가려서는 안 된다.
+        await Promise.allSettled([leaveRoom(roomA), leaveRoom(roomB)])
+      }
+    },
+    30_000,
+  )
+
+  it(
+    'RQ-11 리뷰 major-2 재현: 재장전 중 두 번째 reload 요청을 반복 전송해도, 최초 요청 시점 기준 2초 후에는 사격이 가능해야 한다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomB = await joinGame(newClient(server))
+
+      try {
+        const baselineA = await waitForPlayerCondition(roomA, roomA.sessionId, () => true, 'A 초기 스냅샷', HP_TIMEOUT_MS)
+        const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
+        expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+        roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제(RQ-16)
+        await sleep(SELF_FIRE_SETTLE_MS)
+
+        const aim = aimAtBody(baselineA, baselineB)
+
+        // 양성 대조군(공허화 방지) — 재장전 스팸을 시작하기 전, 이 조준
+        // 벡터가 실제로 명중함을 먼저 고정한다.
+        roomA.send('fire', aim)
+        const afterFirstShot = await waitForPlayerCondition(
+          roomB,
+          roomB.sessionId,
+          (p) => p.hp < PLAYER.MAX_HP,
+          '1번째 사격(양성 대조군) 후 HP 감소 대기',
+          HP_TIMEOUT_MS,
+        )
+        expect(afterFirstShot.hp).toBeLessThan(PLAYER.MAX_HP)
+        const hpAfterFirstShot = afterFirstShot.hp
+
+        await sleep(BETWEEN_SHOTS_MS)
+
+        // 최초 재장전 요청 — RQ-11 "2초"의 기준이 되어야 하는 시점이다.
+        roomA.send('reload', {})
+        const firstReloadAtMs = Date.now()
+
+        // 재장전 진행 중(아직 완료 전, SECOND_RELOAD_DELAY_MS만큼 경과한
+        // 시점)에 두 번째 'reload'를 반복 전송한다 — 리뷰 major-2가 지적한
+        // 스팸 경로(키 오토리피트로도 도달 가능, 'reload'에는 rate-limit이
+        // 없다).
+        await sleep(SECOND_RELOAD_DELAY_MS)
+        roomA.send('reload', {})
+
+        // 최초 요청 기준 RELOAD_TOTAL_WAIT_MS(재장전 2초 + 마진)가 지날
+        // 때까지 남은 시간을 기다린다 — 스펙(RQ-11 "2초의 재장전")대로라면
+        // 이 시점에는 이미 사격 가능해야 한다.
+        const elapsedSinceFirstReload = Date.now() - firstReloadAtMs
+        const waitUntilExpectedUnlockMs = Math.max(0, RELOAD_TOTAL_WAIT_MS - elapsedSinceFirstReload)
+        await sleep(waitUntilExpectedUnlockMs)
+
+        // 핵심 Red 단언 — 현재 구현은 두 번째 요청이 타이머를 재시작해
+        // 완료를 뒤로 미루므로(major-2), 이 시점에는 여전히 잠겨 있어 이
+        // 사격이 무시된다(HP 불변) — 아래 단언이 타임아웃으로 실패한다.
+        // (드롭된 'fire' 메시지는 재시도되지 않으므로, 타임아웃을 넉넉히
+        // 둬도 뒤늦게 우연히 통과할 위험이 없다 — 서버가 이 메시지를 다시
+        // 처리하는 경로 자체가 없다.)
+        roomA.send('fire', aim)
+        const afterExpectedUnlock = await waitForPlayerCondition(
+          roomB,
+          roomB.sessionId,
+          (p) => p.hp < hpAfterFirstShot,
+          'RQ-11 major-2: 최초 재장전 요청 기준 2초 경과 후 사격 시 HP 추가 감소 대기 — 현재 구현에서는 두 번째 reload가 타이머를 재시작해 타임아웃된다',
+          HP_TIMEOUT_MS,
+        )
+        expect(afterExpectedUnlock.hp).toBeLessThan(hpAfterFirstShot)
+      } finally {
         await Promise.allSettled([leaveRoom(roomA), leaveRoom(roomB)])
       }
     },
