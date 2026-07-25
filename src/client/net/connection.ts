@@ -38,11 +38,15 @@ function now(): number {
   return performance.now()
 }
 
-/** RQ-31(스폰 지점 로테이션)은 스코프 밖 — 서버(`GameRoom.spawnMoveState`)와
- * 동일하게 원점·접지 상태에서 예측을 시작한다. 이 초기값의 정확도는
- * 중요하지 않다 — 첫 서버 스냅샷 도착 시 곧바로 재조정되고(버퍼가
- * 비어 있어 서버 값을 그대로 채택), 이 값은 그 전까지의 짧은 과도
- * 상태일 뿐이다. */
+/** 서버 상태를 아직 못 읽었을 때만 쓰는 **최후 폴백**이다.
+ *
+ * RQ-15/16 이전에는 서버도 원점에서 스폰했으므로 이 값이 서버와 일치했다.
+ * 지금은 서버가 스폰 로테이션(`@shared/sim/spawn`, 최대 반경 22m)에서
+ * 시작하므로 **원점은 더 이상 서버와 같지 않다** — 그래서 아래
+ * `connectToGame`이 접속 직후 권위 상태를 먼저 읽어 그것으로 예측을
+ * 시드하고, 이 함수는 그마저 없을 때(스키마가 아직 안 채워진 순간)만
+ * 쓰인다. 시드가 어긋나면 첫 스냅샷 도착(패치 ~20Hz) 전에 보낸 입력이
+ * 원점 기준으로 예측돼 카메라가 스폰 지점까지 한 번 튄다(리뷰 major 3). */
 function initialPredictionState(): MoveState {
   return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
 }
@@ -187,7 +191,11 @@ export async function connectToGame(
 
   store.getState().setSelfSessionId(room.sessionId)
 
-  const predictor: ClientPredictor = createClientPredictor(initialPredictionState())
+  // RQ-15/16: 서버가 스폰 로테이션 지점에서 시작하므로 권위 상태를 먼저
+  // 읽어 예측을 시드한다 — 원점으로 시드하면 첫 패치 전까지의 입력이
+  // 원점 기준으로 예측돼 시점이 스폰 지점까지 튄다(리뷰 major 3).
+  // `joinOrCreate` 응답에 초기 상태가 실려 오므로 대개 여기서 읽힌다.
+  const predictor: ClientPredictor = createClientPredictor(readSelfAuthoritativeState(room) ?? initialPredictionState())
   const interpolator: RemoteEntityInterpolator = createRemoteEntityInterpolator(
     room.sessionId,
     INTERPOLATION_DELAY_MS,
