@@ -31,6 +31,16 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 허용 예외). 모든 대기에 `withTimeout()` 상한. 위치는 `rq-20` 패턴대로
  * 실제 이동 입력으로 구동하고, 도달한 최종 위치를 읽어 조준 각도를
  * 계산한다(가정한 거리에 결합하지 않는다).
+ *
+ * **REV(구현 후 셋업 적응, RQ-15~16 라운드, team-lead 지시)**: RQ-16
+ * item C(최초 입장도 스폰 보호)와 RQ-31(onJoin도 스폰 로테이션) 구현으로
+ * 이 파일의 두 전제가 깨졌다 — B가 접속 직후 3초간 보호돼 사격이
+ * 무효화됐고, A가 더 이상 원점에 고정되지 않는다
+ * (`_workspace/RQ-15-16/02_coder_green.md` §3.3). 대응은
+ * `rq-12-server-hitscan.test.ts`의 REV와 동일: B가 킬 시퀀스 전에
+ * 스스로(빗나가는 방향으로) 한 발 쏴 보호를 즉시 해제하고, `aimAt`이
+ * A의 실제 위치를 읽어 상대 오프셋을 계산하도록 일반화했다. 단언(HP
+ * 감소량 50) 자체는 손대지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -41,6 +51,11 @@ const LEAVE_TIMEOUT_MS = 5_000
 const HP_TIMEOUT_MS = 5_000
 const TRAVEL_MS = 900
 const SETTLE_MS = 200
+
+/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
+ * 위치와 무관하게 안전하다. REV: B가 이 방향으로 자기 자신을 쏘면 자신의
+ * 스폰 보호가 즉시 해제된다(RQ-16). */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -98,16 +113,20 @@ async function leaveRoom(room: Room): Promise<void> {
 
 interface PlayerFields {
   x: number
+  z: number
   hp: number
 }
 
+/** REV: `z` 필드를 추가했다 — A가 더 이상 원점에 고정되지 않아(RQ-31
+ * onJoin 로테이션) 조준 벡터 계산에 두 플레이어의 z좌표가 모두 필요하다
+ * (파일 상단 REV 참고, 원래는 x만으로 충분했다). */
 function readPlayer(room: Room, sessionId: string): PlayerFields | undefined {
   const state = room.state as {
-    players?: { get?: (key: string) => { x?: unknown; hp?: unknown } | undefined }
+    players?: { get?: (key: string) => { x?: unknown; z?: unknown; hp?: unknown } | undefined }
   } | null
   const player = state?.players?.get?.(sessionId)
-  if (typeof player?.x === 'number' && typeof player?.hp === 'number') {
-    return { x: player.x, hp: player.hp }
+  if (typeof player?.x === 'number' && typeof player?.z === 'number' && typeof player?.hp === 'number') {
+    return { x: player.x, z: player.z, hp: player.hp }
   }
   return undefined
 }
@@ -157,13 +176,19 @@ async function travelAndSettle(mover: Room): Promise<PlayerFields> {
   return settled
 }
 
-/** 원점(y=0)에 고정된 사수에서, +X로 targetXOffset만큼 떨어진 대상의
- * verticalCenterM 높이를 정확히 조준하는 방향 벡터(정규화)를 계산한다. */
-function aimAt(targetXOffset: number, verticalCenterM: number): { dirX: number; dirY: number; dirZ: number } {
+/** shooter(발 위치)에서 target(발 위치)의 verticalCenterM 높이를 정확히
+ * 조준하는 방향 벡터(정규화)를 계산한다. REV: A가 더 이상 원점에 고정되지
+ * 않으므로(RQ-31 onJoin 로테이션) 두 위치 모두를 인자로 받는 일반형이다. */
+function aimAt(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+  verticalCenterM: number,
+): { dirX: number; dirY: number; dirZ: number } {
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
   const dy = verticalCenterM - DEFAULT_HITBOX.eyeHeightM
-  const dx = targetXOffset
-  const magnitude = Math.sqrt(dx * dx + dy * dy)
-  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: 0 }
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
 describe('RQ-13/GA-07: 머리 명중은 바디 데미지의 정확히 2배(50)를 적용한다', () => {
@@ -183,11 +208,13 @@ describe('RQ-13/GA-07: 머리 명중은 바디 데미지의 정확히 2배(50)�
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))
 
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      const settledB = await travelAndSettle(roomB)
-      const aim = aimAt(settledB.x, DEFAULT_HITBOX.headCenterM)
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
+      const aim = aimAt(baselineA, settledB, DEFAULT_HITBOX.headCenterM)
       roomA.send('fire', aim)
 
       const afterShot = await waitForHpCondition(

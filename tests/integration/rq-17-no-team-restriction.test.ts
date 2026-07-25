@@ -34,6 +34,18 @@ import { PLAYER, WEAPON } from '@shared/constants'
  *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존(ADR-0008
  * 허용 예외). 모든 대기에 `withTimeout()` 상한.
+ *
+ * **REV(구현 후 셋업 적응, RQ-15~16 라운드, team-lead 지시)**: RQ-16
+ * item C(최초 입장도 스폰 보호)와 RQ-31(onJoin도 스폰 로테이션) 구현으로
+ * A→B 사격이 B의 최초 입장 보호에 막혀 무효화됐고, "B → A: 반대 방향
+ * (-distance)" 조준도 A가 원점(x=0)이라는, 더 이상 성립하지 않는 전제에
+ * 의존했다(`_workspace/RQ-15-16/02_coder_green.md` §3.3). 대응: (1) B가
+ * A의 사격 전에 스스로(빗나가는 방향으로) 한 발 쏴 자신의 보호를 즉시
+ * 해제한다 — A는 자신이 쏘는 행위 자체로 자신의 보호가 자동 해제되므로
+ * (RQ-16 "사격하면 즉시 해제"는 대상이 아니라 사수 자신에게 적용) 별도
+ * 조치가 필요 없다. (2) `aimAtBody`가 두 플레이어의 실제 위치를 읽어
+ * 상대 오프셋을 계산하도록 일반화했다. 단언(양방향 HP 감소량) 자체는
+ * 손대지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -44,6 +56,11 @@ const LEAVE_TIMEOUT_MS = 5_000
 const HP_TIMEOUT_MS = 5_000
 const TRAVEL_MS = 900
 const SETTLE_MS = 200
+
+/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
+ * 위치와 무관하게 안전하다. REV: B가 이 방향으로 자기 자신을 쏘면 자신의
+ * 스폰 보호가 즉시 해제된다(RQ-16). */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -101,16 +118,20 @@ async function leaveRoom(room: Room): Promise<void> {
 
 interface PlayerFields {
   x: number
+  z: number
   hp: number
 }
 
+/** REV: `z` 필드를 추가했다 — A·B 둘 다 더 이상 원점에 고정되지 않아
+ * (RQ-31 onJoin 로테이션) 조준 벡터 계산에 두 플레이어의 z좌표가 모두
+ * 필요하다(파일 상단 REV 참고). */
 function readPlayer(room: Room, sessionId: string): PlayerFields | undefined {
   const state = room.state as {
-    players?: { get?: (key: string) => { x?: unknown; hp?: unknown } | undefined }
+    players?: { get?: (key: string) => { x?: unknown; z?: unknown; hp?: unknown } | undefined }
   } | null
   const player = state?.players?.get?.(sessionId)
-  if (typeof player?.x === 'number' && typeof player?.hp === 'number') {
-    return { x: player.x, hp: player.hp }
+  if (typeof player?.x === 'number' && typeof player?.z === 'number' && typeof player?.hp === 'number') {
+    return { x: player.x, z: player.z, hp: player.hp }
   }
   return undefined
 }
@@ -160,14 +181,21 @@ async function travelAndSettle(mover: Room): Promise<PlayerFields> {
   return settled
 }
 
-/** shooterX(고정, 0으로 가정)에서 targetX(발 위치)의 바디 중심을 조준하는
- * 방향 벡터(정규화) — 부호 있는 수평 오프셋(targetX - shooterX)을 받는다. */
-function aimAtBody(horizontalOffset: number): { dirX: number; dirY: number; dirZ: number } {
+/** shooter(발 위치)에서 target(발 위치)의 바디 중심을 조준하는 방향 벡터
+ * (정규화). REV: 두 플레이어 모두 더 이상 원점에 고정되지 않으므로(RQ-31
+ * onJoin 로테이션) 두 위치 모두를 인자로 받는 일반형이다(`rq-15`·`rq-16`과
+ * 동일 패턴) — "B → A"(반대 방향) 조준도 이제 A의 실제 위치를 target으로
+ * 넘기면 그대로 성립한다. */
+function aimAtBody(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+): { dirX: number; dirY: number; dirZ: number } {
   const bodyCenterM = (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
   const dy = bodyCenterM - DEFAULT_HITBOX.eyeHeightM
-  const dx = horizontalOffset
-  const magnitude = Math.sqrt(dx * dx + dy * dy)
-  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: 0 }
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
 describe('RQ-17: 팀 판정 없이 모든 플레이어 간 피해가 양방향으로 허용된다(Friendly Fire = 아군 판정 없음)', () => {
@@ -184,7 +212,7 @@ describe('RQ-17: 팀 판정 없이 모든 플레이어 간 피해가 양방향�
   it(
     'RQ-17: A가 B를 쏘면 B의 HP가 줄고, 곧이어 B가 A를 쏘면 A의 HP도 똑같이 준다 — 어느 쪽도 상대의 사격을 "아군"으로 취급해 막지 않는다',
     async () => {
-      const roomA = await joinGame(newClient(server)) // 원점(x=0) 고정
+      const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server)) // +X로 이동
 
       const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
@@ -192,11 +220,11 @@ describe('RQ-17: 팀 판정 없이 모든 플레이어 간 피해가 양방향�
       expect(baselineA.hp).toBe(PLAYER.MAX_HP)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      const settledB = await travelAndSettle(roomB)
-      const distance = settledB.x // A(x=0) 기준 B까지의 수평 거리
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
 
       // A → B: 명중해야 한다(팀 제약이 있다면 여기서부터 막힐 것이다).
-      roomA.send('fire', aimAtBody(distance))
+      roomA.send('fire', aimAtBody(baselineA, settledB))
       const bAfterHit = await waitForHpCondition(
         roomB,
         roomB.sessionId,
@@ -205,10 +233,12 @@ describe('RQ-17: 팀 판정 없이 모든 플레이어 간 피해가 양방향�
       )
       expect(bAfterHit.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY)
 
-      // B → A: 반대 방향(음의 오프셋)으로 A를 조준 — 이 사격도 동일하게
-      // 명중해야 한다. "먼저 쏜 쪽만 유효하다" 같은 숨은 우선순위가 있다면
-      // 여기서 실패한다.
-      roomB.send('fire', aimAtBody(-distance))
+      // B → A: A의 실제 위치를 target으로 조준 — 이 사격도 동일하게 명중해야
+      // 한다. "먼저 쏜 쪽만 유효하다" 같은 숨은 우선순위가 있다면 여기서
+      // 실패한다. A는 스스로 사격한 적이 있어(위 A→B) 자신의 최초 입장
+      // 보호가 이미 해제된 상태다(RQ-16 "사격하면 즉시 해제"는 사수 자신에게
+      // 적용 — 별도 release 불필요).
+      roomB.send('fire', aimAtBody(settledB, baselineA))
       const aAfterHit = await waitForHpCondition(
         roomA,
         roomA.sessionId,

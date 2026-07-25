@@ -48,6 +48,11 @@ import { PLAYER } from '@shared/constants'
  * 4. 자연 만료(GA-10 (3))는 별도 처리 없이 `isSpawnProtected`가 경과 시간만
  *    으로 false를 반환하는 것으로 충분하다 — 만료 시점에 별도 이벤트·필드
  *    갱신이 필요하지 않다.
+ *
+ * **REV(구현 후 셋업 적응, team-lead 지시)**: `killAndWaitForRespawn`
+ * 헬퍼가 이제 킬 시퀀스 시작 전 B의 자기-보호-해제 사격을 보낸다(item C가
+ * 최초 입장에도 적용되며 드러난 전제 붕괴 — 함수 docblock 참고). GA-10
+ * (1)(2)(3) 세 `it()` 본문의 단언은 변경하지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -208,7 +213,18 @@ const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
  * 겹쳐 있어 조준 벡터가 거의 수직이 되고 헤드샷으로 판정될 수 있어(각도
  * 우연) 이 헬퍼가 RQ-15/16과 무관한 이유로 타임아웃될 위험이 있다 — 매
  * 사격 후 "hp가 직전 값에서 실제로 줄었는가"만 확인해 부위와 무관하게
- * 강건하게 만든다. */
+ * 강건하게 만든다.
+ *
+ * **REV(구현 후 셋업 적응, team-lead 지시) — item C 대응**: coder 구현이
+ * RQ-16 item C(최초 입장도 스폰 보호)를 정확히 이행하면서, B는 접속 직후
+ * 부터 `SPAWN_PROTECTION_MS`(3000ms) 동안 보호된다 — 킬 시퀀스의 첫 발이
+ * 이 보호 창 안에서 나가 전부 무효화됐다(`_workspace/RQ-15-16/
+ * 02_coder_green.md` §3.2). 킬 시퀀스 시작 전에 B가 스스로(빗나가는
+ * 방향으로) 한 발 쏴 **자신의 최초 입장 보호**를 즉시 해제한다 — RQ-16
+ * "보호 중인 플레이어가 사격하면 즉시 해제"가 이미 제공하는 경로이며, 3초
+ * 대기보다 빠르다. 이 사전 해제는 **리스폰 이후**(GA-10이 실제로 검증하는
+ * 보호 상태)와는 다른 시점(사망 이전)의 별개 조치이므로, 아래 (1)(2)(3)
+ * 테스트 본문의 단언은 전혀 건드리지 않았다. */
 async function killAndWaitForRespawn(
   roomA: Room,
   roomB: Room,
@@ -216,6 +232,9 @@ async function killAndWaitForRespawn(
   const baselineA = await waitForPlayerCondition(roomA, roomA.sessionId, () => true, 'A 초기 스냅샷', HP_TIMEOUT_MS)
   const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
   expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+  roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제
+  await sleep(SELF_FIRE_SETTLE_MS)
 
   const aim = aimAtBody(baselineA, baselineB)
   let previousHp = baselineB.hp

@@ -77,6 +77,29 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * "정지 대기"만 예외적으로 고정 시간을 쓴다(값이 더 이상 변하지 않는다는
  * 것 자체를 확인하려는 목적이라 이벤트 기반 대기가 부적합 — `rq-20`의
  * "무입력이면 표류하지 않는다" 테스트와 같은 필요성).
+ *
+ * **REV(구현 후 셋업 적응, RQ-15~16 라운드, team-lead 지시)**: RQ-16
+ * item C(최초 입장도 스폰 보호)와 RQ-31(onJoin도 스폰 로테이션) 구현으로
+ * 이 파일의 두 가지 전제가 깨졌다 — (1) B는 접속 직후 `SPAWN_PROTECTION_MS`
+ * (3000ms) 동안 보호돼 즉시 사격이 무효화된다, (2) 사수 A가 더 이상
+ * 원점(0,0,0)에 고정되지 않는다(`_workspace/RQ-15-16/02_coder_green.md`
+ * §3.3 실측 근거). 대응: (1) 사격 시퀀스 전에 B가 스스로 빗나가는 방향
+ * (수직 위)으로 한 발 쏴 자신의 보호를 즉시 해제한다(RQ-16 "사격하면 즉시
+ * 해제" — 스펙이 제공하는 경로, 3초 대기보다 빠르다). (2) `aimAt`이 A의
+ * 실제 위치를 읽어 상대 오프셋을 계산하도록 일반화했다(`rq-15`·`rq-16`의
+ * `aimAtBody(shooter, target)` 패턴과 동일). 아래 `it()` 3건의 단언(HP
+ * 감소량·rate-limit 경계) 자체는 손대지 않았다.
+ *
+ * **부가 수정 — "무관한 방향" 테스트의 조준(하드코딩된 -X)**: 이 테스트는
+ * 원래 실패 목록에 없었지만(coder 실측상 우연히 계속 통과), 재검토 결과
+ * "A가 -X로 쏘면 +X에 있는 B를 못 맞힌다"는 근거가 A 원점 고정을 전제해서만
+ * 성립한다는 것을 발견했다 — A·B가 임의 위치가 되면 `dirY=0`(수평 레이,
+ * A의 눈높이에서 z축 무관 직진)가 B의 헤드 볼륨 높이와 같은 z를 가진 다른
+ * 스폰 지점을 지나가면 명중할 위험이 이론적으로 남는다(이번 SPAWN_POINTS
+ * 배치에서는 어떤 두 지점도 같은 z를 갖지 않아 우연히 안전했을 뿐 —
+ * 보장된 안전이 아니다). GA-06·GA-08이 이미 쓰는 검증된 안전 방향(수직 위,
+ * `UP_MISS_AIM`)으로 바꿔 좌표와 완전히 무관하게 만들었다 — "명중 불가능한
+ * 조준"이라는 given 의도는 그대로이고, HP 불변이라는 단언도 그대로다.
  */
 
 const ROOM_NAME = 'game'
@@ -94,6 +117,12 @@ const SETTLE_MS = 200
 const RAPID_REFIRE_MS = 40
 /** rate-limit 해제를 명백히 보장하는 여유(150ms 및 30Hz 양자화 오차 모두 충분히 초과). */
 const RATE_LIMIT_CLEAR_MS = 400
+
+/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
+ * 위치와 무관하게 안전하다. REV: (a) B가 이 방향으로 자기 자신을 쏘면
+ * 자신의 스폰 보호가 즉시 해제된다(RQ-16). (b) "무관한 방향" 테스트의
+ * 조준으로도 쓴다(하드코딩된 -X보다 좌표에 강건 — 파일 상단 REV 참고). */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -222,12 +251,18 @@ async function travelAndSettle(mover: Room): Promise<PlayerFields> {
   return settled
 }
 
-/** shooter(원점 고정, y=0)에서 target(발 위치)의 바디 또는 헤드 중심을
- * 정확히 조준하는 방향 벡터(정규화)를 계산한다. */
-function aimAt(targetXOffsetFromShooter: number, verticalCenterM: number): { dirX: number; dirY: number; dirZ: number } {
-  const dz = 0 // 이 파일의 모든 시나리오는 z축 이동 없음(순수 +X 분리)
+/** shooter(발 위치)에서 target(발 위치)의 바디 또는 헤드 중심을 정확히
+ * 조준하는 방향 벡터(정규화)를 계산한다. REV: A가 더 이상 원점에 고정되지
+ * 않으므로(RQ-31 onJoin 로테이션) 두 위치 모두를 인자로 받는 일반형이다 —
+ * `rq-15`·`rq-16`의 `aimAtBody(shooter, target)`와 동일한 패턴. */
+function aimAt(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+  verticalCenterM: number,
+): { dirX: number; dirY: number; dirZ: number } {
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
   const dy = verticalCenterM - DEFAULT_HITBOX.eyeHeightM
-  const dx = targetXOffsetFromShooter
   const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
@@ -250,16 +285,18 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
   it(
     'RQ-12/GA-05: A가 B를 정확히 조준해 사격하면, 서버가 계산한 hitscan 결과로 B의 HP가 바디 데미지만큼 감소한다',
     async () => {
-      const roomA = await joinGame(newClient(server)) // 원점 고정, 사수
+      const roomA = await joinGame(newClient(server)) // 사수
       const roomB = await joinGame(newClient(server)) // +X로 이동, 피격자
 
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      const settledB = await travelAndSettle(roomB)
-      expect(settledB.x).toBeGreaterThan(0) // 실제로 분리됐다는 전제 확인
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
+      expect(settledB.x).toBeGreaterThan(baselineB.x) // 실제로 +X로 이동했다는 전제 확인(원점 가정 제거)
 
-      const aim = aimAt(settledB.x, bodyCenterM())
+      const aim = aimAt(baselineA, settledB, bodyCenterM())
       roomA.send('fire', { dirX: aim.dirX, dirY: aim.dirY, dirZ: aim.dirZ })
 
       const afterShot = await waitForHpCondition(
@@ -282,10 +319,13 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       const roomB = await joinGame(newClient(server))
 
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
-      await travelAndSettle(roomB) // B를 +X로 분리(A의 조준 실패를 의미있게 만드는 전제)
+      await travelAndSettle(roomB) // B를 +X로 이동(원래 이동 시나리오 유지)
 
-      // B는 +X 방향에 있는데, A는 -X 방향으로 사격 — 기하학적으로 명중 불가능.
-      roomA.send('fire', { dirX: -1, dirY: 0, dirZ: 0 })
+      // REV: 수직 위(UP_MISS_AIM)를 조준 — A·B의 실제 XZ 위치와 무관하게
+      // 기하학적으로 항상 빗나간다(파일 상단 REV "부가 수정" 근거). 원래의
+      // 하드코딩 -X 방향은 A가 원점에 고정된다는, 더 이상 성립하지 않는
+      // 전제에 의존했다.
+      roomA.send('fire', UP_MISS_AIM)
 
       // "변화가 없음"은 순간 스냅샷 하나로 증명할 수 없다 — 몇 차례의 상태
       // 갱신(RQ-60 tick 포함)을 거치는 동안에도 hp가 그대로인지 확인한다.
@@ -316,9 +356,11 @@ describe('RQ-12/ADR-0005: 발사 속도 제한(rate-limit) — 150ms 미만 간�
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))
 
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
       await waitForDefinedPlayer(roomB, roomB.sessionId)
-      const settledB = await travelAndSettle(roomB)
-      const aim = aimAt(settledB.x, bodyCenterM())
+      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
+      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
+      const aim = aimAt(baselineA, settledB, bodyCenterM())
 
       // 1발 — 명중 처리(HP: 100 → 75).
       roomA.send('fire', aim)

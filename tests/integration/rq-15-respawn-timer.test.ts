@@ -63,6 +63,20 @@ import { SPAWN_POINTS } from '@shared/sim/spawn'
  * 테스트가 "A·B는 항상 서로 다른 XZ 위치에 스폰된다"를 실측으로 고정하므로,
  * GA-06은 **테스트 파일 수정 없이도** 새 eyeHeight·새 스폰 체계에서 계속
  * 성립한다 — 검증력 저하 없음(기존 단언을 건드리지 않았다).
+ *
+ * **REV(구현 후 셋업 적응, team-lead 지시)**: coder 구현이 RQ-16 item C
+ * (최초 입장도 스폰 보호)를 정확히 이행하면서, `killPlayer` 헬퍼가 "접속
+ * 직후 즉시 사격해 죽인다"는 전제가 깨졌다 — B는 최초 입장 시점부터
+ * `SPAWN_PROTECTION_MS`(3000ms) 동안 보호되므로 A의 첫 발이 무효화돼
+ * `hp`가 전혀 변하지 않았다(`_workspace/RQ-15-16/02_coder_green.md` §3.2
+ * 실측 근거). 수정: `killPlayer` 시작 시 B가 스스로 빗나가는 방향(수직 위)
+ * 으로 한 발 쏴 **자신의** 보호를 즉시 해제한다(RQ-16 "보호 중인 플레이어가
+ * 사격하면 즉시 해제" — 스펙이 이미 제공하는 경로, 실시간 3초 대기보다
+ * 빠르다). 이 사전 해제는 리스폰 **이후**(GA-09 then의 관측 대상)의 보호
+ * 상태와는 무관한, 킬-셋업 단계(사망 **이전**)의 조치다 — GA-09 자체의
+ * 단언(HP 100 복귀·SPAWN_POINTS 멤버십·재배치)은 전혀 건드리지 않았다.
+ * 단언 무변경 증명은 `_workspace/RQ-15-16/01_test-writer_red.md` "REV —
+ * 헬퍼 적응" 절 참고.
  */
 
 const ROOM_NAME = 'game'
@@ -83,6 +97,9 @@ const MIN_RESPAWN_ELAPSED_MS = 2_500
 const MOVE_IGNORE_OBSERVE_MS = 400
 /** 사망자 사격 무시 관측 창 — 위와 동일한 이유로 짧게 잡는다. */
 const FIRE_IGNORE_OBSERVE_MS = 400
+/** RQ-16 item C 대응(REV) — B가 스스로 쏜 보호 해제 사격이 서버에 반영될
+ * 시간(로컬 WS라 짧아도 충분하나 여유를 둔다). */
+const RELEASE_PROTECTION_SETTLE_MS = 300
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -202,6 +219,11 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
+/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
+ * 위치와 무관하게 안전하다. REV(item C 대응): B가 이 방향으로 자기 자신을
+ * 쏘면 명중 여부와 무관하게 자신의 스폰 보호가 즉시 해제된다(RQ-16). */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
+
 /**
  * A의 사격으로 B를 사망(HP 0)까지 몰아간다. **부위(헤드/바디) 무관 설계**:
  * 이 헬퍼의 목적은 "정확히 몇 발에 죽는가"가 아니라 "B를 죽여서 리스폰
@@ -213,6 +235,12 @@ function aimAtBody(
  * 있어(각도 우연) 이 헬퍼가 RQ-15와 무관한 이유로 타임아웃될 위험이 있다 —
  * 매 사격 후 "hp가 직전 값에서 실제로 줄었는가"만 확인해 부위와 무관하게
  * 강건하게 만든다.
+ *
+ * **REV(item C 대응)**: B는 최초 입장 시점부터 스폰 보호(RQ-16)가 걸려
+ * 있어, 보호 창(3초) 안에서는 A의 사격이 전혀 먹히지 않는다. 킬 시퀀스를
+ * 시작하기 전에 B가 스스로(빗나가는 방향으로) 한 발 쏴 **자기 자신의**
+ * 보호를 즉시 해제한다 — RQ-16 원문이 이미 제공하는 해제 경로이며,
+ * 3초 대기보다 빠르고 스펙에 더 합치한다.
  */
 async function killPlayer(
   roomA: Room,
@@ -220,6 +248,9 @@ async function killPlayer(
   baselineB: PlayerSnapshot,
   aim: { dirX: number; dirY: number; dirZ: number },
 ): Promise<PlayerSnapshot> {
+  roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제
+  await sleep(RELEASE_PROTECTION_SETTLE_MS)
+
   let previousHp = baselineB.hp
   const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다)
   for (let shot = 1; shot <= MAX_KILL_SHOTS && previousHp > 0; shot += 1) {
