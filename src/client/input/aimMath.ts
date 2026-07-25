@@ -6,9 +6,11 @@
  * 단위 테스트를 담당한다(렌더 계층 면제 대상이 아니다 — 순수 함수라
  * `harness/workflow/fe.md`의 면제 범위 밖).
  *
- * **좌표계 관례**(three.js 기본축과 `PlayerControls.tsx`가
- * `camera.rotation.set(pitch, yaw, 0)`(order='YXZ')로 적용하는 것과
- * 반드시 같아야 조준 방향과 화면에 보이는 방향이 일치한다):
+ * **좌표계 관례**(three.js 기본축과 `@client/input/cameraLook`의
+ * `applyLookToCamera`가 카메라에 적용하는 방식(Euler order='YXZ',
+ * `set(pitch, yaw, 0)`)과 반드시 같아야 조준 방향과 화면에 보이는 방향이
+ * 일치한다 — 그 일치는 `tests/unit/22b-aim-camera-binding.test.ts`가
+ * 두 쪽을 같은 함수로 묶어 강제한다):
  * yaw=0·pitch=0일 때 정면은 -Z(three.js 카메라 기본 정면). yaw는 +Y축
  * 기준 회전이며, 마우스를 오른쪽으로 움직이면(`movementX`>0) yaw가
  * **감소**한다 — `accumulateLook` 참고. pitch는 위를 보면 증가(+),
