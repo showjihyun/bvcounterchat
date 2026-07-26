@@ -23,6 +23,7 @@ import {
   isRespawnDue,
   isSpawnProtected,
 } from '@shared/sim/lifecycle'
+import { fallDamageForHeight } from '@shared/sim/fallDamage'
 import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, isReloading, shouldStartReload } from '@shared/sim/ammo'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
@@ -198,6 +199,16 @@ export class GameRoom extends Room<GameState> {
    * 아니다(`canFireAmmo`의 `reloadStartedAtTick: number | undefined`와
    * 동일한 "부재=undefined" 규약, `diedAtTick`과 같은 패턴). */
   private readonly reloadStartedAtTick = new Map<string, number>()
+  /** RQ-18: 세션별 "현재 연속 공중 구간에서 도달한 최고 y" — 러닝 최댓값.
+   * 키 부재 = 현재 공중 구간을 추적 중이 아님(접지 상태이거나 아직 이
+   * 구간의 첫 airborne 틱을 겪지 않음). 착지 전이(`trackFallDamage`)에서
+   * 소비된 뒤 삭제된다 — `diedAtTick` 등과 동일하게 GameRoom 전유 부기
+   * 상태이며 `Player` 스키마에는 노출하지 않는다(`_workspace/RQ-18/
+   * 01_test-writer_red.md` §1.3·§4). **이름을 바꾸지 않는다** — 통합
+   * 테스트(`tests/integration/rq-18-fall-damage.test.ts`)가
+   * `matchMaker.getLocalRoomById`로 이 정확한 필드명을 화이트박스 주입
+   * 대상으로 참조한다. */
+  private readonly fallPeakY = new Map<string, number>()
   /** RQ-31: 룸 전역 스폰 로테이션 커서 — 세션이 아니라 룸 하나가 갖는다
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
@@ -393,9 +404,74 @@ export class GameRoom extends Room<GameState> {
     const outcome = applyDamageWithProtection(victim.hp, damageForRegion(closest.result.region), isProtected)
     victim.hp = outcome.hp
     if (outcome.died) {
-      shooterPlayer.kills += 1
-      this.diedAtTick.set(closest.id, this.state.tick)
+      this.registerDeath(closest.id, this.state.tick, shooterId)
     }
+  }
+
+  /**
+   * 사망 처리 중앙화(원장 22e, RQ-15/16 후속 ① 해소) — 피해원과 무관하게
+   * 사망 시 `diedAtTick`을 한 곳에서 갱신한다. 이전에는 `handleFire`
+   * 한 곳에서만 `diedAtTick.set`을 호출해, 낙하 등 다른 피해원으로 죽으면
+   * `stepPlayerMovement`의 `isRespawnDue` 판정 대상이 되지 못하고 영구
+   * 시신이 되는 결함이 있었다(GA-46이 이 회귀를 고정).
+   *
+   * `killerId`가 있으면(hitscan) 그 가해자의 킬 카운트를 올린다 — 낙하 등
+   * 환경 피해(`killerId` 없음)는 가해자가 없으므로 킬을 기록하지 않는다
+   * (`_workspace/RQ-18/01_test-writer_red.md` §3, 스코프 크리프 방지).
+   *
+   * `fallPeakY`도 함께 정리한다 — 사인과 무관하게 사망은 "현재 공중 구간
+   * 추적"을 끝내야 한다. 그렇지 않으면(예: 공중에서 피격사) 리스폰 후
+   * 다음 낙하가 죽기 전 남은 최고점을 잘못 이어받아 과다 피해로 이어질 수
+   * 있다. 낙하 자체로 죽는 경로(`trackFallDamage`)는 착지 처리 마지막에
+   * 다시 한번 무조건 삭제하므로 이 삭제와 중복돼도 안전하다(멱등).
+   */
+  private registerDeath(victimId: string, currentTick: number, killerId?: string): void {
+    if (killerId !== undefined) {
+      const killer = this.state.players.get(killerId)
+      if (killer) killer.kills += 1
+    }
+    this.diedAtTick.set(victimId, currentTick)
+    this.fallPeakY.delete(victimId)
+  }
+
+  /**
+   * RQ-18(낙하 데미지) — `stepPlayerMovement`가 `next = stepMovement(previous,
+   * input)`을 계산한 직후 호출한다(그린필드 계약,
+   * `_workspace/RQ-18/01_test-writer_red.md` §1.3).
+   *
+   * 1. `next.grounded === false`(공중)면 러닝 최댓값으로 `fallPeakY`를
+   *    갱신하고 끝낸다 — 아직 착지 전이가 아니다.
+   * 2. `previous.grounded === false && next.grounded === true`(착지
+   *    전이)면 그 구간의 최고점으로 데미지를 산정해 적용한다. 스폰 보호
+   *    게이트는 `handleFire`가 피격자에게 쓰는 것과 동일한 지점
+   *    (`spawnedAtTick`/`firedSinceSpawn`)을 재사용한다. 사망 시 가해자가
+   *    없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬 카운트
+   *    미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든 사망이든)
+   *    `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
+   * 3. 그 외(계속 접지 상태)는 아무 것도 하지 않는다.
+   */
+  private trackFallDamage(sessionId: string, player: Player, previous: MoveState, next: MoveState, currentTick: number): void {
+    if (!next.grounded) {
+      this.fallPeakY.set(sessionId, Math.max(this.fallPeakY.get(sessionId) ?? next.y, next.y))
+      return
+    }
+
+    if (previous.grounded) return // 착지 전이가 아니다 — 계속 접지 상태였다
+
+    const peak = this.fallPeakY.get(sessionId) ?? 0
+    const damage = fallDamageForHeight(peak)
+    if (damage > 0) {
+      const spawnedAt = this.spawnedAtTick.get(sessionId)
+      const fired = this.firedSinceSpawn.get(sessionId) ?? false
+      const isProtected = spawnedAt !== undefined && isSpawnProtected(spawnedAt, currentTick, SPAWN_PROTECTION_TICKS, fired)
+
+      const outcome = applyDamageWithProtection(player.hp, damage, isProtected)
+      player.hp = outcome.hp
+      if (outcome.died) {
+        this.registerDeath(sessionId, currentTick) // 환경 피해 — 가해자 없음, 킬 미기록
+      }
+    }
+    this.fallPeakY.delete(sessionId)
   }
 
   /**
@@ -564,6 +640,10 @@ export class GameRoom extends Room<GameState> {
       if (pendingSeq !== undefined) {
         player.lastProcessedInputSeq = pendingSeq
       }
+
+      // RQ-18: 공중 구간 최고점 추적 + 착지 시 낙하 데미지 적용(사망 시
+      // `registerDeath`로 리스폰까지 예약된다 — 22e 후속 ① 해소).
+      this.trackFallDamage(sessionId, player, previous, next, currentTick)
     })
   }
 
@@ -720,6 +800,10 @@ export class GameRoom extends Room<GameState> {
     // (다음 onJoin이 magazines를 새로 초기화한다).
     this.magazines.delete(client.sessionId)
     this.reloadStartedAtTick.delete(client.sessionId)
+    // RQ-18: 이탈 시점에 공중 구간을 추적 중이었을 수 있다 — 재접속 시
+    // 이전 세션의 낙하 진행 상태를 이어받지 않는다(다른 모든 세션 전유
+    // 부기 상태와 동일한 정리 패턴).
+    this.fallPeakY.delete(client.sessionId)
   }
 
   /**
