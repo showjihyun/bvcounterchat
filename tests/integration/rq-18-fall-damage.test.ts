@@ -287,6 +287,66 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * 에도 주입한다(상수 docblock 참고) — `overridePeakM !== undefined`가 되어
  * REV3의 안정 신호가 GA-44에도 적용되고, 자연 최고점이 주입값을 `Math.max`
  * 로 이기므로 "실제 점프 물리 그대로"라는 GA-44의 성격도 보존된다.
+ *
+ * ## REV5(2차 CI 실패 수정, 팀리드 지시, PR #24 run 30188488491)
+ *
+ * **증상**: REV4 반영 이후 CI가 **다른 케이스, 다른 대기**에서 다시
+ * 실패했다 — `[timeout 10000ms] RQ-18: 착지(y=0 복귀, 주입값 소비 확인)
+ * 관측 대기`(리뷰 보강 minor 5). 로컬은 계속 355 green.
+ *
+ * **가설 두 갈래를 재현으로 좁혔다(추측으로 판정하지 않음)**:
+ *
+ * 1. **캐치업 재현(REV3와 동일 기법) — 재현 안 됨.** `Date.now()` 전역
+ *    오프셋(+550ms, `jump:true` 전송 직후 주입)을 현재(REV4) 코드에 그대로
+ *    적용해 10회 실행 — **10/10 통과**. REV3/4가 도입한 "안정 신호"(`fallPeakY`
+ *    소비 확인)가 여전히 유효함을 재확인했다 — 캐치업은 더 이상 이 파일의
+ *    실패 원인이 아니다.
+ * 2. **입력 덮어쓰기 재현 — 재현됨, CI 메시지와 문자 단위 일치.**
+ *    `jump:true`·`jump:false` 사이의 고정 50ms를 제거하고 두 메시지를
+ *    간격 없이 연속 전송하도록 임시 수정 → **CI와 완전히 동일한 오류
+ *    메시지**(`[timeout 10000ms] RQ-18: 착지(y=0 복귀, 주입값 소비 확인)
+ *    관측 대기`)가 `jumpAndObserveLanding`을 공유하는 **GA-44·GA-45·GA-46·
+ *    minor 5 전부**에서 재현됐다. `pendingInputs`는 엣지 트리거가 아니라
+ *    "다음 메시지가 올 때까지 최근값 유지" 모델이므로(`GameRoom.ts:
+ *    247-248`), 서버가 `jump:true`를 단 한 번도 읽지 못한 채 `jump:false`가
+ *    먼저(또는 같은 틱 처리 구간에) 도착하면 `pendingInputs`에서 그대로
+ *    덮어써져 **이륙 자체가 일어나지 않는다** — `y`는 계속 0, `fallPeakY`는
+ *    영원히 소비되지 않아 착지 대기가 정확히 10초에서 타임아웃된다.
+ *
+ * **왜 minor 5가 먼저 걸렸는가(원인이 아니라 노출 조건)**: minor 5만 자기
+ * 사격 워밍업(`fire` + `SELF_FIRE_SETTLE_MS`)이 없다(스폰 보호를 유지해야
+ * 하므로 구조적으로 뺄 수 없다) — 즉 join 직후 **최소한의 실 소켓·룸
+ * 활동 이력도 없이** 첫 `move` 메시지를 보낸다. 반면 GA-44/45/46은 자기
+ * 사격 메시지가 이미 한 번 왕복해(300ms 여유) 소켓·처리 경로가 "검증된"
+ * 상태에서 점프를 보낸다. 재현 2가 보여주듯 **취약점 자체는 헬퍼를 공유하는
+ * 네 케이스 모두에 있다** — minor 5는 그 취약점을 가릴 워밍업이 없어 CI의
+ * 타이트한 스케줄링에서 가장 먼저 걸렸을 뿐이다.
+ *
+ * **수정**: `jump:true`·`jump:false` 사이의 고정 50ms 대기를 "서버가 실제로
+ * 이륙을 반영했다는 확인"으로 대체한다(`waitForServerTakeoff`) — 화이트박스로
+ * 서버 권위 `moveStates`(RQ-20 때부터 있던 기존 private map, 신규 계약
+ * 아님)를 직접 폴링해 `grounded===false`(공중)가 됐음을 확인한 **뒤에만**
+ * `jump:false`를 보낸다. 확인 전에는 `jump:false`를 보내지 않으므로 덮어쓰기
+ * 경로가 구조적으로 차단된다. 이 폴링은 REV3의 "1차 시도(폐기)"가 겪은
+ * "정확히 그 틱을 잡아야 하는" 문제와 다르다 — 노리는 창이 단일 틱(≈33ms)이
+ * 아니라 이륙~착지 전체 체공(≈632ms)이라 폴링 지터에 안전하다.
+ *
+ * **고려했으나 채택하지 않은 대안**:
+ * - *화이트박스로 `pendingInputs`를 직접 써서 WS 왕복 자체를 우회*: 덮어쓰기
+ *   경합은 사라지지만, 이 파일의 존재 이유(`verify`가 `tests/integration/...`
+ *   를 못박는 골든 요구, "실 WebSocket으로 블랙박스 확인")를 훼손한다 —
+ *   실제 게임 클라이언트가 쓰는 프로토콜 경로를 검증하지 않게 된다. 기각.
+ * - *통합에서 룸 단위 화이트박스(더 낮은 레벨)로 전면 하향*: 이번 결함류
+ *   (틱 캐치업·입력 덮어쓰기)를 구조적으로 전부 없애지만, ADR-0008이 이
+ *   레벨을 "Colyseus 룸 경계 — join/leave, 상태 동기화, 메시지 왕복"으로
+ *   명시했고 골든 GA-44~46의 `verify`가 이 파일을 직접 지정한다 — 레벨
+ *   변경은 이 PR 범위를 넘는 스펙·ADR 재논의가 필요하다. 이번 결함은 헬퍼
+ *   하나의 국소 수정으로 충분히 닫히므로(재현으로 확인) 지금 전면 하향할
+ *   근거가 부족하다고 판단했다. 두 차례 연속 CI 실패가 반복되면 재고할
+ *   신호로 기록해 둔다.
+ *
+ * 상세(부하 모사 반복 수치, 4곳 재점검 표)는
+ * `_workspace/RQ-18/09_test-writer_ci-fix2.md` 참고.
  */
 
 const ROOM_NAME = 'game'
@@ -303,6 +363,17 @@ const SELF_FIRE_SETTLE_MS = 300
  * ≈5.7초)라 넉넉하게 잡는다 — `rq-15-respawn-timer.test.ts`의
  * `RESPAWN_OBSERVE_TIMEOUT_MS`(8000ms)와 동일한 여유 원칙. */
 const LANDING_OBSERVE_TIMEOUT_MS = 10_000
+/** REV5 — `jump:true` 전송 뒤 서버가 실제로 이를 반영(이륙)했는지 확인하는
+ * 상한. `LANDING_OBSERVE_TIMEOUT_MS`의 절반 — 이 확인이 실패한다면 착지
+ * 자체를 기다리는 것보다 훨씬 이전 단계(입력 반영 자체)의 결함이므로
+ * 더 짧게 잡아도 무방하나, CI 부하를 넉넉히 흡수하도록 보수적으로 크게
+ * 뒀다. */
+const TAKEOFF_CONFIRM_TIMEOUT_MS = 5_000
+/** REV5 — 서버 권위 상태(화이트박스) 폴링 간격. 이 폴링이 노리는 창은
+ * 단일 틱(≈33ms)이 아니라 이륙~착지 전체 체공(≈632ms)이므로(REV3 절
+ * "1차 시도(폐기)"가 겪은 "정확히 그 틱을 잡아야 하는" 좁은 창 문제와
+ * 다르다), 15ms 간격이면 그 창 안에 여러 번 샘플링할 여유가 충분하다. */
+const TAKEOFF_POLL_INTERVAL_MS = 15
 /** 착지 직후 데미지 적용 틱이 반영될 시간(로컬 WS라 짧아도 충분, 여유). */
 const POST_LANDING_SETTLE_MS = 300
 /** GA-46 리스폰 관측 상한 — 기존 rq-15 파일과 동일 근거. */
@@ -449,9 +520,15 @@ function waitForPlayerCondition(
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 /** 화이트박스 접근 대상 계약 — 파일 상단 "그린필드 계약" 절 참고.
- * `fallPeakY`는 아직 존재하지 않는 신규 필드다(Red 전제). */
+ * `fallPeakY`는 아직 존재하지 않는 신규 필드다(Red 전제).
+ * `moveStates`(REV5)는 신규 계약이 아니다 — `GameRoom.ts:166`에 RQ-20 때부터
+ * 이미 존재하는 private map(`private readonly moveStates = new Map<string,
+ * MoveState>()`)을 읽기 전용으로 노출할 뿐이다. `grounded` 한 필드만
+ * 선언해 이 파일이 실제로 쓰는 부분만 타입에 남긴다(`MoveState`의 나머지
+ * 필드는 여기서 무관). */
 interface FallDamageTestSeam {
   fallPeakY: Map<string, number>
+  moveStates: Map<string, { grounded: boolean }>
 }
 
 /** `matchMaker.getLocalRoomById`(실측 확인, `@colyseus/core`)로 테스트
@@ -467,6 +544,54 @@ function getServerRoom(room: Room): FallDamageTestSeam {
 }
 
 /**
+ * `jump:true` 전송 뒤, 서버가 그 입력을 **실제로 반영**했는지를 화이트박스로
+ * 직접 확인한다(REV5 — 파일 상단 REV5 절 참고). `pendingInputs`는
+ * "다음 메시지가 올 때까지 최근값 유지" 모델(`GameRoom.ts:247-248`)이라
+ * 엣지 트리거가 아니다 — 서버가 `jump:true`를 단 한 번도 읽지 못한 채
+ * `jump:false`가 먼저 도착하면 `pendingInputs`에서 그대로 덮어써져 이륙
+ * 자체가 일어나지 않는다. 이 함수가 반환할 때까지 `jump:false`를 보내지
+ * 않으면 이 경로가 구조적으로 차단된다.
+ *
+ * 확인 조건은 "현재 공중"(`moveStates.get(sessionId).grounded === false`)
+ * **또는**(주입이 있었다면) "이미 착지·소비까지 끝남"(`fallPeakY` 소비
+ * 확인)이다 — 후자를 OR로 두는 이유: 이 폴링이 캐치업으로 밀린 여러 틱
+ * 사이에서 우연히 "공중" 구간을 못 잡더라도(이론상 가능하나, 아래 참고),
+ * "이미 착지까지 끝났다"는 것 자체가 "이륙이 실제로 있었다"는 더 강한
+ * 증거이므로 여전히 유효한 확인이다.
+ *
+ * 이 폴링이 노리는 창은 단일 틱(≈33ms)이 아니라 이륙~착지 전체
+ * 체공(≈632ms)이다 — REV3 절 "1차 시도(폐기)"가 폐기했던 "정확히 그 틱을
+ * 잡아야 하는" 폴링과는 성격이 다르다(그 폴링은 착지 **순간**이라는 단일
+ * 틱을 노렸다). 또한 클라 패치가 아니라 서버 프로세스 안의 살아있는 참조를
+ * 직접 읽으므로 패치 배치·유실과 무관하다.
+ */
+function waitForServerTakeoff(room: Room, sessionId: string, overridePeakM: number | undefined, timeoutMs: number): Promise<void> {
+  const seam = getServerRoom(room)
+  const isConfirmed = (): boolean => {
+    const airborne = seam.moveStates.get(sessionId)?.grounded === false
+    const alreadyLandedAndConsumed = overridePeakM !== undefined && seam.fallPeakY.get(sessionId) === undefined
+    return airborne || alreadyLandedAndConsumed
+  }
+  return new Promise<void>((resolve, reject) => {
+    if (isConfirmed()) {
+      resolve()
+      return
+    }
+    const interval = setInterval(() => {
+      if (isConfirmed()) {
+        clearInterval(interval)
+        clearTimeout(timeout)
+        resolve()
+      }
+    }, TAKEOFF_POLL_INTERVAL_MS)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`[timeout ${timeoutMs}ms] RQ-18: 서버 권위 상태로 이륙 반영 확인 대기(입력 덮어쓰기 방지)`))
+    }, timeoutMs)
+  })
+}
+
+/**
  * 실제 점프를 1회 실행하고, (선택적으로) 화이트박스로 낙하 시작 높이를
  * 주입한 뒤, 착지까지 관측한다 — GA-44·GA-45·GA-46·리뷰 minor 5가
  * **동일한 절차**를 공유한다(공허화 방지, 파일 상단 "양성 대조군 설계"
@@ -479,21 +604,30 @@ function getServerRoom(room: Room): FallDamageTestSeam {
  * (여러 틱이 패치 사이에서 한꺼번에 처리돼 중간 상태가 클라이언트에
  * 보이지 않는 현상)에 영향받지 않는다.
  *
+ * **REV5(2차 CI 실패 수정 — 파일 상단 REV5 절 참고)**: `jump:true`와
+ * `jump:false` 사이의 고정 50ms 대기를 걷어내고, `waitForServerTakeoff`로
+ * **서버가 실제로 이륙을 반영했다는 확인**을 받은 뒤에만 `jump:false`를
+ * 보낸다 — 확인 전에 보내면 두 메시지가 `pendingInputs`에서 겹쳐 이륙
+ * 자체가 통째로 사라질 수 있었다(REV5 절 재현 참고).
+ *
  * 1. `overridePeakM`이 주어지면 점프를 보내기 **전에** 화이트박스로
  *    `fallPeakY`를 심는다. 접지 상태에서는 `trackFallDamage`가 매 틱
  *    조기 반환하므로(`previous.grounded` 분기, `GameRoom.ts:463`) 이
  *    시점에 심은 값은 실제로 이륙할 때까지 그대로 보존된다 — 공중 상태를
  *    관측할 때까지 기다릴 필요가 없다.
- * 2. `jump: true`를 1회 보내고 곧바로 `jump: false`(유지 입력)를 보낸다 —
- *    `jump`는 엣지 트리거라(`@shared/sim/movement` 계약) 유지하면 착지 직후
- *    다시 점프해 버린다(끝없는 버니합). 두 메시지 사이 간격(50ms)은 실제
- *    이륙까지 걸리는 시간(최소 1틱)보다 훨씬 짧아 첫 점프가 새는 일이
- *    없다.
- * 3. 이륙 후 실제 물리가 계산하는 높이(최고 1.0m 미만)는 항상 주입값보다
+ * 2. `jump: true`를 보낸다. `jump`는 엣지 트리거가 아니라 "다음 메시지가
+ *    올 때까지 최근값 유지" 모델이므로(`@shared/sim/movement`·
+ *    `GameRoom.ts:247-248`), 유지하면 착지 직후 다시 점프해 버린다(끝없는
+ *    버니합) — 그래서 이륙 확인 뒤 `jump: false`로 되돌린다(아래 4).
+ * 3. `waitForServerTakeoff`로 서버가 이 입력을 실제로 반영했음을(화이트박스,
+ *    서버 권위 상태 직접 폴링) 확인한다.
+ * 4. 확인 후에만 `jump: false`(유지 입력)를 보낸다 — 착지 후 재이륙(원치
+ *    않는 버니합)을 막는다.
+ * 5. 이륙 후 실제 물리가 계산하는 높이(최고 1.0m 미만)는 항상 주입값보다
  *    작으므로 `Math.max` 갱신에서 주입값이 그대로 살아남는다(그린필드
  *    계약의 러닝 최댓값 규칙) — 공중 구간을 클라이언트가 실제로
  *    관측하든 못하든(패치 배치·틱 캐치업) 이후 결과는 같다.
- * 4. 착지를 `p.y === 0` **그리고**(주입이 있었다면) `fallPeakY`가 소비돼
+ * 6. 착지를 `p.y === 0` **그리고**(주입이 있었다면) `fallPeakY`가 소비돼
  *    사라졌음(`fallPeakY.get(sessionId) === undefined`)으로 판정한다 —
  *    착지 전이가 실제로 일어나야만 삭제되는 값이라(`GameRoom.ts:484`),
  *    아직 이륙조차 하지 않은 접지 기준 상태(y===0)에 허위로 매칭될 수
@@ -507,7 +641,7 @@ async function jumpAndObserveLanding(room: Room, overridePeakM?: number): Promis
   }
 
   room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
-  await sleep(50)
+  await waitForServerTakeoff(room, sessionId, overridePeakM, TAKEOFF_CONFIRM_TIMEOUT_MS)
   room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
 
   const landed = await waitForPlayerCondition(
