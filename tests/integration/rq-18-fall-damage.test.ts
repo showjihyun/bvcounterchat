@@ -115,6 +115,79 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  *
  * **가정**: `rq-15-respawn-timer.test.ts`/`rq-16-spawn-protection.test.ts`의
  * 서버 기동·`waitForPlayerCondition`·타임아웃 패턴을 그대로 따른다.
+ *
+ * ---
+ *
+ * ## REV(평가 F1·F2 보강, `_workspace/RQ-18/03_evaluator_report.md` §6)
+ *
+ * 평가(evaluator)가 변이 11건으로 PASS 판정했으나, 생존 변이 2건을 기록했다
+ * (FAIL은 아님 — 테스트 강도 공백). 기존 단언은 전혀 건드리지 않고 아래
+ * 두 가지를 **순증**했다.
+ *
+ * **F1 — 착지 전이 조건이 테스트로 고정돼 있지 않았다.** 변이 M1
+ * (`trackFallDamage`의 `if (previous.grounded) return` → `if
+ * (!previous.grounded) return`, 조건 극성 반전)이 기존 스위트 전체에서
+ * survived였다. 이 변이 아래에서는 **모든** 착지 전이(`previous.grounded
+ * === false`는 착지 전이의 정의 그 자체)가 조기 반환돼 데미지 적용이
+ * "그 다음 접지 유지 틱"으로 미뤄진다 — 최종 합산 HP는 결국 같은 값에
+ * 수렴하므로(지연될 뿐 유실·중복은 아님) **"착지 후 어느 정도 시간이
+ * 지나 관측한 HP"로는 이 변이를 잡을 수 없다** — 기존 `jumpAndObserveLanding`
+ * 이 착지 후 `POST_LANDING_SETTLE_MS`(300ms ≈ 9틱)를 기다린 뒤 읽는
+ * 이유가 바로 이 여유이며, 그 여유 자체가 M1을 가려버린다(직접 재현으로
+ * 확인 — 아래 참고).
+ *
+ * **1차 시도(폐기) — 착지 순간 서버 상태를 짧은 간격으로 폴링**: 처음에는
+ * "착지가 관측된 바로 그 순간 hp가 이미 줄어 있는가"를 서버 상태(클라
+ * 패치가 아니라 `matchMaker.getLocalRoomById`로 얻은 살아있는 객체)를
+ * 2ms 간격으로 폴링해 확인하려 했다 — `player.y = next.y`가
+ * `trackFallDamage(...)` 호출보다 먼저, 같은 동기 구간 안에서 실행되므로
+ * (`src/server/rooms/GameRoom.ts` 확인) 이론상 "y만 갱신되고 hp는 아직인"
+ * 찢어진 상태는 관측 불가능해야 했다. **하지만 직접 재현(M1 적용 후 이
+ * 방식으로 실행)했더니 여전히 Green이었다** — 자바스크립트 이벤트 루프의
+ * 타이머 스케줄링 지터(폴링 콜백 자체가 정확히 2ms마다 실행된다는 보장이
+ * 없다 — 다른 콜백(틱 루프, WS 메시지 처리 등)에 밀려 지연될 수 있다)
+ * 때문에, 착지 틱(단 1틱 ≈33.33ms)이라는 좁은 창을 매번 정확히 잡는다는
+ * 보장이 없었다. 즉 **폴링 기반 "정확히 그 틱을 잡는" 접근은 이론과
+ * 달리 결정론적이지 않았다** — 실측으로 폐기를 확정했다(부정 결과도
+ * 정직하게 기록).
+ *
+ * **채택안 — 버니합으로 "접지 유지 틱" 자체를 없앤다**: 정확한 타이밍을
+ * 맞추는 대신, **그 문제 자체를 없앴다.** `jump: true`를 보낸 뒤 이
+ * 케이스 안에서는 **비활성화하지 않는다.** `stepGrounded`는 매 틱
+ * `input.jump`가 참이면 무조건 재이륙시키므로(`@shared/sim/movement`,
+ * 쿨다운 없음), jump를 계속 유지하는 한 "착지 전이가 **아닌** 채로 접지
+ * 상태에 머무르는 틱"은 **정의상 단 한 번도 오지 않는다** — 매 착지가
+ * 곧바로 다음 이륙으로 이어진다(무한 버니합). M1 아래에서 착지 전이는
+ * 항상 조기 반환되고, 데미지 적용 분기(`if (previous.grounded) return`을
+ * 통과해야 도달하는 코드)는 오직 "접지를 유지하는" 틱에서만 실행되는데,
+ * 그런 틱이 이 시나리오에는 아예 없으므로 **데미지 적용이 무기한 보류된다**
+ * — 아무리 오래 기다려도 hp가 줄지 않는다. 반대로 올바른 구현은 착지
+ * 전이 그 자체(그 틱 안)에서 동기적으로 적용하므로 버니합이 계속되든
+ * 말든 무관하게 곧바로(첫 비행 시간 안에) hp가 준다. **더 이상 "정확한
+ * 틱을 붙잡을 수 있는가"에 기대지 않는다** — 클라이언트 `onStateChange`
+ * (기존 `waitForPlayerCondition`)로 "hp가 기대값이 될 때까지, 넉넉한
+ * 상한 안에서" 기다리기만 하면 된다. M1 아래에서는 이 대기가 결정론적으로
+ * (운에 좌우되지 않고) 타임아웃된다 — 폴링 간격이나 패치 배치 타이밍과
+ * 무관하다.
+ *
+ * **직접 재현(M1 재현·복원 절차, 팀리드 지시)**: `src/server/rooms/
+ * GameRoom.ts`의 `if (previous.grounded) return`을 `if (!previous.grounded)
+ * return`으로 바꾼 뒤 이 파일 전체 실행 → 기존 GA-44/45/46은 여전히
+ * **Green**(evaluator M1 결과와 일치 — 최종 합산은 수렴하므로 기존
+ * 단언은 이 변이를 구분하지 못함을 이 파일 스스로도 재확인한다), **신규
+ * F1만 Red**(`[timeout 10000ms] ... 버니합 유지 중 첫 착지 데미지 반영
+ * 대기` — 무기한 보류되어 타임아웃). 바이트 사본으로 원복 후 재실행 →
+ * 전부 **Green**. 전문은 `_workspace/RQ-18/01_test-writer_red.md`
+ * "F1·F2 보강" 절(1차 시도 실패 로그 포함).
+ *
+ * **F2 — "낙하 사망은 킬을 기록하지 않는다"에 회귀 가드가 없었다.** 변이
+ * M5(`registerDeath(sessionId, currentTick)` 호출에 `killerId`로 자기
+ * 자신의 `sessionId`를 추가 전달)가 survived였다 — 오늘의 동작(킬 미기록)은
+ * 옳지만 그 옳음이 테스트가 아니라 코드 리뷰에만 의존했다. GA-46(치명적
+ * 낙하) 직후 `kills === 0`을 한 줄 추가해 고정한다(스코프 크리프 아님 —
+ * 새 요구 신설이 아니라 이미 구현된 결정을 고정하는 것, RQ-14 "가해자에게
+ * 킬을 기록"의 반대 방향 — 가해자가 없으면 아무에게도 기록되지 않아야
+ * 한다).
  */
 
 const ROOM_NAME = 'game'
@@ -209,20 +282,26 @@ interface PlayerSnapshot {
   y: number
   z: number
   hp: number
+  /** 평가 F2 회귀 가드용(GA-46) — 낙하(환경 피해)는 가해자가 없으므로
+   * 어떤 세션의 킬 수도 늘어서는 안 된다. */
+  kills: number
 }
 
 function readPlayer(room: Room, sessionId: string): PlayerSnapshot | undefined {
   const state = room.state as {
-    players?: { get?: (key: string) => { x?: unknown; y?: unknown; z?: unknown; hp?: unknown } | undefined }
+    players?: {
+      get?: (key: string) => { x?: unknown; y?: unknown; z?: unknown; hp?: unknown; kills?: unknown } | undefined
+    }
   } | null
   const player = state?.players?.get?.(sessionId)
   if (
     typeof player?.x === 'number' &&
     typeof player?.y === 'number' &&
     typeof player?.z === 'number' &&
-    typeof player?.hp === 'number'
+    typeof player?.hp === 'number' &&
+    typeof player?.kills === 'number'
   ) {
-    return { x: player.x, y: player.y, z: player.z, hp: player.hp }
+    return { x: player.x, y: player.y, z: player.z, hp: player.hp, kills: player.kills }
   }
   return undefined
 }
@@ -412,6 +491,10 @@ describe('RQ-18/GA-46: 낙하 데미지로 사망 → 리스폰이 정상 예약
         // 않아 stepPlayerMovement의 isRespawnDue 판정 대상이 되지 못하고
         // 영구 시신이 된다(원장 22e). 이 단언은 사망 자체를 먼저 확인한다.
         expect(atDeath.hp).toBe(0)
+        // 평가 F2 회귀 가드 — 낙하는 환경 피해라 가해자가 없다. 자기
+        // 자신을 포함해 그 누구의 킬 수도 늘어서는 안 된다(변이 M5: 자기
+        // 자신을 가해자로 registerDeath에 전달 → 이 단언이 killed로 잡는다).
+        expect(atDeath.kills).toBe(0)
 
         // RQ-15: 사망 후 3초 경과 시 리스폰(HP 100 복귀) — diedAtTick이
         // 실제로 갱신됐어야만 이 대기가 타임아웃 없이 resolve된다.
@@ -433,5 +516,73 @@ describe('RQ-18/GA-46: 낙하 데미지로 사망 → 리스폰이 정상 예약
       }
     },
     30_000,
+  )
+})
+
+describe('RQ-18 평가 기록 보강 — F1: 착지 전이 조건 고정(파일 상단 REV 절)', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-18 회귀(평가 F1): 착지 데미지는 착지 전이 그 자체에서 반영된다 — "접지 유지 틱"이 없는 시나리오(버니합)에서도 무기한 보류되지 않는다',
+    async () => {
+      const client = newClient(server)
+      const room = await joinGame(client)
+
+      try {
+        const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
+        expect(baseline.hp).toBe(PLAYER.MAX_HP)
+
+        room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
+        await sleep(SELF_FIRE_SETTLE_MS)
+
+        // jump:true를 보내고 이 케이스 안에서는 비활성화하지 않는다(파일
+        // 상단 REV 절 "채택안" 참고) — `stepGrounded`가 매 틱 `input.jump`
+        // 를 그대로 확인해 참이면 무조건 재이륙시키므로, 착지 즉시 다시
+        // 이륙하는 버니합이 유지된다. 이 시나리오에는 "착지 전이가 아닌
+        // 채로 접지 상태에 머무르는 틱"이 정의상 단 한 번도 없다.
+        room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
+
+        await waitForPlayerCondition(
+          room,
+          room.sessionId,
+          (p) => p.y > 0,
+          'RQ-18/F1: 공중 상태(y>0) 관측 대기',
+          AIRBORNE_OBSERVE_TIMEOUT_MS,
+        )
+        getServerRoom(room).fallPeakY.set(room.sessionId, NON_FATAL_OVERRIDE_PEAK_M)
+
+        const expectedDamage = (NON_FATAL_OVERRIDE_PEAK_M - FALL_DAMAGE.SAFE_HEIGHT_M) * FALL_DAMAGE.DAMAGE_PER_METER
+
+        // 핵심 단언 — 버니합을 유지한 채(jump 비활성화 전) 데미지 반영을
+        // 기다린다. 착지 전이 조건이 뒤집히면(평가 M1 변이) 데미지 적용
+        // 분기는 오직 "접지를 유지하는" 틱에서만 실행되는데 그런 틱이 이
+        // 시나리오엔 없으므로 적용이 **무기한** 미뤄진다 — 아무리 기다려도
+        // hp가 줄지 않아 타임아웃으로 드러난다(폴링 간격·패치 배치 타이밍에
+        // 좌우되지 않는 결정론적 신호, 파일 상단 REV 절 "1차 시도" 참고).
+        // 올바른 구현은 착지 전이 그 자체에서 동기적으로 적용하므로 버니합
+        // 지속 여부와 무관하게 첫 비행 시간 안에 곧바로 줄어든다.
+        const afterFirstLanding = await waitForPlayerCondition(
+          room,
+          room.sessionId,
+          (p) => p.hp === PLAYER.MAX_HP - expectedDamage,
+          'RQ-18/F1: 버니합 유지 중 첫 착지 데미지 반영 대기 — 착지 전이 조건이 뒤집히면(M1) "접지 유지 틱"이 정의상 오지 않아 데미지가 무기한 미뤄진다',
+          LANDING_OBSERVE_TIMEOUT_MS,
+        )
+        expect(afterFirstLanding.hp).toBe(PLAYER.MAX_HP - expectedDamage)
+      } finally {
+        // 정리 — 더 이상 재점프하지 않도록 명시적으로 비활성화한다.
+        room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+        await leaveRoom(room)
+      }
+    },
+    20_000,
   )
 })
