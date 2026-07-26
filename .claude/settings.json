@@ -4,6 +4,11 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./secrets/**)"
+    ],
+    "ask": [
+      "Edit(./harness/evals/golden/**)",
+      "Write(./harness/evals/golden/**)",
+      "MultiEdit(./harness/evals/golden/**)"
     ]
   },
   "hooks": {

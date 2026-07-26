@@ -47,6 +47,18 @@ npx vitest run tests/unit
 #  있었다 — 크래시 시그니처 게이팅으로 그 구멍을 닫는다.)
 #
 # ~2% 독립 크래시가 3회 연속일 확률 ≈ 0.0008% — 게이트가 실질적으로 안정된다.
+#
+# 잔여 취약점(리뷰 minor, 17h④): 아래 크래시 판별은 vitest **기본 리포터의
+# 출력 문자열**("Failed Tests" / "AssertionError" / "Worker exited
+# unexpectedly" / "Unhandled Error")에 결합돼 있다. 이 문자열은 vitest의
+# 공개 API가 아니라 리포터 구현 세부다 — 리포터를 바꾸거나(예: json/verbose
+# 리포터로 전환) vitest를 메이저 업그레이드하면 문구가 바뀌어 판별이
+# 조용히 어긋날 수 있다(단언 실패를 크래시로 오분류해 재시도로 은폐하거나,
+# 반대로 알려진 크래시를 미지의 실패로 오분류해 불필요하게 하드 실패시킬
+# 수 있다). 현재는 세 문자열이 서로 다른 실패 유형을 겹쳐 가리키는 삼중
+# 중복 구조라 한 문구만 바뀌어도 나머지가 방어해 당장은 견고하다 — 그러나
+# vitest 업그레이드 시에는 이 grep 패턴들이 여전히 실제 리포터 출력과
+# 일치하는지 반드시 재검증할 것.
 integration_attempts=3
 for attempt in $(seq 1 "$integration_attempts"); do
   set +e
