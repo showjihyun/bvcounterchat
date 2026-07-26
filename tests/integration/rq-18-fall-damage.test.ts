@@ -106,12 +106,14 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * "무피해"류 음성 단언만 있으면 스폰 보호·착지 판정 미배선 등 **다른 이유**
  * 로도 통과할 수 있다. 이 파일은 GA-44(무피해)·GA-45(50 데미지)를 **완전히
  * 동일한 절차**(`jumpAndObserveLanding`)로 실행하고 화이트박스로 주입하는
- * 높이만 다르게 한다 — GA-44는 어떤 높이도 주입하지 않아(실제 점프 물리
- * 그대로) 무피해가 "장치가 꺼져 있어서"가 아니라 "3m 이하라서"임을 GA-45가
- * 같은 절차에서 실제로 데미지가 드는 것으로 반증한다. **주의**: GA-44
- * 단독은 현재(미구현) 상태에서도 트리비얼하게 통과한다(아무것도 안 하므로
- * HP도 안 바뀐다) — 이 GA의 Red 증거력은 GA-45와의 **짝**에서 나온다는
- * 점을 평가자가 판단할 때 감안할 것(Red 실행 출력 보고서에 명시).
+ * 높이만 다르게 한다 — GA-44는 자연 최고점(1.0m)보다 작은 값(`SAFE_OVERRIDE_
+ * PEAK_M=0.1m`, REV4)을 주입해 실제 물리 그대로의 낙차(≈1.0m)가 유지되고,
+ * GA-45는 8m를 주입한다. 무피해가 "장치가 꺼져 있어서"가 아니라 "3m
+ * 이하라서"임을 GA-45가 같은 절차에서 실제로 데미지가 드는 것으로 반증한다.
+ * **주의**: GA-44 단독은 현재(미구현) 상태에서도 트리비얼하게 통과한다
+ * (아무것도 안 하므로 HP도 안 바뀐다) — 이 GA의 Red 증거력은 GA-45와의
+ * **짝**에서 나온다는 점을 평가자가 판단할 때 감안할 것(Red 실행 출력
+ * 보고서에 명시).
  *
  * **가정**: `rq-15-respawn-timer.test.ts`/`rq-16-spawn-protection.test.ts`의
  * 서버 기동·`waitForPlayerCondition`·타임아웃 패턴을 그대로 따른다.
@@ -265,6 +267,26 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  *
  * 상세(부하 모사 수치, 반복 실행 안정성, minor 5 변이 재검증)는
  * `_workspace/RQ-18/05_test-writer_ci-fix.md` 참고.
+ *
+ * ## REV4(평가 델타2 W1 수정, `_workspace/RQ-18/06_evaluator_delta2.md` §3.2)
+ *
+ * REV3이 착지 판정을 "`fallPeakY` 소비 확인" 안정 신호로 바꿨지만, 이
+ * 신호는 `overridePeakM`이 주어진 케이스에만 적용됐다. **GA-44는 이 파일의
+ * 유일한 무주입 케이스**라 착지 술어가 `p.y === 0`으로 축약되는데, 이 값은
+ * **점프 이전 접지 상태에서 이미 참**이다 — `waitForPlayerCondition`이
+ * 구독 직전 동기 `tryResolve()`를 호출하므로(`waitForPlayerCondition` 정의
+ * 참고), `jump:true` 전송 후 `y>0` 패치가 아직 도착하지 않은 시점이면 착지
+ * 대기가 **점프가 실제로 처리되기도 전에** 즉시 resolve될 수 있었다 — 이후
+ * `POST_LANDING_SETTLE_MS`(300ms) 뒤 HP를 읽으면 점프 시작 ~350ms 시점,
+ * 즉 체공(632ms) 한복판이라 GA-44의 골든 `then`("착지 시 HP 불변")이 그
+ * 실행에서 단언되지 않는다 — REV3이 스스로 세운 원칙("관측이 아니라 안정
+ * 신호")을 GA-44에는 적용하지 못한 **REV3 자신의 회귀**였다(평가 실측:
+ * 로컬 유휴 10회 중 1회, 715ms 공허 경로 vs 정상 경로 ≈1300ms).
+ *
+ * **수정**: `SAFE_OVERRIDE_PEAK_M`(0.1m, 자연 최고점 1.0m보다 작음)을 GA-44
+ * 에도 주입한다(상수 docblock 참고) — `overridePeakM !== undefined`가 되어
+ * REV3의 안정 신호가 GA-44에도 적용되고, 자연 최고점이 주입값을 `Math.max`
+ * 로 이기므로 "실제 점프 물리 그대로"라는 GA-44의 성격도 보존된다.
  */
 
 const ROOM_NAME = 'game'
@@ -300,6 +322,21 @@ const FATAL_OVERRIDE_PEAK_M = FALL_DAMAGE.SAFE_HEIGHT_M + PLAYER.MAX_HP / FALL_D
  * 상쇄·오인되지 않게 한다. (5-3)×10=20 — 1차(50)와 합산해도
  * 100-50-20=30>0이라 사망(GA-46 경로)을 유발하지 않는다(HP>0 유지). */
 const SECOND_BOUNCE_OVERRIDE_PEAK_M = 5
+/** GA-44(REV4, 평가 델타2 W1 수정) — 자연 최고점(`MOVEMENT.JUMP_HEIGHT`
+ * =1.0m)보다 **작은** 값을 점프 **전에** 주입한다. `trackFallDamage`의
+ * 러닝 최댓값 규칙(`Math.max(기존값, next.y)`)이 실제 물리 최고점을 그대로
+ * 이기므로(1.0m > 이 값) "실제 점프 물리 그대로"라는 GA-44의 성격은
+ * 보존되고 착지 낙차·기대 데미지 0도 그대로다 — 동시에
+ * `overridePeakM !== undefined`가 되어 `jumpAndObserveLanding`의 착지
+ * 안정 신호("`fallPeakY` 소비 확인")가 GA-44에도 적용된다. 이 상수를
+ * 주입하지 않으면(이전 실수) 착지 술어가 `p.y === 0` 하나로 축약돼
+ * "점프 전 접지 상태"에서 이미 참이므로 `waitForPlayerCondition`의
+ * 구독 전 동기 `tryResolve()`가 **점프가 실제로 처리되기 전에** 즉시
+ * resolve될 수 있었다 — 로컬 유휴 10회 중 1회 실측(체공 632ms 한복판인
+ * 715ms 지점에서 HP를 읽음). `FALL_DAMAGE.SAFE_HEIGHT_M`(3)을 대신 주입하는
+ * 대안은 채택하지 않는다 — 경계 포함 규칙까지 같이 고정되지만 실제 물리
+ * 최고점(1.0m)을 덮어써 "실제 점프"라는 GA-44의 성격을 잃는다. */
+const SAFE_OVERRIDE_PEAK_M = 0.1
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -509,8 +546,13 @@ describe('RQ-18/GA-44/GA-45: 낙하 데미지 — 안전 높이 이하 무피해
         room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        // 화이트박스 주입 없음 — 실제 점프 물리 그대로(최고점 < 3m).
-        const afterLanding = await jumpAndObserveLanding(room)
+        // REV4(평가 델타2 W1 수정) — SAFE_OVERRIDE_PEAK_M(0.1m, 자연 최고점
+        // 1.0m보다 작음)을 주입한다. "실제 점프 물리 그대로(최고점 < 3m)"라는
+        // 성격은 그대로 유지하면서(주입값이 실제 물리를 이기지 못한다),
+        // 착지 안정 신호(`fallPeakY` 소비 확인)를 GA-44에도 적용해 "점프가
+        // 실제로 일어나기 전에 착지 대기가 허위로 resolve"되는 경로를
+        // 차단한다(상수 docblock 참고).
+        const afterLanding = await jumpAndObserveLanding(room, SAFE_OVERRIDE_PEAK_M)
 
         expect(afterLanding.hp).toBe(PLAYER.MAX_HP)
       } finally {
