@@ -210,10 +210,61 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * 제한 등이 도입돼 전제가 깨지면 F1은 실패하지 않고 조용히 GA-45의
  * 중복으로 퇴화한다. F1 `it()` 끝(기존 hp 단언 뒤, `finally` 앞)에
  * 전제 자체를 직접 단언하는 대기를 순증했다 — 첫 착지 데미지 반영 이후에도
- * 재이륙(y>0)이 관측돼야 한다. 쿨다운이 도입되면 이 대기가
- * `AIRBORNE_OBSERVE_TIMEOUT_MS` 안에 타임아웃되어 "전제가 깨졌으니 F1을
- * 재설계하라"는 신호를 정확히 낸다 — 기존 헬퍼·상수를 그대로 재사용했다
- * (새 매직 넘버 없음).
+ * 재이륙(y>0)이 관측돼야 한다. **이 구현은 REV3에서 CI 실패로 폐기·교체됐다
+ * (아래 REV3 절 참고).**
+ *
+ * ## REV3(CI 실패 수정, 팀리드 지시, PR #24 run 30185861428)
+ *
+ * **증상**: GitHub Actions에서 통합 2건이 `[timeout 3000ms] RQ-18: 점프 후
+ * 공중 상태(y>0) 관측 대기`로 실패했다(GA-46, 리뷰 보강 minor 5) — 로컬
+ * 355 green과 불일치. `check.sh`는 이를 flaky 재시도 대상으로 보지 않고
+ * 실제 결함으로 판정했다(옳은 판정).
+ *
+ * **원인 확정**: `GameRoom.startTickLoop`(`src/server/rooms/GameRoom.ts:
+ * 580-594`)는 `setSimulationInterval` 콜백마다 `driver.advanceByElapsed
+ * (deltaMs)`가 반환한 `advancedTicks`만큼 `stepPlayerMovement`를 **같은
+ * 동기 for문 안에서** 반복 호출한다. `createTickDriver`
+ * (`src/shared/sim/tickDriver.ts:76,111-116`)의 `maxTicksPerAdvance`
+ * 기본값은 15(0.5초치) — 즉 콜백 자신이 지연되면(CI 러너의 GC·CPU 경합)
+ * `deltaMs`가 커져 한 콜백이 최대 15틱(500ms)을 **한꺼번에** 처리할 수
+ * 있다. 반면 Colyseus 패치는 별도 타이머(기본 50ms 주기, 리뷰 minor 6이
+ * 이미 확인)로 나가므로, 이 동기 구간이 실행되는 동안에는 어떤 패치도
+ * 나갈 수 없다 — 점프 궤적(약 19틱 ≈632ms)이 **두 패치 사이에서 통째로
+ * 소비**되면 클라이언트는 `y>0`을 단 한 번도 보지 못한 채 바로 `y=0`
+ * (착지)만 관측한다. 이전 `jumpAndObserveLanding`이 "y>0 관측 → 화이트박스
+ * 주입" 순서였으므로, 이 경우 주입 자체가 영원히 일어나지 못해(공중 상태
+ * 관측 대기가) 타임아웃됐다 — 리뷰 minor 6의 "12배 마진"은 패치 주기만
+ * 고려했을 뿐 이 캐치업 경로를 고려하지 않았다.
+ *
+ * **재현(로컬)**: 이벤트 루프를 동기적으로 정지시키는(`Date.now()` 폴링
+ * busy-wait) 진단 코드를 `jump: true` 전송 직후에 임시로 삽입해(같은
+ * 프로세스이므로 서버 틱 콜백도 함께 막힌다) CI의 GC/CPU 경합을 모사했다
+ * — 수정 전 코드에서 동일한 `[timeout ...] 점프 후 공중 상태(y>0) 관측
+ * 대기`로 재현됨을 확인했다. 상세 수치는
+ * `_workspace/RQ-18/05_test-writer_ci-fix.md` "부하 상황 모사 검증" 절.
+ *
+ * **수정**: 주입 시점을 공중 관측에서 분리한다 — `overridePeakM`을 점프
+ * **전송 전**(접지 상태) 화이트박스로 심는다. `trackFallDamage`는 접지
+ * 상태에서 매 틱 조기 반환하므로(`if (previous.grounded) return`,
+ * `GameRoom.ts:463`) 미리 심은 값은 실제 이륙 때까지 그대로 보존되고,
+ * 이후 `Math.max` 러닝 최댓값 규칙(실제 물리 최고점 <1.0m < 주입값)으로
+ * 착지 전이까지 살아남는다 — **관측 여부와 결과가 무관해진다.** 착지
+ * 판정도 `y===0`뿐 아니라 `fallPeakY`가 실제로 소비돼 사라졌는지까지
+ * 함께 요구한다(`jumpAndObserveLanding` 최신 docblock 참고) — 둘 다 한번
+ * 참이 되면 계속 참인 **안정 신호**라 캐치업에 영향받지 않는다. F1의
+ * minor 3 전제 단언도 같은 이유로 취약해 **관측 의존을 제거**했다 — "y>0
+ * 재관측" 대신, 1차 착지 직후 **다른 높이**(`SECOND_BOUNCE_OVERRIDE_
+ * PEAK_M`)를 즉시 재주입하고 그 값이 소비돼 HP가 한 번 더 주는(안정 신호)
+ * 것으로 버니합 지속을 확인한다 — 전제가 깨지면 이 값이 영원히 소비되지
+ * 않아 여전히 타임아웃으로 신호를 낸다(삭제가 아니라 재설계).
+ *
+ * **전수 점검**: `jumpAndObserveLanding`을 공유하는 GA-44·GA-45·GA-46·
+ * 리뷰 minor 5가 전부 이 취약점을 그대로 물려받고 있었다 — 헬퍼 하나만
+ * 고치면 네 케이스가 한꺼번에 수정된다. F1은 헬퍼를 쓰지 않는 별도
+ * 구현이라 위와 같이 개별 수정했다.
+ *
+ * 상세(부하 모사 수치, 반복 실행 안정성, minor 5 변이 재검증)는
+ * `_workspace/RQ-18/05_test-writer_ci-fix.md` 참고.
  */
 
 const ROOM_NAME = 'game'
@@ -225,10 +276,6 @@ const SNAPSHOT_TIMEOUT_MS = 5_000
 /** 자기 사격(스폰 보호 해제)이 서버에 반영될 시간. 기존 RQ-15/16 파일들과
  * 동일한 값·동일한 근거. */
 const SELF_FIRE_SETTLE_MS = 300
-/** 점프 입력이 실제로 처리돼 공중 상태(y>0)가 관측되기까지의 상한. 정상
- * 조건에서는 1~2틱(약 33~67ms) 안에 관측된다 — 스케줄링 지터를 넉넉히
- * 흡수하는 여유. */
-const AIRBORNE_OBSERVE_TIMEOUT_MS = 3_000
 /** 착지(y가 0으로 복귀) 관측 상한. 실제 중력 값은 구현 자유(`sim-movement
  * .test.ts` "점프 궤적 유도" 참고 — 실측: 매우 완만한 g=0.5조차 약 170틱
  * ≈5.7초)라 넉넉하게 잡는다 — `rq-15-respawn-timer.test.ts`의
@@ -248,6 +295,11 @@ const NON_FATAL_OVERRIDE_PEAK_M = 8
  * 확실히 사망하도록 여유를 둔 값(경계에 딱 맞추지 않는다 — 부동소수점
  * 경계 우연 방지). */
 const FATAL_OVERRIDE_PEAK_M = FALL_DAMAGE.SAFE_HEIGHT_M + PLAYER.MAX_HP / FALL_DAMAGE.DAMAGE_PER_METER + 5
+/** F1의 2차 바운스(REV3, 리뷰 minor 3 전제 재검증용) — `NON_FATAL_OVERRIDE_
+ * PEAK_M`(8m)과 다른 값을 써서 1차·2차 데미지가 우연히 같은 값으로
+ * 상쇄·오인되지 않게 한다. (5-3)×10=20 — 1차(50)와 합산해도
+ * 100-50-20=30>0이라 사망(GA-46 경로)을 유발하지 않는다(HP>0 유지). */
+const SECOND_BOUNCE_OVERRIDE_PEAK_M = 5
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -379,43 +431,53 @@ function getServerRoom(room: Room): FallDamageTestSeam {
 
 /**
  * 실제 점프를 1회 실행하고, (선택적으로) 화이트박스로 낙하 시작 높이를
- * 주입한 뒤, 착지까지 관측한다 — GA-44·GA-45·GA-46이 **동일한 절차**를
- * 공유한다(공허화 방지, 파일 상단 "양성 대조군 설계" 참고).
+ * 주입한 뒤, 착지까지 관측한다 — GA-44·GA-45·GA-46·리뷰 minor 5가
+ * **동일한 절차**를 공유한다(공허화 방지, 파일 상단 "양성 대조군 설계"
+ * 참고).
  *
- * 1. `jump: true`를 1회 보내고 곧바로 `jump: false`(유지 입력)를 보낸다 —
+ * **REV3(CI 실패 수정 — 파일 상단 REV3 절 참고)**: 주입 시점을 "공중 상태
+ * 관측 후"에서 "점프 전송 전"으로 옮겼다. 착지 판정도 "y===0 관측"뿐 아니라
+ * "주입한 `fallPeakY`가 실제로 소비돼 사라졌는가"를 함께 요구한다 — 둘 다
+ * **한번 참이 되면 계속 참으로 유지되는 안정 상태**라, CI의 틱 캐치업
+ * (여러 틱이 패치 사이에서 한꺼번에 처리돼 중간 상태가 클라이언트에
+ * 보이지 않는 현상)에 영향받지 않는다.
+ *
+ * 1. `overridePeakM`이 주어지면 점프를 보내기 **전에** 화이트박스로
+ *    `fallPeakY`를 심는다. 접지 상태에서는 `trackFallDamage`가 매 틱
+ *    조기 반환하므로(`previous.grounded` 분기, `GameRoom.ts:463`) 이
+ *    시점에 심은 값은 실제로 이륙할 때까지 그대로 보존된다 — 공중 상태를
+ *    관측할 때까지 기다릴 필요가 없다.
+ * 2. `jump: true`를 1회 보내고 곧바로 `jump: false`(유지 입력)를 보낸다 —
  *    `jump`는 엣지 트리거라(`@shared/sim/movement` 계약) 유지하면 착지 직후
  *    다시 점프해 버린다(끝없는 버니합). 두 메시지 사이 간격(50ms)은 실제
  *    이륙까지 걸리는 시간(최소 1틱)보다 훨씬 짧아 첫 점프가 새는 일이
  *    없다.
- * 2. 공중 상태(y>0)가 실제로 관측될 때까지 기다린다(점프가 실제로
- *    처리됐다는 확인 — 관측 없이 바로 화이트박스를 주입하면 아직 접지
- *    상태인 세션에 주입하는 셈이 되어 다음 착지 전이 판정과 타이밍이
- *    어긋날 수 있다).
- * 3. `overridePeakM`이 주어지면 그 시점의 `fallPeakY`를 그 값으로 덮어쓴다
- *    — 이후 실제 물리가 이어 계산하는 높이는(최고 1.0m 미만이므로) 항상
- *    이 값보다 작아 `Math.max` 갱신에서 살아남는다(그린필드 계약의 러닝
- *    최댓값 규칙).
- * 4. 착지(y가 다시 0으로 복귀)까지 기다린다 — 어떤 중력 구현을 고르든
- *    (구현 자유, `sim-movement.test.ts` 참고) 상한 안에서 자연히 착지한다.
+ * 3. 이륙 후 실제 물리가 계산하는 높이(최고 1.0m 미만)는 항상 주입값보다
+ *    작으므로 `Math.max` 갱신에서 주입값이 그대로 살아남는다(그린필드
+ *    계약의 러닝 최댓값 규칙) — 공중 구간을 클라이언트가 실제로
+ *    관측하든 못하든(패치 배치·틱 캐치업) 이후 결과는 같다.
+ * 4. 착지를 `p.y === 0` **그리고**(주입이 있었다면) `fallPeakY`가 소비돼
+ *    사라졌음(`fallPeakY.get(sessionId) === undefined`)으로 판정한다 —
+ *    착지 전이가 실제로 일어나야만 삭제되는 값이라(`GameRoom.ts:484`),
+ *    아직 이륙조차 하지 않은 접지 기준 상태(y===0)에 허위로 매칭될 수
+ *    없다. `POST_LANDING_SETTLE_MS`만큼 더 기다렸다가 최종 상태를 읽는다.
  */
 async function jumpAndObserveLanding(room: Room, overridePeakM?: number): Promise<PlayerSnapshot> {
   const sessionId = room.sessionId
-
-  room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
-  await sleep(50)
-  room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
-
-  await waitForPlayerCondition(room, sessionId, (p) => p.y > 0, 'RQ-18: 점프 후 공중 상태(y>0) 관측 대기', AIRBORNE_OBSERVE_TIMEOUT_MS)
 
   if (overridePeakM !== undefined) {
     getServerRoom(room).fallPeakY.set(sessionId, overridePeakM)
   }
 
+  room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
+  await sleep(50)
+  room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+
   const landed = await waitForPlayerCondition(
     room,
     sessionId,
-    (p) => p.y === 0,
-    'RQ-18: 착지(y=0 복귀) 관측 대기',
+    (p) => p.y === 0 && (overridePeakM === undefined || getServerRoom(room).fallPeakY.get(sessionId) === undefined),
+    'RQ-18: 착지(y=0 복귀, 주입값 소비 확인) 관측 대기',
     LANDING_OBSERVE_TIMEOUT_MS,
   )
   await sleep(POST_LANDING_SETTLE_MS)
@@ -569,21 +631,18 @@ describe('RQ-18 평가 기록 보강 — F1: 착지 전이 조건 고정(파일 
         room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
         await sleep(SELF_FIRE_SETTLE_MS)
 
+        // REV3(CI 수정) — 주입을 점프 전송 전으로 옮긴다(`jumpAndObserveLanding`
+        // REV3 절과 동일 근거). 접지 상태에서는 trackFallDamage가 매 틱
+        // 조기 반환하므로(`previous.grounded` 분기) 이 시점에 심은 값이
+        // 이륙 때까지 그대로 보존된다.
+        getServerRoom(room).fallPeakY.set(room.sessionId, NON_FATAL_OVERRIDE_PEAK_M)
+
         // jump:true를 보내고 이 케이스 안에서는 비활성화하지 않는다(파일
         // 상단 REV 절 "채택안" 참고) — `stepGrounded`가 매 틱 `input.jump`
         // 를 그대로 확인해 참이면 무조건 재이륙시키므로, 착지 즉시 다시
         // 이륙하는 버니합이 유지된다. 이 시나리오에는 "착지 전이가 아닌
         // 채로 접지 상태에 머무르는 틱"이 정의상 단 한 번도 없다.
         room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
-
-        await waitForPlayerCondition(
-          room,
-          room.sessionId,
-          (p) => p.y > 0,
-          'RQ-18/F1: 공중 상태(y>0) 관측 대기',
-          AIRBORNE_OBSERVE_TIMEOUT_MS,
-        )
-        getServerRoom(room).fallPeakY.set(room.sessionId, NON_FATAL_OVERRIDE_PEAK_M)
 
         const expectedDamage = (NON_FATAL_OVERRIDE_PEAK_M - FALL_DAMAGE.SAFE_HEIGHT_M) * FALL_DAMAGE.DAMAGE_PER_METER
 
@@ -604,21 +663,33 @@ describe('RQ-18 평가 기록 보강 — F1: 착지 전이 조건 고정(파일 
         )
         expect(afterFirstLanding.hp).toBe(PLAYER.MAX_HP - expectedDamage)
 
-        // 리뷰 minor 3 — 이 테스트의 M1 검출력이 의존하는 전제("버니합
-        // 중에는 접지 유지 틱이 없다")를 직접 단언한다. jump 입력은 아직
-        // 유지 중이므로(`finally`에서 비활성화하기 전) 첫 착지 데미지가
-        // 반영된 뒤에도 곧바로 재이륙(y>0)해야 한다 — 그렇지 않다면(예:
-        // 점프 쿨다운·연사 제한 도입) 전제가 깨진 것이고, 이 대기는
-        // `AIRBORNE_OBSERVE_TIMEOUT_MS` 안에 타임아웃되어 "F1을 재설계하라"
-        // 는 신호를 낸다(파일 상단 REV2 절 참고, 새 매직 넘버 없음 — 기존
-        // 헬퍼·상수 재사용).
-        await waitForPlayerCondition(
+        // 리뷰 minor 3(REV3 재수정, 파일 상단 REV3 절 참고) — 이 테스트의
+        // M1 검출력이 의존하는 전제("버니합 중에는 접지 유지 틱이 없다")를
+        // "y>0 관측"이 아니라 **2차 낙하의 안정 신호**로 재확인한다. y>0
+        // 관측은 CI 실패의 근본 원인과 정확히 같은 취약점(틱 캐치업으로
+        // 중간 공중 상태가 관측되지 않을 수 있음)을 그대로 물려받으므로
+        // 폐기했다. 대신 1차 착지 직후 **1차와 다른 높이**
+        // (`SECOND_BOUNCE_OVERRIDE_PEAK_M` — 데미지가 우연히 상쇄·오인되지
+        // 않도록)를 즉시 주입한다. jump는 아직 유지 중이므로, 전제가
+        // 참이면(버니합이 계속된다면) 다음 접지→공중→착지 전이가
+        // **언제 처리되든**(캐치업으로 여러 틱이 한꺼번에 처리돼도) 이
+        // 값을 소비해 HP가 한 번 더 준다 — 착지 전이가 실제로 일어나야만
+        // 삭제되는 값이므로(`GameRoom.ts:484`), 중간 공중 상태를 관측하지
+        // 못해도 무관하다(1차 착지 확인과 동일한 안정-신호 메커니즘). 전제가
+        // 깨지면(점프 쿨다운 등 도입으로 재이륙이 멈추면) 이 값은 영원히
+        // 소비되지 않고 이 대기가 타임아웃돼 "F1을 재설계하라"는 신호를
+        // 낸다.
+        getServerRoom(room).fallPeakY.set(room.sessionId, SECOND_BOUNCE_OVERRIDE_PEAK_M)
+        const secondExpectedDamage = (SECOND_BOUNCE_OVERRIDE_PEAK_M - FALL_DAMAGE.SAFE_HEIGHT_M) * FALL_DAMAGE.DAMAGE_PER_METER
+
+        const afterSecondLanding = await waitForPlayerCondition(
           room,
           room.sessionId,
-          (p) => p.y > 0,
-          'RQ-18/F1 전제 확인(리뷰 minor 3): 첫 착지 데미지 반영 이후에도 재이륙(버니합)이 유지된다',
-          AIRBORNE_OBSERVE_TIMEOUT_MS,
+          (p) => p.hp === PLAYER.MAX_HP - expectedDamage - secondExpectedDamage,
+          'RQ-18/F1 전제 확인(리뷰 minor 3, REV3): 첫 착지 데미지 이후에도 버니합이 유지돼 2차 주입값이 소비된다 — 소비되지 않으면(전제 붕괴) 타임아웃',
+          LANDING_OBSERVE_TIMEOUT_MS,
         )
+        expect(afterSecondLanding.hp).toBe(PLAYER.MAX_HP - expectedDamage - secondExpectedDamage)
       } finally {
         // 정리 — 더 이상 재점프하지 않도록 명시적으로 비활성화한다.
         room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
