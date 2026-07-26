@@ -8,9 +8,13 @@
 > 위임하며 표를 복제하지 않는다.
 >
 > 아래 표의 상태는 **지금 실제로 존재하는 것만** ✅로 표기한다.
-> 아래 Sensors 표에 ✅는 7행이지만, **기계가 머지를 막는 것은 3개**다 —
+> 아래 Sensors 표에 ✅는 8행이지만, **기계가 머지를 막는 것은 3개**다 —
 > 스펙 동결 게이트 · lint/typecheck · 단위·통합 테스트. 테스트-코드 동행 검사는
 > 경고일 뿐이고, evaluator·PR 리뷰 게이트·트랙 B rubric은 규율로 지켜진다.
+> coder tests/ 쓰기 차단 게이트(17f)는 이 셋과 다른 층위다 — **세션 중
+> 특정 역할(coder)의 Write/Edit/MultiEdit 툴 호출**을 막을 뿐, PR·머지
+> 시점에 걸리는 게이트가 아니다(Bash 경유는 못 막고, 그 경로는 여전히
+> evaluator 사후 diff가 PR 시점에 잡는다) — 그래서 "3개"에 포함하지 않는다.
 > (숫자만 적으면 다음 개정에서 어긋나므로 세는 기준을 함께 둔다.)
 >
 > "규칙이 문서에 쓰여 있다"와 "규칙이 강제된다"는 다르다는 것이 이 표의
@@ -31,7 +35,8 @@
 |---|---|---|---|---|
 | 트래젝토리 로그 | Comp | 세션 종료(Stop) | hook (.claude/hooks) | ⬜미구축 |
 | 스펙 동결 게이트 (🟡 존재 시 구현 차단) | Comp | 구현 파일 수정 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_spec_freeze.py` exit 2 + `.github/workflows/ci.yml` | ✅ **2026-07-21 구축.** 판정 로직은 스크립트 1개에 있고 hook·CI가 **같은 코드**를 호출한다 — 로컬과 CI가 다르게 판정하는 게이트는 신뢰를 잃으므로 정규식을 CI에 따로 두지 않았다. `--selftest`가 게이트 자신을 검증하며 CI 첫 스텝으로 돈다. 차단 대상 디렉토리는 스크립트 상단 `BLOCKED_TOP_DIRS` — ADR-0010으로 레이아웃이 확정되어 **갱신 불요**로 판정됐다(`progress.md` 18). CI는 활성 상태이며 PR #1~#3이 그 위에서 돌았다. ⚠️ 레이아웃을 바꾸는 ADR은 반드시 이 집합의 갱신을 동반해야 한다 |
-| 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | ⬜미구축 — `.claude/settings.json`은 **존재하지만** `permissions`에 `deny` 3건(시크릿)만 있고 golden ask 항목이 없다. 등재: `progress.md` 17g |
+| coder tests/ 쓰기 차단 게이트 | Comp | Write/Edit/MultiEdit 직전(PreToolUse), coder 역할 한정 | `.claude/hooks/gate_coder_test_write.py` exit 2 | ✅ **2026-07-26 구축.** stdin JSON의 `agent_type` 필드(Claude Code 2.1.220 실측 — 서브에이전트 호출 시 `.claude/agents/*.md` frontmatter `name:`과 일치하는 값이 실림, 메인 세션은 키 없음)로 coder만 식별해 `tests/` 쓰기를 exit 2로 차단. `agent_type`이 없거나 `"coder"`가 아니면 fail-open(통과) — test-writer·evaluator·reviewer·메인 세션은 막지 않는다(라이브 4케이스로 확인: coder 차단/test-writer 통과/메인 통과/coder의 Bash 경유는 미차단). `--selftest` 내장. ⚠️ **matcher가 Write\|Edit\|MultiEdit뿐이라 Bash 경유 쓰기는 못 막는다** — 그 경로는 기존 evaluator 사후 diff 검출(SHA 사슬)이 계속 담당 |
+| 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | 🟡 **부분 구축(2026-07-26)** — `permissions.ask`에 `Edit(./harness/evals/golden/**)` 1건(라이브 실측: Edit 규칙이 Write까지 커버, `evals/README.md` 참고). `Edit`·`Write`·`MultiEdit` 툴 경로만 막고 **`Bash` 경유 쓰기는 못 막는다** — Bash heredoc·리다이렉트로 골든 파일을 고치면 이 표를 그대로 통과한다. 완전 강제(✅)로 올리려면 Bash까지 보는 별도 장치(hook)가 필요 — 등재: `progress.md` 17g |
 | 파일 수정 후 빠른 검사 | Comp | 수정 직후(PostToolUse) | hook → `scripts/check.sh --fast` | ⬜미구축 — **스크립트는 있으나 호출자가 없다.** `.claude/settings.json`에 PostToolUse hook 미등록 |
 | lint / typecheck | Comp | 로컬 `npm run check` + CI | eslint + `tsc --noEmit` | ✅ **2026-07-21 구축.** `scripts/check.sh`가 로컬·CI 공통 진입점. `src/shared` 전용 규칙(환경 중립·결정론)도 lint로 강제 |
 | 단위·통합 테스트 (트랙 A) | Comp | CI, PR 머지 게이트 | `ci.yml` → Vitest | ✅ **2026-07-21 구축.** `tests/{unit,integration}` 14건 통과, 실측 4.2초. GA 골든 케이스와의 대응은 RQ 구현 시 채워진다 |

@@ -31,11 +31,18 @@ status 4건 변경에 29행 공백 리포맷이 섞였다).
 
 정답(then/rubric)은 반드시 사람이 쓴다 — 에이전트가 자기 정답을 쓰게 하지 않는다.
 
-강제 수단(계획): `.claude/settings.json` permissions가 `harness/evals/golden/**`
-수정을 승인(ask) 게이트로 막는다 — 에이전트가 초안을 쓰더라도 사람 승인을 거친다.
+강제 수단: `.claude/settings.json` `permissions.ask`에
+`Edit(./harness/evals/golden/**)` 규칙이 있다(2026-07-26, 원장 17g).
+Claude Code 2.1.220 실측: `Edit(path)` 규칙 하나가 **Write 툴을 포함한 모든
+파일 편집 툴**을 커버한다(Claude Code 자신의 안내 문구 — "Edit rules cover
+all file-editing tools"). 대조 실험: 같은 세션에서 다른 경로에 대한 Write는
+자동 승인 모드에서 그대로 통과하고, golden 경로에 대한 Write는 승인 없이는
+막힌다(비대화형 세션은 승인할 사람이 없어 그대로 실패한다).
 
-⚠️ **현재 이 ask 게이트는 없다.** `.claude/settings.json`은 존재하지만
-`permissions`에 `deny` 3건(시크릿 파일)만 있고 골든 파일 항목이 없다 —
-**지금 이 규칙은 규율로만 지켜진다.** 등재: `harness/progress.md` 항목 17g.
-파이프라인 실전(RQ 구현) 전에 넣는 편이 낫다 — 에이전트가 자기 정답을 쓰는
-것을 막는 장치이기 때문이다.
+⚠️ **정직한 한계**: 이 규칙은 `Edit`·`Write`·`MultiEdit` **툴 호출 경로만**
+본다. `Bash` 툴로 golden 파일에 직접 쓰는 경로(셸 리다이렉트, python/node
+heredoc 등)는 이 permission 표가 전혀 보지 못한다 — `Bash(...)`에 대한
+별도 규칙이 없다. 즉 "표준 편집 툴로 실수하는 것"만 막고, 의도적으로
+Bash를 경유하면 여전히 통과한다. 파이프라인 실전에서 골든 편집이 주로
+Bash heredoc으로 이뤄져 왔다면 이 게이트는 그 경로에서는 발화하지 않으며,
+**규율이 여전히 주 방어선**이다.
