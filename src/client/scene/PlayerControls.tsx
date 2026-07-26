@@ -3,18 +3,21 @@ import { useFrame, useThree } from '@react-three/fiber'
 import type { StoreApi } from 'zustand/vanilla'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
+import type { UiStoreState } from '@client/store/uiStore'
 import { attachPointerLock } from '@client/input/pointerLock'
 import { createMouseLookController, type MouseLookController } from '@client/input/mouseLook'
 import { createMovementInputTracker } from '@client/input/movementInput'
 import { createLocalFireCooldown } from '@client/input/fireControl'
 import { rotateLocalMoveDirection, yawPitchToDirection } from '@client/input/aimMath'
 import { applyLookToCamera } from '@client/input/cameraLook'
+import { createChatGatedActions } from '@client/input/chatInputGate'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { NET } from '@shared/constants'
 
 interface PlayerControlsProps {
   store: StoreApi<GameStoreState>
   connection: GameConnection
+  uiStore: StoreApi<UiStoreState>
 }
 
 /**
@@ -63,8 +66,16 @@ interface PlayerControlsProps {
  * 눈높이다 — RQ-15/16 라운드에서 스폰 로테이션이 들어와 겹쳐 스폰이
  * 사라지면서 잠정값 1.9m에서 복원했다(22a 후속 이월 ①, 경위는
  * `combat-tuning.ts` 주석).
+ *
+ * RQ-40 입력 차단(리뷰 M4): 게임 레이어로 나가는 두 출구(이동 전송·발사
+ * 전송)는 `@client/input/chatInputGate`의 `createChatGatedActions`가 만든
+ * **단일 choke point**(`gatedActions`)를 통해서만 나간다 — 이동 전송
+ * 루프·발사 핸들러가 각자 게이트를 호출하지 않는다(fe.md "개별 핸들러마다
+ * 분산 체크하지 않는다"를 문자 그대로: 체크 자체가 한 곳에만 있다).
+ * `uiStore`는 `ChatPanel.tsx`(HUD)가 입력창 포커스/블러에서 쓴다 — 이
+ * 컴포넌트는 그 최신값을 콜백으로 읽기만 한다.
  */
-export function PlayerControls({ store, connection }: PlayerControlsProps) {
+export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {
   const { camera, gl } = useThree()
   const mouseLookRef = useRef<MouseLookController | null>(null)
 
@@ -76,6 +87,8 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
 
     const movementTracker = createMovementInputTracker()
     const fireCooldown = createLocalFireCooldown()
+    // RQ-40 M4 — 게임 레이어 출구 단일 choke point(모듈 코멘트 참고).
+    const gatedActions = createChatGatedActions(() => uiStore.getState().chatFocused, connection)
 
     function handleFireDown(event: MouseEvent): void {
       // 주 버튼(좌클릭)만 발사한다 — 우클릭·휠클릭은 조준경(스펙 없음)이나
@@ -97,7 +110,8 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
       // 규정했고, 스냅샷 수신 시각·보간 렌더 시각과 같은 축을 쓰게 된다.
       if (!fireCooldown.tryFire(connection.now())) return
       const { yaw, pitch } = mouseLook.getAngles()
-      connection.room.send('fire', yawPitchToDirection(yaw, pitch))
+      // RQ-40 M4: 채팅 게이트는 `gatedActions.fire` 안에서 처리한다.
+      gatedActions.fire(yawPitchToDirection(yaw, pitch))
     }
     canvas.addEventListener('mousedown', handleFireDown)
 
@@ -108,7 +122,8 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
       const local = movementTracker.getMoveInput()
       const { yaw } = mouseLook.getAngles()
       const world = rotateLocalMoveDirection(local, yaw)
-      connection.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
+      // RQ-40 M4: 채팅 게이트는 `gatedActions.sendMoveInput` 안에서 처리한다.
+      gatedActions.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
     }, NET.TICK_MS)
 
     return () => {
@@ -119,7 +134,7 @@ export function PlayerControls({ store, connection }: PlayerControlsProps) {
       canvas.removeEventListener('mousedown', handleFireDown)
       window.clearInterval(movementIntervalId)
     }
-  }, [gl, connection])
+  }, [gl, connection, uiStore])
 
   useFrame(() => {
     const mouseLook = mouseLookRef.current

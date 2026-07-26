@@ -1,7 +1,7 @@
 import { Client } from 'colyseus.js'
 import type { Room } from 'colyseus.js'
 import type { StoreApi } from 'zustand/vanilla'
-import type { GameStoreState } from '@client/store/gameStore'
+import type { ChatMessage, GameStoreState } from '@client/store/gameStore'
 import type { MoveInput, MoveState } from '@shared/sim/movement'
 import { createClientPredictor, type AuthoritativeMoveState, type ClientPredictor } from '@client/net/prediction'
 import {
@@ -180,6 +180,18 @@ export interface GameConnection {
  * 패치마다 서버 스냅샷을 store에 그대로 반영하고(RQ-61 캐시), 이어서
  * 자기 자신의 예측을 서버 값으로 재조정한다(RQ-62 GA-35) — 이 함수는
  * 서버가 보낸 값을 캐시·재조정할 뿐 새 진실을 만들지 않는다.
+ *
+ * RQ-40 채팅(리뷰 M1, `_workspace/review/feat-RQ-40-chat.md`): `'chat'`·
+ * `'chat-history'` 구독도 이 함수(netcode 레이어)의 책임이다 — 이전엔
+ * HUD(`ChatPanel.tsx`)가 `room.onMessage`를 직접 등록해 fe.md 레이어
+ * 규칙(netcode → game state → HUD, 단방향)을 어겼고, 그 결과 실제
+ * 유실 위험이 있었다: Colyseus는 클라이언트의 JOIN_ROOM ack(≈이
+ * `joinOrCreate`가 resolve하는 시점) 이후에야 `onJoin`에서 보낸
+ * `client.send('chat-history', ...)` 큐를 flush한다. HUD가 React
+ * 커밋·passive effect 스케줄링을 거쳐야 구독을 등록하므로, 그 사이
+ * 도착한 일회성 `chat-history`가 핸들러 없이 버려질 수 있었다(재전송
+ * 경로 없음). 아래처럼 `joinOrCreate` resolve와 **같은 태스크**(중간에
+ * 다른 `await` 없이)에서 즉시 구독하면 이 경합 창이 사라진다.
  */
 export async function connectToGame(
   endpoint: string,
@@ -188,6 +200,17 @@ export async function connectToGame(
 ): Promise<GameConnection> {
   const client = new Client(endpoint)
   const room = await client.joinOrCreate(ROOM_NAME, { nickname })
+
+  // RQ-40 M1 — join resolve 직후, 다른 await 없이 즉시 등록한다(위 함수
+  // 코멘트 참고). 로그 상한(M3)은 `gameStore`의 `addChatMessage`/
+  // `setChatLog`가 `UI.CHAT_HISTORY`로 일괄 적용한다 — 여기서는 그대로
+  // 전달만 한다.
+  const unbindChat = room.onMessage<ChatMessage>('chat', (message) => {
+    store.getState().addChatMessage(message)
+  })
+  const unbindChatHistory = room.onMessage<ChatMessage[]>('chat-history', (history) => {
+    store.getState().setChatLog(history)
+  })
 
   store.getState().setSelfSessionId(room.sessionId)
 
@@ -241,6 +264,8 @@ export async function connectToGame(
     },
     async disconnect() {
       room.onStateChange.remove(handleStateChange)
+      unbindChat()
+      unbindChatHistory()
       await room.leave(true)
     },
   }

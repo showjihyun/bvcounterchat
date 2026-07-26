@@ -380,3 +380,123 @@ describe('20b/RQ-20: 서버가 시뮬레이션한 위치 변화가 store에 반�
     20_000,
   )
 })
+
+/**
+ * RQ-40/M1 — netcode 레이어(`connectToGame`)의 'chat'·'chat-history' 구독이
+ * 실제로 store까지 닿는지(evaluator 델타 재평가 3회차 FAIL 보강,
+ * `_workspace/RQ-40/03_evaluator_report.md` §D5-2·§D6-(b)).
+ *
+ * 그물이 없었던 실증: `connection.ts`에서 이 두 구독(`room.onMessage('chat',
+ * ...)`·`room.onMessage('chat-history', ...)`)을 통째로 삭제해도(=M1이 고친
+ * 결함이 그대로 되돌아오는 변이) 이전에는 통합 스위트가 전부 통과했다.
+ * 아래 두 describe는 그 변이에서 각각 `[timeout] chatLog에 live-1 반영`·
+ * `[timeout] chatLog에 이력 복원`으로 실패하는 것을 evaluator가 프로브로
+ * 직접 확인한 형태다.
+ *
+ * **describe를 둘로 나누고 각자 새 서버를 기동하는 이유**: `GameRoom`은
+ * `autoDispose = false`(GA-29 단일 룸, RQ-04)라 한 서버(=한 룸)를 여러
+ * `it()`이 공유하면 서버 쪽 `chatHistory` 배열이 `it()` 사이에도 계속
+ * 누적된다(`rq-40-chat-history-restore.test.ts` 파일 상단 "격리 주의"와
+ * 동일한 함정 — 실제로 처음엔 한 describe 안에 묶었다가 첫 it의 'live-1'이
+ * 두 번째 it의 이력에 섞여 `toEqual(['past-1','past-2'])`가
+ * `['live-1','past-1','past-2']`로 거짓 실패하는 것을 직접 겪어 분리했다).
+ * 이 파일의 다른 describe들도 각자 `beforeAll`에서 새 서버를 기동하는
+ * 관례를 따른다.
+ */
+describe("20b/RQ-40 M1: connectToGame이 실시간 'chat' 브로드캐스트를 store.chatLog에 반영한다", () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    "20b/RQ-40 M1: 실시간 'chat' 브로드캐스트가 store.chatLog에 반영된다",
+    async () => {
+      const store = createGameStore()
+      const connection: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'talker', store),
+        CONNECT_TIMEOUT_MS,
+        "connectToGame(nickname: 'talker')",
+      )
+
+      connection.room.send('chat', { text: 'live-1' })
+
+      const updated = await waitForStoreCondition(
+        store,
+        (s) => s.chatLog.some((m) => m.text === 'live-1'),
+        STORE_TIMEOUT_MS,
+        'chatLog에 live-1 반영',
+      )
+      expect(updated.chatLog.map((m) => m.text)).toEqual(['live-1'])
+
+      await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
+    },
+    20_000,
+  )
+})
+
+/**
+ * 이력 복원 경로는 위 실시간 경로와 별개 describe(= 별도 서버)로 검증한다
+ * — `room.onJoin`이 보내는 `'chat-history'`는 `joinOrCreate` resolve와
+ * **같은 태스크**에서 도착할 수 있어(connection.ts 상단 주석의 경합 설명
+ * 참고) seeder가 먼저 이력을 채워둔 뒤 두 번째 `connectToGame` 호출이 그
+ * 이력을 store에 반영하는지 확인한다.
+ */
+describe("20b/RQ-40 M1: connectToGame이 'chat-history' 이력 복원을 store.chatLog에 반영한다", () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    "20b/RQ-40 M1: 이미 오간 메시지가 있는 상태에서 접속하면 'chat-history' 복원분이 store.chatLog에 반영된다",
+    async () => {
+      const seederStore = createGameStore()
+      const seeder: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'seeder', seederStore),
+        CONNECT_TIMEOUT_MS,
+        "seeder: connectToGame(nickname: 'seeder')",
+      )
+
+      seeder.room.send('chat', { text: 'past-1' })
+      seeder.room.send('chat', { text: 'past-2' })
+      await waitForStoreCondition(
+        seederStore,
+        (s) => s.chatLog.length >= 2,
+        STORE_TIMEOUT_MS,
+        'seeder가 자신의 2개 메시지 전부 수신(이력 반영 대기)',
+      )
+
+      const newcomerStore = createGameStore()
+      const newcomer: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'newcomer', newcomerStore),
+        CONNECT_TIMEOUT_MS,
+        "newcomer: connectToGame(nickname: 'newcomer')",
+      )
+
+      const restored = await waitForStoreCondition(
+        newcomerStore,
+        (s) => s.chatLog.length >= 2,
+        STORE_TIMEOUT_MS,
+        'chatLog에 이력 복원',
+      )
+      expect(restored.chatLog.map((m) => m.text)).toEqual(['past-1', 'past-2'])
+
+      await Promise.all([
+        withTimeout(seeder.disconnect(), LEAVE_TIMEOUT_MS, 'seeder: disconnect'),
+        withTimeout(newcomer.disconnect(), LEAVE_TIMEOUT_MS, 'newcomer: disconnect'),
+      ])
+    },
+    25_000,
+  )
+})

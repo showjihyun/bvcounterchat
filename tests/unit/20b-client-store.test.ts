@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createGameStore } from '@client/store/gameStore'
+import { UI } from '@shared/constants'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — game state 레이어
@@ -181,5 +182,49 @@ describe('20b game state 레이어 — applyServerState 스냅샷 반영 (RQ-61 
       tick: 3,
     })
     expect(store.getState().selfSessionId).toBe('sess-1')
+  })
+})
+
+/**
+ * RQ-40/M3 — 채팅 로그 상한(evaluator 델타 재평가 3회차 FAIL 보강,
+ * `_workspace/RQ-40/03_evaluator_report.md` §D5-2·§D6-(a)).
+ *
+ * 위 describe와 분리하는 이유: 위 블록은 20a/20b 선례(RQ-02/03 클라 경로)의
+ * `applyServerState` 계약을 다루고, 이 블록은 리뷰 M1·M3로 추가된
+ * `chatLog`/`addChatMessage`/`setChatLog` 계약을 다룬다 — 대상 API가 다르다.
+ *
+ * 그물이 없었던 실증: `gameStore.ts`의 `.slice(-UI.CHAT_HISTORY)` 두 곳을
+ * 지워도(=M3 상한 제거) 이전에는 단위 스위트가 전부 통과했다. 아래 두
+ * `it()`은 그 변이에서 `expected 55 to be 50`(등)으로 실패하는 것을
+ * evaluator가 프로브로 직접 확인한 형태다.
+ */
+describe('20b/RQ-40 M3: 채팅 로그는 UI.CHAT_HISTORY로 상한한다(값 복제 금지 ADR-0010 — 서버와 같은 상수 재사용)', () => {
+  it('RQ-40/M3: addChatMessage는 로그 끝에 추가하고 UI.CHAT_HISTORY를 넘는 순간부터 오래된 것부터 밀려난다', () => {
+    const store = createGameStore()
+    const total = UI.CHAT_HISTORY + 5
+
+    for (let i = 0; i < total; i += 1) {
+      store.getState().addChatMessage({ nickname: 'n', text: `m-${i}` })
+    }
+
+    const log = store.getState().chatLog
+    expect(log.length).toBe(UI.CHAT_HISTORY)
+    expect(log[0]?.text).toBe('m-5')
+    expect(log[log.length - 1]?.text).toBe(`m-${total - 1}`)
+    expect(log.some((m) => m.text === 'm-0')).toBe(false)
+  })
+
+  it('RQ-40/M3: setChatLog는 로그 전체를 교체하며(이전 값 유지 안 함), 상한을 넘는 입력이 오면 최근 것만 남긴다', () => {
+    const store = createGameStore()
+    store.getState().addChatMessage({ nickname: 'n', text: 'stale-before-replace' })
+
+    const total = UI.CHAT_HISTORY + 3
+    const incoming = Array.from({ length: total }, (_, i) => ({ nickname: 'n', text: `h-${i}` }))
+    store.getState().setChatLog(incoming)
+
+    const log = store.getState().chatLog
+    expect(log.length).toBe(UI.CHAT_HISTORY)
+    expect(log.map((m) => m.text)).toEqual(incoming.slice(3).map((m) => m.text))
+    expect(log.some((m) => m.text === 'stale-before-replace')).toBe(false)
   })
 })
