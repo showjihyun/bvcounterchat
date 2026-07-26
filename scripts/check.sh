@@ -23,6 +23,12 @@ fi
 # 스펙 동결 게이트를 가장 먼저 — 스펙이 미결이면 나머지 검증은 의미가 없다.
 python .claude/hooks/gate_spec_freeze.py --check
 
+# coder 역할 게이트 자체 검증(리뷰 major 2) — 고장 난 센서는 없는 센서보다
+# 나쁘다. 이 게이트는 PreToolUse hook일 뿐 CI 게이트가 아니므로(세션 중 도구
+# 호출을 막을 뿐, PR 시점엔 관여하지 않는다) --check-paths 대응물은 없다 —
+# --selftest만 여기서 돈다.
+python .claude/hooks/gate_coder_test_write.py --selftest
+
 npx eslint .
 npx tsc --noEmit
 

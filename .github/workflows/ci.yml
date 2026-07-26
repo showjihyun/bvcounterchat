@@ -35,7 +35,9 @@ jobs:
       # 게이트 자신이 고장 났는지 먼저 본다. 고장 난 센서는 없는 센서보다
       # 나쁘다 — 통과하고 있다고 착각하게 만들기 때문이다.
       - name: 게이트 자체 검증
-        run: python .claude/hooks/gate_spec_freeze.py --selftest
+        run: |
+          python .claude/hooks/gate_spec_freeze.py --selftest
+          python .claude/hooks/gate_coder_test_write.py --selftest
 
       # requirements.md에 🟡 PENDING이 남아 있는데 구현(src/tests 등)이
       # 변경됐으면 머지를 막는다. 판정 로직은 hook과 동일한 스크립트를 쓴다
