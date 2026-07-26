@@ -122,9 +122,13 @@ coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과
 ## Phase 4: 종합
 
 - **PASS** → 구현 커밋 확인, PR 준비 (스펙 변경이 있으면 같은 PR에 포함),
-  사용자에게 테스트 출력 증거와 함께 보고. **머지 전에 `review-gate` 워크플로우
+  사용자에게 테스트 출력 증거와 함께 보고. **PR 생성 후 CI 통과를 먼저
+  확인하고**(ADR-0012 — CI 선행), 그 다음 **`review-gate` 워크플로우
   (`harness/workflow/review-gate.md`)를 호출한다** — reviewer(Opus) APPROVE가
-  머지의 필요조건
+  머지의 필요조건. CI가 빨간 상태에서 리뷰를 시작하지 않는다
+- **PASS 이후 minor만 반영한 경우** → 델타 재평가를 돌리지 않는다
+  (ADR-0012). `npm run check` + CI 통과로 종결한다. 델타 재평가는
+  blocker·major 수정에만 요구된다
 - **FAIL** → 보고서를 입력으로 coder 1회 재호출(Phase 2) → evaluator
   재평가(Phase 3). 다시 FAIL이면 자동 반복을 멈추고 보고서 첨부하여 사용자 보고.
   테스트 약화로 우회하지 않는다.
