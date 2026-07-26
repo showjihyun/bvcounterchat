@@ -188,6 +188,32 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * 새 요구 신설이 아니라 이미 구현된 결정을 고정하는 것, RQ-14 "가해자에게
  * 킬을 기록"의 반대 방향 — 가해자가 없으면 아무에게도 기록되지 않아야
  * 한다).
+ *
+ * ## REV2(리뷰 minor 3·5 보강, 팀리드 지시, `_workspace/review/
+ * feat-RQ-18-fall-damage.md`)
+ *
+ * **minor 5 — RQ-16 "모든 피해" 이행에 회귀 가드가 없었다.** 리뷰 쟁점 4
+ * 판정: RQ-16(`harness/specs/requirements.md:71-73`) "3초간 그 플레이어가
+ * 받는 **모든 피해**를 무효화"는 스펙 침묵이 아니라 명문 요구이고,
+ * `trackFallDamage`가 스폰 보호 게이트를 적용하는 것은 그 문면의 직접
+ * 이행이다. 그런데 기존 통합 3케이스가 전부 점프 전에 `UP_MISS_AIM` 자기
+ * 사격으로 보호를 먼저 해제하므로, 그 게이트를 통째로 제거해도(평가 변이
+ * M9) 스위트가 침묵했다. 아래 새 `describe` 블록이 자기 사격을 **하지
+ * 않은 채**(최초 입장 스폰 보호가 유효한 상태) 치명적 최고점
+ * (`FATAL_OVERRIDE_PEAK_M`)을 주입해 착지시키고 `hp === PLAYER.MAX_HP`를
+ * 단언한다 — `SPAWN_PROTECTION_MS`(3000ms)에 비해 점프~착지 실측 소요는
+ * 약 0.632초(리뷰 minor 6 근거)뿐이라 타이밍 여유는 넉넉하다.
+ *
+ * **minor 3 — F1의 "버니합 중 접지 유지 틱 없음" 전제가 단언되지
+ * 않았다.** F1(위 REV 절)의 M1 검출력은 그 전제에 전적으로 의존하는데,
+ * 전제는 docblock 서술뿐이고 코드로 확인되지 않았다. 점프 쿨다운·연사
+ * 제한 등이 도입돼 전제가 깨지면 F1은 실패하지 않고 조용히 GA-45의
+ * 중복으로 퇴화한다. F1 `it()` 끝(기존 hp 단언 뒤, `finally` 앞)에
+ * 전제 자체를 직접 단언하는 대기를 순증했다 — 첫 착지 데미지 반영 이후에도
+ * 재이륙(y>0)이 관측돼야 한다. 쿨다운이 도입되면 이 대기가
+ * `AIRBORNE_OBSERVE_TIMEOUT_MS` 안에 타임아웃되어 "전제가 깨졌으니 F1을
+ * 재설계하라"는 신호를 정확히 낸다 — 기존 헬퍼·상수를 그대로 재사용했다
+ * (새 매직 넘버 없음).
  */
 
 const ROOM_NAME = 'game'
@@ -577,9 +603,67 @@ describe('RQ-18 평가 기록 보강 — F1: 착지 전이 조건 고정(파일 
           LANDING_OBSERVE_TIMEOUT_MS,
         )
         expect(afterFirstLanding.hp).toBe(PLAYER.MAX_HP - expectedDamage)
+
+        // 리뷰 minor 3 — 이 테스트의 M1 검출력이 의존하는 전제("버니합
+        // 중에는 접지 유지 틱이 없다")를 직접 단언한다. jump 입력은 아직
+        // 유지 중이므로(`finally`에서 비활성화하기 전) 첫 착지 데미지가
+        // 반영된 뒤에도 곧바로 재이륙(y>0)해야 한다 — 그렇지 않다면(예:
+        // 점프 쿨다운·연사 제한 도입) 전제가 깨진 것이고, 이 대기는
+        // `AIRBORNE_OBSERVE_TIMEOUT_MS` 안에 타임아웃되어 "F1을 재설계하라"
+        // 는 신호를 낸다(파일 상단 REV2 절 참고, 새 매직 넘버 없음 — 기존
+        // 헬퍼·상수 재사용).
+        await waitForPlayerCondition(
+          room,
+          room.sessionId,
+          (p) => p.y > 0,
+          'RQ-18/F1 전제 확인(리뷰 minor 3): 첫 착지 데미지 반영 이후에도 재이륙(버니합)이 유지된다',
+          AIRBORNE_OBSERVE_TIMEOUT_MS,
+        )
       } finally {
         // 정리 — 더 이상 재점프하지 않도록 명시적으로 비활성화한다.
         room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+        await leaveRoom(room)
+      }
+    },
+    20_000,
+  )
+})
+
+describe('RQ-18 리뷰 보강(minor 5) — RQ-16 스폰 보호가 낙하 데미지에도 적용된다(파일 상단 REV2 절)', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-18 회귀(리뷰 minor 5): 자기 사격으로 보호를 해제하지 않은 채(최초 입장 스폰 보호 유효) 치명적 낙하를 겪어도 HP가 전혀 줄지 않는다 — RQ-16 "모든 피해" 무효화 고정',
+    async () => {
+      const client = newClient(server)
+      const room = await joinGame(client)
+
+      try {
+        const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
+        expect(baseline.hp).toBe(PLAYER.MAX_HP)
+
+        // 다른 케이스들과 달리 자기 사격을 보내지 않는다 — 최초 입장 스폰
+        // 보호(RQ-16, PLAYER.SPAWN_PROTECTION_MS=3000ms)가 해제되지 않은
+        // 채로 남아 있어야 이 케이스의 의미가 성립한다.
+        const afterLanding = await jumpAndObserveLanding(room, FATAL_OVERRIDE_PEAK_M)
+
+        // 핵심 회귀 단언 — 치명적 높이(FATAL_OVERRIDE_PEAK_M, GA-46과 동일
+        // 값)를 주입했음에도 스폰 보호가 유효한 동안은 낙하 데미지를 포함한
+        // "모든 피해"가 무효화돼야 한다(RQ-16 문면, 리뷰 쟁점 4·minor 5).
+        // `trackFallDamage`가 스폰 보호 게이트를 건너뛰도록 바뀌면(리뷰가
+        // 실증한 변이 M9와 동치) 이 단언만 실패한다 — 기존 3케이스는 전부
+        // 점프 전 자기 사격으로 보호를 먼저 해제하므로 이 회귀를 잡지
+        // 못했다.
+        expect(afterLanding.hp).toBe(PLAYER.MAX_HP)
+      } finally {
         await leaveRoom(room)
       }
     },
