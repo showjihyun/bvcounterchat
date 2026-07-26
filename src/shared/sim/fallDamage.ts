@@ -18,7 +18,11 @@ import { FALL_DAMAGE } from '@shared/constants'
  * - `SAFE_HEIGHT_M`(3m) 이하(경계 포함)는 0.
  * - 초과분(`fallHeightM - SAFE_HEIGHT_M`)에 `DAMAGE_PER_METER`(10)를 곱한다.
  * - 즉사 임계 없음(`INSTANT_DEATH_HEIGHT_M === null`, RQ-92) — 결과에 상한을
- *   두지 않는다. HP를 0 이상으로 클램프하는 것은 호출자(`applyDamage`/
+ *   두지 않는다. ⚠️ 이 함수는 그 상수를 **읽지 않는다** — 밸런싱에서
+ *   `INSTANT_DEATH_HEIGHT_M`을 null이 아닌 값으로 바꾸면 **이 함수를 함께
+ *   고쳐야 한다**. 상수만 바꾸면 조용히 무시된다(리뷰 minor 7). 지금은
+ *   `tests/unit/shared-constants.test.ts`의 `toBeNull()` 단언이 그 변경을
+ *   먼저 깨뜨려 사람이 이 지점을 보게 하는 것이 유일한 방어다. HP를 0 이상으로 클램프하는 것은 호출자(`applyDamage`/
  *   `applyDamageWithProtection`, `@shared/sim/{combat,lifecycle}`)의 책임이지
  *   이 함수의 책임이 아니다(관심사 분리 — `canFire`가 "허용 여부"만
  *   판정하고 실제 발사는 호출자가 하는 것과 동일한 패턴).

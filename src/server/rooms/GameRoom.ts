@@ -205,9 +205,11 @@ export class GameRoom extends Room<GameState> {
    * 소비된 뒤 삭제된다 — `diedAtTick` 등과 동일하게 GameRoom 전유 부기
    * 상태이며 `Player` 스키마에는 노출하지 않는다(`_workspace/RQ-18/
    * 01_test-writer_red.md` §1.3·§4). **이름을 바꾸지 않는다** — 통합
-   * 테스트(`tests/integration/rq-18-fall-damage.test.ts`)가
-   * `matchMaker.getLocalRoomById`로 이 정확한 필드명을 화이트박스 주입
-   * 대상으로 참조한다. */
+   * 테스트(`tests/integration/rq-18-fall-damage.test.ts`의
+   * `FallDamageTestSeam` 인터페이스)가 `matchMaker.getLocalRoomById`로 이
+   * 정확한 필드명을 화이트박스 주입 대상으로 참조한다. 그 결합은
+   * `as unknown as` 캐스팅이라 **`tsc`가 대조하지 않는다** — 리네임은 타입
+   * 오류가 아니라 실행 시 단언 실패로만 드러난다(리뷰 minor 2). */
   private readonly fallPeakY = new Map<string, number>()
   /** RQ-31: 룸 전역 스폰 로테이션 커서 — 세션이 아니라 룸 하나가 갖는다
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
@@ -444,7 +446,9 @@ export class GameRoom extends Room<GameState> {
    * 2. `previous.grounded === false && next.grounded === true`(착지
    *    전이)면 그 구간의 최고점으로 데미지를 산정해 적용한다. 스폰 보호
    *    게이트는 `handleFire`가 피격자에게 쓰는 것과 동일한 지점
-   *    (`spawnedAtTick`/`firedSinceSpawn`)을 재사용한다. 사망 시 가해자가
+   *    (`spawnedAtTick`/`firedSinceSpawn`)을 재사용한다 — RQ-16이 명시한
+   *    "그 플레이어가 받는 **모든 피해**"에 낙하가 포함되므로 스펙 침묵이
+   *    아니라 문면 이행이다. 사망 시 가해자가
    *    없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬 카운트
    *    미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든 사망이든)
    *    `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
@@ -458,8 +462,14 @@ export class GameRoom extends Room<GameState> {
 
     if (previous.grounded) return // 착지 전이가 아니다 — 계속 접지 상태였다
 
-    const peak = this.fallPeakY.get(sessionId) ?? 0
-    const damage = fallDamageForHeight(peak)
+    // `fallDamageForHeight`의 계약은 절대 y가 아니라 **낙차**다. 오늘은
+    // `groundedOutcome`이 착지 y를 0으로 하드코딩해 두 값이 항상 같지만,
+    // 지형(RQ-21/22/30~32)이 들어와 착지 y가 0이 아니게 되는 순간 이
+    // 뺄셈이 **낙차의 유일한 정의**가 된다 — 빼지 않으면 높은 지대에 서
+    // 있다가 조금만 뛰어도 데미지가 들어가는 형태로 조용히 뒤집힌다
+    // (리뷰 minor 1). 키 부재는 `next.y`로 폴백해 낙차 0이 되게 한다.
+    const peak = this.fallPeakY.get(sessionId) ?? next.y
+    const damage = fallDamageForHeight(peak - next.y)
     if (damage > 0) {
       const spawnedAt = this.spawnedAtTick.get(sessionId)
       const fired = this.firedSinceSpawn.get(sessionId) ?? false
