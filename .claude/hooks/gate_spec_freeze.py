@@ -66,6 +66,11 @@ def is_implementation_path(path_str: str) -> bool:
 
     POSIX에서 백슬래시가 든 정상 파일명을 오판할 수 있으나, 그 방향의 오류는
     "막지 말아야 할 것을 막는" 쪽이라 게이트로서 안전한 실패다.
+
+    참고(리뷰 minor 4): `gate_coder_test_write.py`의 `is_test_path`가 같은
+    백슬래시 정규화·`ROOT` 상대화·최상위 세그먼트 판정 로직을 독립적으로
+    유지한다(두 스크립트가 각자 subprocess로 단독 실행되는 hook이라 임포트
+    공유를 안 함). **한쪽을 고치면 반대쪽도 확인할 것.**
     """
     if not path_str:
         return False

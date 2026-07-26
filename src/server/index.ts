@@ -59,6 +59,18 @@ export function buildServer(options: BuildOptions = {}) {
     // 이미 명시적으로 gracefullyShutdown(false)를 호출해 종료를 직접
     // 통제하므로, Colyseus가 프로세스 전역에 별도로 등록하는 이 자동 종료
     // 경로는 필요 없고, 위 위험을 없애므로 끈다.
+    //
+    // 트레이드오프(리뷰 minor, 17h①): 이 설정은 Colyseus가 자동 등록하던
+    // SIGTERM 그레이스풀 종료 경로도 함께 제거하고, 이를 대체하는 자체
+    // SIGTERM 핸들러는 src/ 어디에도 없다 — 즉 프로덕션에서 SIGTERM(예:
+    // `docker stop`)을 받으면 Node 기본 동작(즉시 종료)이 그대로 실행돼
+    // 진행 중인 세션이 그레이스풀 드레인 없이 끊긴다. RQ-80 원문은 "무중단
+    // 배포는 목표가 아니며, 재시작 시 Redis 세션의 소실을 허용한다"이므로
+    // v1에서는 수용 가능한 트레이드오프다(harness/specs/requirements.md RQ-80).
+    // 단, RQ-81(통계 영속)은 킬·데스·헤드샷 등 누적 통계는 보존을 요구한다 —
+    // 지금은 통계 저장이 구현되지 않아 실질 차이가 없지만, SQLite 통계
+    // 저장이 붙는 시점에는 "SIGTERM 즉시 종료"가 그 보존 요구와 부딪힐 수
+    // 있어 재검토가 필요하다.
     gracefullyShutdown: false,
   })
   // RQ-04: 이름은 'game' 하나뿐 — 서버 전역에 상설 세션은 이 룸이 유일하다.

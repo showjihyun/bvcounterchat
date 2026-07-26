@@ -23,6 +23,12 @@ fi
 # 스펙 동결 게이트를 가장 먼저 — 스펙이 미결이면 나머지 검증은 의미가 없다.
 python .claude/hooks/gate_spec_freeze.py --check
 
+# coder 역할 게이트 자체 검증(리뷰 major 2) — 고장 난 센서는 없는 센서보다
+# 나쁘다. 이 게이트는 PreToolUse hook일 뿐 CI 게이트가 아니므로(세션 중 도구
+# 호출을 막을 뿐, PR 시점엔 관여하지 않는다) --check-paths 대응물은 없다 —
+# --selftest만 여기서 돈다.
+python .claude/hooks/gate_coder_test_write.py --selftest
+
 npx eslint .
 npx tsc --noEmit
 
@@ -47,6 +53,21 @@ npx vitest run tests/unit
 #  있었다 — 크래시 시그니처 게이팅으로 그 구멍을 닫는다.)
 #
 # ~2% 독립 크래시가 3회 연속일 확률 ≈ 0.0008% — 게이트가 실질적으로 안정된다.
+#
+# 잔여 취약점(리뷰 minor, 17h④): 아래 크래시 판별은 vitest **기본 리포터의
+# 출력 문자열**에 결합돼 있다 — 실제로 매칭에 쓰는 다섯 패턴 전부: 단언 쪽
+# 아래 `grep -qE 'Failed Tests|AssertionError|FAIL +tests/'`(3중), 크래시 쪽
+# 아래 `grep -qE 'Worker exited unexpectedly|Unhandled Error'`(2중). 이
+# 문자열은 vitest의 공개 API가 아니라 리포터 구현 세부다 — 리포터를
+# 바꾸거나(예: json/verbose 리포터로 전환) vitest를 메이저 업그레이드하면
+# 문구가 바뀌어 판별이 조용히 어긋날 수 있다(단언 실패를 크래시로 오분류해
+# 재시도로 은폐하거나, 반대로 알려진 크래시를 미지의 실패로 오분류해
+# 불필요하게 하드 실패시킬 수 있다). 단언 쪽은 3중 중복이라 한 문구만
+# 바뀌어도 나머지가 방어하지만, 크래시 쪽은 2중이라 상대적으로 더 취약하다
+# — 다만 크래시 쪽이 매칭에 실패하는 방향은 바로 아래 "미지의 실패 → 하드
+# 실패" 분기로 떨어지므로 안전한 실패 방향이다(검증을 몰래 통과시키는 쪽이
+# 아니라 불필요하게 막는 쪽으로 어긋난다). vitest 업그레이드 시에는 이 다섯
+# grep 패턴 전부가 여전히 실제 리포터 출력과 일치하는지 반드시 재검증할 것.
 integration_attempts=3
 for attempt in $(seq 1 "$integration_attempts"); do
   set +e

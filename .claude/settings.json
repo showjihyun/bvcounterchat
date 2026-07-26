@@ -4,6 +4,9 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./secrets/**)"
+    ],
+    "ask": [
+      "Edit(./harness/evals/golden/**)"
     ]
   },
   "hooks": {
@@ -14,6 +17,10 @@
           {
             "type": "command",
             "command": "python .claude/hooks/gate_spec_freeze.py"
+          },
+          {
+            "type": "command",
+            "command": "python .claude/hooks/gate_coder_test_write.py"
           }
         ]
       }
