@@ -280,20 +280,38 @@ export async function connectToGame(
     rttEstimator.recordSend(seq, now())
     room.send('ping', { seq })
   }
-  // 접속 직후 즉시 보내지 않는다 — 소켓이 막 열린 시점의 첫 왕복은 TLS/TCP
-  // 핸드셰이크 잔여 지연·OS 소켓 버퍼 워밍업 등으로 이후 왕복보다 이상치가
-  // 되기 쉽고, `rttEstimator`의 부트스트랩 규칙(첫 표본은 평활 없이 그대로
-  // 기준값이 됨)상 그 이상치가 그대로 초기 추정값이 되어 EMA(alpha=0.2, 즉
-  // 느린 회복)로 정상화되기까지 여러 표본이 걸린다. 첫 주기
-  // (`NET.RTT_PING_INTERVAL_MS`)만큼 늦춰 연결이 안정된 뒤 첫 표본을
-  // 만든다 — 그동안 `getRttMs()`는 0(안전한 기본값, 되감기 미적용)이고,
-  // 이는 `sampleRewoundPosition`의 "버퍼 미충전 시 절단"과 같은 성격의
-  // 정상적인 웜업 구간이다.
   // `window.setInterval`이 아니라 전역 `setInterval`을 쓴다 — 이 모듈은
   // 통합 테스트(Node 환경, `window` 없음)에서 직접 실행되므로
   // `PlayerControls.tsx`(브라우저 전용, 렌더 계층 면제 대상)와 달리
   // `window` 참조가 있으면 그 자체로 테스트가 깨진다.
   const pingIntervalId = setInterval(sendPing, NET.RTT_PING_INTERVAL_MS)
+  // 리뷰 major 1 수정(`_workspace/review/feat-RQ-64-lag-compensation.md`)
+  // — 접속 직후 즉시 첫 표본을 만든다. 이전 버전은 첫 ping을 1주기
+  // (`NET.RTT_PING_INTERVAL_MS`=1000ms) 뒤로 미뤘는데, RQ-64 EARS
+  // 문면에는 웜업 예외가 없어 그 창 전체(모든 접속·재접속마다 반복)에서
+  // 되감기가 전혀 적용되지 않는 실질 결함이었다 — 사내망(RTT≈1ms)에서도
+  // 이 창의 판정 오차는 히트박스 반지름(0.3m)을 넘는다(리뷰 실측). 그
+  // 지연의 근거로 들었던 "TLS 핸드셰이크 이상치 회피"는 이 배포에
+  // 애초에 성립하지 않는다 — RQ-80·ADR-0009가 "HTTP/WS, TLS 불요"로
+  // 확정했고, 이 시점에는 이미 이 함수 앞부분의
+  // `await client.joinOrCreate(...)`(매치메이킹 요청 → 좌석 예약 → WS
+  // 업그레이드 → JOIN_ROOM ack → 초기 상태 패치)가 끝나 있어 이 소켓의
+  // 최소 3~4번째 왕복이지 콜드 왕복이 아니다.
+  //
+  // **동기 호출이 계약의 일부다**: `sendPing()`을 여기서 `await`나
+  // `setTimeout`/`Promise.then` 등으로 감싸 미루지 않는다 — 이 호출과
+  // 아래 `connectToGame`의 `return` 사이에 다른 비동기 대기가 없어야,
+  // 그 사이 어떤 소켓 콜백(이 ping의 `pong` 응답 포함)도 끼어들 수
+  // 없다는 것이 JS 실행 모델(마이크로태스크가 전부 비워진 뒤에만 다음
+  // 매크로태스크로 넘어감) 자체의 보장이 된다. 통합 테스트
+  // (`tests/integration/20b-client-connect.test.ts`, 해당 describe 상단
+  // REV 절)의 공허화 방지 단언(`connectToGame` resolve 직후
+  // `getRttMs()===0`)이 정확히 이 보장에 의존한다 — 이 호출을 비동기
+  // 형태로 바꾸면 그 단언의 근거가 깨진다.
+  //
+  // 이후 주기 발화(`pingIntervalId`, 위)는 그대로 유지한다 — 즉시 1회 +
+  // 이후 매 `NET.RTT_PING_INTERVAL_MS`.
+  sendPing()
 
   /**
    * RQ-64 평가 O-2 수정(`_workspace/RQ-64/09_evaluator_delta2.md`) — ping
