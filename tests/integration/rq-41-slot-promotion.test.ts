@@ -109,6 +109,13 @@ const SYNC_TIMEOUT_MS = 5_000
  * 간격(ms) — 30Hz 틱 기준 약 30틱. 서버 패치 지연(기본 20Hz)을 여러 번
  * 흡수하고도 남는 여유다. */
 const DRIFT_OBSERVE_MS = 1_000
+/** 22j 케이스(정원 가드) 교차 확인용 — 서버 권위 판정(동기, 즉시 유효) 뒤에
+ * 클라 복제본이 그 값으로 수렴하는지 확인하는 여유(ms). 20Hz 패치 주기
+ * (50ms)의 10배로 CI 지터를 흡수한다(평가 FAIL 수정, `_workspace/RQ-41/
+ * 05_test-writer_capacity-fix.md` §1 참고 — 서버 권위 읽기가 판정
+ * 근거이고 이 대기는 그 결과가 클라에도 어긋나지 않는지 보는 부가
+ * 확인이다). */
+const POST_MUTATION_SETTLE_MS = 500
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -286,12 +293,32 @@ function waitForOwnChatEcho(room: Room, text: string, timeoutMs: number, label: 
   )
 }
 
+/** 화이트박스 상태 컬렉션 최소 계약 — `MapSchema`가 만족한다. `size`·
+ * `has()` 둘 다 이미 `room.state.players`/`spectators`(클라 복제본)에서도
+ * 쓰던 것과 동일한 모양이지만, 여기서는 **서버 권위** 인스턴스(`seam.state`)
+ * 쪽에 붙인다 — 평가 FAIL 수정(아래 `state` 필드 docblock) 참고. */
+interface StateCollectionSeam {
+  size: number
+  has(key: string): boolean
+}
+
 /** 화이트박스 접근 대상 계약(`rq-18-fall-damage.test.ts`/`rq-43-afk-
  * kick.test.ts` 선례와 동일한 `as unknown as` 캐스팅 결합 — `tsc`가
  * 대조하지 않는다). 전부 신규 계약이 아니다 — `GameRoom.ts`에 이미 이
  * 이름으로 존재한다(확인 완료). `promoteWaitingSpectator`는 현재 private —
  * 22j(정원 가드)를 실 호출자(`kickAfkPlayer`) 경로 없이 직접 검증하기
- * 위한 접근이다. */
+ * 위한 접근이다.
+ *
+ * **평가 FAIL 수정(2026-07-27, `_workspace/RQ-41/04_evaluator_report.md`
+ * §7)으로 `state` 추가**: `@colyseus/core`의 `Room.state`가 이미 public이라
+ * 신규 계약이 아니다(`rq-43-afk-kick.test.ts`의 `AfkTestSeam.state`가 이미
+ * 같은 방식으로 노출한다). 22j 케이스가 `promoteWaitingSpectator()`를
+ * **동기** 직접 호출한 직후 곧바로 값을 읽는데, 그 직후 읽어야 할 대상은
+ * **서버 권위 상태**(`seam.state`)이지 클라이언트 복제본
+ * (`bystander.state`, `playersCount`/`isSpectator` 등이 읽는 곳)이 아니다
+ * — 복제본은 20Hz 패치로 나중에 갱신되므로 동기 호출 직후 읽으면 항상
+ * 변경 이전 값을 돌려준다(평가자 프로브로 실증됨, 변이 M5에서 정원 가드를
+ * 지워도 공허하게 통과한 원인). */
 interface PromotionTestSeam {
   moveStates: Map<string, unknown>
   pendingInputs: Map<string, unknown>
@@ -304,6 +331,7 @@ interface PromotionTestSeam {
   reloadStartedAtTick: Map<string, number>
   fallPeakY: Map<string, number>
   lastInputAtTick: Map<string, number>
+  state: { players: StateCollectionSeam; spectators: StateCollectionSeam }
   promoteWaitingSpectator(): void
 }
 
@@ -533,14 +561,34 @@ describe('RQ-41 슬롯 승격(사유 무관) — 정상 퇴장 경로', () => {
 
         // 화이트박스 직접 호출 — 유일한 실 호출자(`kickAfkPlayer`)는 항상
         // 슬롯을 먼저 비운 뒤에만 부르므로, 정원이 찬 채로 이 메서드가
-        // 불리는 경로는 정상 흐름에는 없다(도달 불가 방어선, 22j). 이
-        // 메서드는 완전히 동기이므로 호출 직후 서버 권위 상태를 곧바로
-        // 읽어도 안전하다(네트워크 왕복이 필요 없다).
+        // 불리는 경로는 정상 흐름에는 없다(도달 불가 방어선, 22j).
+        //
+        // **평가 FAIL 수정(`_workspace/RQ-41/04_evaluator_report.md`
+        // §7)**: 이 메서드는 완전히 동기이므로 호출 직후 곧바로 읽어도
+        // 안전하다는 전제 자체는 맞지만, 이전 버전은 **읽는 대상을
+        // 잘못 골랐다** — `playersCount(bystander)` 등은 `bystander.state`
+        // (클라 **복제본**)를 읽는데, 서버 상태 변경은 20Hz 패치로
+        // 나중에 도착한다. 조작이 서버 상태를 직접(동기로) 건드렸으니
+        // 판정도 같은 층 — `seam.state`(서버 권위) — 에서 읽어야
+        // "네트워크 왕복 없이 안전하다"는 전제가 실제로 성립한다.
         const seam = getServerRoom(bystander)
         seam.promoteWaitingSpectator()
 
-        expect(playersCount(bystander)).toBe(CAPACITY.PLAYERS) // 늘지 않았다
-        expect(spectatorsCount(bystander)).toBe(1) // 소진되지 않았다
+        // 판정 근거 — 서버 권위 상태(동기 직후 즉시 유효, `PromotionTestSeam
+        // .state` docblock 참고).
+        expect(seam.state.players.size).toBe(CAPACITY.PLAYERS) // 늘지 않았다
+        expect(seam.state.spectators.size).toBe(1) // 소진되지 않았다
+        expect(seam.state.spectators.has(spectatorId)).toBe(true)
+        expect(seam.state.players.has(spectatorId)).toBe(false)
+
+        // 교차 확인(강화, 대체 아님) — 클라 복제본도 결국 이 값에
+        // 수렴하는지 실시간으로 확인한다. 서버가 실제로 승격했다면(가드가
+        // 없다면) 이 대기 이후 클라도 그 변경을 반영해 아래 값이 달라진다
+        // — "동기 직후 즉시 읽기"의 함정(공허화 원인, §7)을 피하려고
+        // 여기서는 짧게 실시간을 기다린 뒤에만 클라 시야를 읽는다.
+        await sleep(POST_MUTATION_SETTLE_MS)
+        expect(playersCount(bystander)).toBe(CAPACITY.PLAYERS)
+        expect(spectatorsCount(bystander)).toBe(1)
         expect(isSpectator(bystander, spectatorId)).toBe(true)
         expect(isPlayer(bystander, spectatorId)).toBe(false)
       } finally {
