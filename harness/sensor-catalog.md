@@ -46,6 +46,7 @@
 | 트랙 B rubric 체크 | Inf | 하네스 변경 시·주간 | 사람 (수동) | ✅ 절차만 (harness/evals/README.md + track-b 시드 완료) |
 | PR 리뷰 게이트 (reviewer, 솔로 대체) | Inf | PR 머지 전 | APPROVE 없이 머지 금지 + 브랜치 보호(status check 필수) | ✅ **2026-07-21 구축.** `.claude/skills/review-gate/SKILL.md` + `.claude/agents/reviewer.md`(opus). 검토 항목 10건(스코프 이탈·ADR 모순·서버 권위·결정론·테스트 약화·렌더 루프 할당·shared 환경오염·값 복제·문서 동행·틱 예산). 격리 규칙: 구현 세션의 대화를 reviewer에 넘기지 않는다. ⚠️ 브랜치 보호(status check 필수) 설정은 **아직 안 됨** — 지금은 규율로만 지켜진다 |
 | 배포 후 스모크 | Comp | main 머지 → 배포 직후 | deploy.yml → smoke.sh | 🟡 RQ-80·RQ-81(배포·저장소) 구현 후 |
+| 런타임 가드(Node ≥24 차단) | Comp | 전체 검증(`npm run check`)·CI — `--fast` 제외 | `scripts/check.sh` exit 1 (major ≥ 24) | ✅ 2026-07-28 구축 — 통합 워커가 v24에서 네이티브 abort(`0xC0000409`). `engines`는 npm 경고일 뿐이라 검증 진입점에서 직접 막는다. 근거: 원장 28a |
 
 ## 게임 특화 센서
 
@@ -68,7 +69,6 @@
 | 틱 예산 초과 감지 | Comp | 서버 런타임(틱 루프 내 자체 계측) | 틱마다 소요시간 측정(perf 타이머) → 로그/카운터, 33ms(RQ-60, 30Hz 예산, 총 20 연결 브로드캐스트 조건 — RQ-03) 초과 시 경고. 추후 부하 테스트 CI 게이트 후보 | ⬜미구축 — 서버 틱 루프 자체가 없음 |
 | 프레임 예산 회귀 | Comp/Inf | PR 리뷰(렌더 루프 코드) + 수동 프로파일링 | 코드 리뷰 체크리스트("useFrame/렌더 루프 내 할당 금지", ADR-0001·CLAUDE.md §게임 특화 불변식) + Chrome DevTools/Playwright 트레이스 수동 확인. 목표는 RQ-01 확정치(내장 GPU Iris Xe급 기준 30fps=33.3ms 예산) — 애초에 60fps를 가정했던 이전 초안은 폐기. 자동 CI 게이트는 브라우저 렌더링이 필요해 후순위 | ⬜미구축 — 클라이언트 렌더 루프 자체가 없음 |
 | 서버 권위 위반 정적 검사 | Comp | CI lint 단계 | eslint custom rule 후보 — src/client/** 안에서 HP·킬·위치를 확정 대입하는 패턴(RQ-61 위반, CLAUDE.md §게임 특화 불변식) 탐지. 규칙 자체가 아직 설계 안 됨(패턴 정의 필요) | ⬜미구축 |
-| 런타임 가드(Node ≥24 차단) | Sensor | 전체 검증(`npm run check`)·CI — `--fast`는 제외 | ✅ `scripts/check.sh` — 통합 워커가 Node v24에서 네이티브 abort(`0xC0000409`)로 죽는다. `engines`는 npm 경고일 뿐이라 검증 진입점에서 직접 차단한다. 근거: 원장 28a |
 
 ## 운영 규칙
 
