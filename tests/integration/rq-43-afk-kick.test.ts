@@ -238,6 +238,42 @@ function waitForCondition(room: Room, predicate: () => boolean, label: string, t
   )
 }
 
+/**
+ * REV(레이스 수정, 팀리드 지시 — `_workspace/RQ-43/03_test-writer_race-fix.md`
+ * 참고): `joinOrCreate()`가 resolve된 시점에도 그 클라이언트 **자기 자신의**
+ * `room.state`는 아직 `undefined`일 수 있다(coder 격리 진단으로 실측
+ * 확인 — resolve 직후 `state` undefined, 이후 첫 스냅샷이 도착하면
+ * `spectators.has(self)`/`players.has(self)`가 정확해진다). `join` 직후
+ * 자기 자신의 소속 컬렉션을 **동기적으로** `expect()`하기 전에는 항상 이
+ * 함수로 최초 동기화를 먼저 기다린다 — `rq-03-spectator-overflow.test.ts`
+ * 의 `waitForOwnMembership()`과 동일한 이유·동일한 패턴(그 파일 :125).
+ * 다른 클라이언트의 시야로 상태를 기다리는 `waitForCondition` 호출들은
+ * 이미 구독형 대기라 이 문제와 무관하다(전수 점검 결과, 위 보고서 §2 표
+ * 참고) — `tryResolve()`가 `state`가 아직 없을 때 조용히 `false`를
+ * 반환하고 `onStateChange`로 다음 스냅샷을 기다리므로 거짓 실패가 생기지
+ * 않는다. 반면 이 함수처럼 결과를 곧바로 동기 `expect()`하는 지점은 그
+ * 안전장치가 없어 별도로 대기가 필요하다.
+ */
+function waitForOwnMembership(room: Room, timeoutMs: number): Promise<'players' | 'spectators'> {
+  return withTimeout(
+    new Promise<'players' | 'spectators'>((resolve) => {
+      const tryResolve = (): void => {
+        if (isPlayer(room, room.sessionId)) {
+          resolve('players')
+          return
+        }
+        if (isSpectator(room, room.sessionId)) {
+          resolve('spectators')
+        }
+      }
+      tryResolve()
+      room.onStateChange(() => tryResolve())
+    }),
+    timeoutMs,
+    `sessionId=${room.sessionId} 소속 컬렉션(players/spectators) 최초 동기화 대기`,
+  )
+}
+
 /** 서버가 이 연결을 강제 종료했음을 클라이언트 쪽에서 관측한다 —
  * `room.leave()`를 이 파일이 직접 호출하지 않은 세션에서 이 이벤트가
  * 발생했다면 그것은 서버측 강제 퇴장(AFK 킥)이라는 뜻이다. */
@@ -343,22 +379,49 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
         // 판정 자체는 `rq-03-spectator-overflow.test.ts`가 전담 — 이
         // 파일은 전제로 삼아 확인만 한다).
         await waitForCondition(bystander, () => isPlayer(bystander, afkTargetId), 'AFK 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        // REV(레이스 수정) — spectator 자신의 최초 상태 동기화를 먼저
+        // 기다린다(`waitForOwnMembership` docblock 참고). 이 대기가 없으면
+        // `joinOrCreate()` resolve 직후 `spectator.state`가 아직 `undefined`인
+        // 채로 곧바로 아래 두 `expect()`를 동기 평가해 거짓 실패할 수 있었다.
+        const spectatorMembership = await waitForOwnMembership(spectator, STATE_TIMEOUT_MS)
+        expect(spectatorMembership).toBe('spectators')
         expect(isSpectator(spectator, spectatorId)).toBe(true)
         expect(isPlayer(spectator, spectatorId)).toBe(false)
 
         // 대기 술어 ② — 리스너를 먼저 등록한(직전 동기 단언으로 시작 상태
         // 확인 완료) 다음에만 화이트박스 트리거를 호출한다.
+        //
+        // REV2(레이스 수정 2차 — 5회 반복 실행으로 재현) — 각 클라이언트가
+        // "자신의 관심사"만 반영됐다고 확인하는 것으로는 부족했다. 실측
+        // 재현: `promotedPromise`(spectator 자신의 승격만 확인)가 resolve된
+        // **뒤에도** `bystander`(제3자)의 시야에서는 여전히
+        // `isPlayer(bystander, afkTargetId) === true`인 순간이 존재했다 —
+        // 서버가 같은 틱에 브로드캐스트한 패치라도 클라이언트마다 별도
+        // WebSocket 프레임으로 도착·디코딩되므로 반영 시점이 클라이언트별로
+        // 어긋날 수 있다(대기 술어 ①이 요구하는 "관측 대상 그 자체의" 단조
+        // 안정 신호가 필요하다는 뜻 — 다른 클라이언트가 이미 안정됐다는
+        // 사실이 이 클라이언트의 안정을 보장하지 않는다). 그래서 최종
+        // `expect()`가 읽는 **모든** (room, 대상 조건) 쌍을 각각 그 room
+        // 자신의 `waitForCondition`으로 명시적으로 기다린다 — "이 클라이언트
+        // 시야에서 최종 상태에 도달했는가"를 관측 대상별로 전부 확인한
+        // 뒤에만 동기 `expect()`로 넘어간다.
         const leftPromise = waitForLeave(afkTarget, KICK_OBSERVE_TIMEOUT_MS, 'RQ-43/GA-13: AFK 대상의 서버측 강제 퇴장(onLeave) 대기')
-        const promotedPromise = waitForCondition(
+        const spectatorSeesFinalStatePromise = waitForCondition(
           spectator,
-          () => isPlayer(spectator, spectatorId) && !isSpectator(spectator, spectatorId),
-          'RQ-43/GA-13: 관전자 → 플레이어 승격 대기',
+          () => isPlayer(spectator, spectatorId) && !isSpectator(spectator, spectatorId) && !isPlayer(spectator, afkTargetId),
+          'RQ-43/GA-13: 관전자(spectator) 시야에서 자신의 승격 + AFK 대상 제거 모두 반영 대기',
+          KICK_OBSERVE_TIMEOUT_MS,
+        )
+        const bystanderSeesFinalStatePromise = waitForCondition(
+          bystander,
+          () => !isPlayer(bystander, afkTargetId) && isPlayer(bystander, spectatorId),
+          'RQ-43/GA-13: 제3자(bystander) 시야에서 AFK 대상 제거 + 관전자 승격 모두 반영 대기',
           KICK_OBSERVE_TIMEOUT_MS,
         )
 
         forceImmediateAfkDue(afkTarget, afkTargetId)
 
-        await Promise.all([leftPromise, promotedPromise])
+        await Promise.all([leftPromise, spectatorSeesFinalStatePromise, bystanderSeesFinalStatePromise])
 
         // then: A(afkTarget)는 더 이상 플레이어가 아니다 — 승격된 클라이언트
         // (spectator) 자신의 관측과 제3자(bystander) 관측 양쪽으로 재확인해
