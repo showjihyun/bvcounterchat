@@ -611,7 +611,7 @@ describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSo
   })
 
   it(
-    '반복된 이동 입력·서버 확인 왕복 후 connection.getRttMs()가 0에서 양수로 바뀌고, 실 소켓 왕복 자릿수 안에 머문다(RQ-64/F3 회귀 가드)',
+    '접속 직후 짧은 시간 안에 되감기 웜업이 끝나고(RQ-64 리뷰 major 1 회귀 가드), 반복된 이동 입력·서버 확인 왕복 후에도 connection.getRttMs()가 실 소켓 왕복 자릿수 안에 머문다(RQ-64/F3 회귀 가드)',
     async () => {
       const store = createGameStore()
       const connection: Connection = await withTimeout(
@@ -619,12 +619,46 @@ describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSo
         CONNECT_TIMEOUT_MS,
         "connectToGame(nickname: 'pinger')",
       )
-      await waitForSelfNickname(store, connection.sessionId)
 
-      // 공허화 방지 — 배선 전이라면 이 값이 처음부터 계속 0이어야 한다는
-      // 것 자체를 먼저 확인한다(아래 "양수로 바뀐다" 단언이 우연히 항상
-      // 참인 상수 때문이 아님을 대조).
+      // 공허화 방지(리뷰 major 1 대응, `_workspace/review/feat-RQ-64-
+      // lag-compensation.md`) — 원래는 "첫 ping이 NET.RTT_PING_INTERVAL_MS
+      // (1000ms) 뒤에야 나간다"는 웜업 지연을 전제로, 그 창 안에서
+      // `getRttMs()`가 계속 0인지 먼저 확인한 뒤 "양수로 바뀐다"는 단언이
+      // 우연히 항상 참인 상수 때문이 아님을 대조했다. 그런데 major 1
+      // 수정(접속 즉시 첫 ping 발사)이 그 창 자체를 없애므로, 이 단언은
+      // 더 이상 "1초 동안 0"이라는 안전한 시간 여유에 기댈 수 없다 —
+      // **그 목적(하드코딩된 상수가 아니라는 증거)을 그대로 지키면서**
+      // 위치만 옮겼다. `connectToGame`이 resolve된 바로 다음 줄(중간에
+      // 다른 `await` 없음)에서 읽는 것은 즉시 ping이 있어도 여전히
+      // 안전하다 — Node의 이벤트 루프는 프라미스 마이크로태스크를 전부
+      // 비운 뒤에야 다음 매크로태스크(소켓 'message' 이벤트 등 실 I/O
+      // 콜백)로 넘어간다. `connectToGame` 내부에서 동기로 `sendPing()`을
+      // 호출해도, 그 pong 응답은 실제 네트워크 I/O를 한 바퀴 거쳐야
+      // 도착하므로 **이 시점(같은 마이크로태스크 체인 안)에는 아직
+      // 도착할 수 없다** — 아무리 빠른 루프백이라도 성립하는, 실측
+      // 네트워크 속도가 아니라 JS 실행 모델 자체가 주는 보장이다. (아래
+      // `rq-64-rtt-estimator.test.ts`의 "표본 없음 → 0" 단위 계약과
+      // 합쳐, "이 값이 배선에서 나온 진짜 표본이지 하드코딩된 상수가
+      // 아니다"는 원래 목적이 그대로 유지된다.)
       expect(connection.getRttMs()).toBe(0)
+
+      // 리뷰 major 1 회귀 가드 — 접속 직후 짧은 시간 안에 되감기가 실제로
+      // 적용 가능한 상태(getRttMs() > 0)가 되는지 확인한다. 수정 전 구현은
+      // 첫 ping을 NET.RTT_PING_INTERVAL_MS(1000ms) 뒤로 미뤄, 그 창
+      // 전체에서 되감기가 전혀 적용되지 않았다(RQ-64 EARS 문면에는 웜업
+      // 예외가 없다). 새 매직 넘버를 넣지 않고 기존 상수의 절반을
+      // 임계값으로 쓴다 — "옛 방식(1주기 뒤 첫 발화)이라면 이 시간 안에
+      // 도달할 수 없다"는 것과 "정상 네트워크 변동에는 넉넉한 여유"라는
+      // 것이 동시에 성립하는 값이다.
+      const IMMEDIATE_PING_TIMEOUT_MS = NET.RTT_PING_INTERVAL_MS / 2
+      await waitForRttCondition(
+        connection,
+        (value) => value > 0,
+        IMMEDIATE_PING_TIMEOUT_MS,
+        `RQ-64 리뷰 major 1: 접속 후 ${IMMEDIATE_PING_TIMEOUT_MS}ms 안에 connection.getRttMs()가 양수가 되길 대기 — 계속 0이면 첫 ping이 아직 NET.RTT_PING_INTERVAL_MS만큼 지연되고 있다는 뜻(되감기 웜업 창 미해소)`,
+      )
+
+      await waitForSelfNickname(store, connection.sessionId)
 
       // 실 30Hz 전송 주기(NET.TICK_MS)로 여러 차례 이동 입력을 보내
       // seq↔lastProcessedInputSeq 왕복을 다수 발생시킨다.
