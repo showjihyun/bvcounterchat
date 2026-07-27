@@ -255,8 +255,42 @@ export class GameRoom extends Room<GameState> {
    */
   private registerMessageHandlers(): void {
     this.onMessage('move', (client, payload: unknown) => {
-      this.touchAfkTimer(client.sessionId)
-      this.pendingInputs.set(client.sessionId, sanitizeMoveInput(payload))
+      const input = sanitizeMoveInput(payload)
+
+      // RQ-43 리뷰 blocker 수정(`_workspace/review/feat-RQ-43-afk-kick.md`)
+      // — 실 `PlayerControls.tsx`(클라, 30Hz)는 조작이 전혀 없어도 매 틱
+      // 유휴 payload(`{dirX:0,dirZ:0,mode:'run',jump:false}`)를 계속
+      // 보낸다. 이걸 무조건 "입력"으로 인정하면(이전 구현) `isAfkDue`가
+      // 실 클라이언트를 켜 둔 어떤 세션에서도 참이 될 수 없어 RQ-43이
+      // 제품에서 전혀 발화하지 않는다(리뷰 실증, GA-13 given이 도달
+      // 불가능한 상태였다). 그래서 실제 조작 성분이 있을 때만 AFK
+      // 타이머를 리셋한다 — `fire`/`chat`/`reload`는 사용자 행위가 있어야
+      // 발생하는 명시적 조작이라 이 구분이 필요 없다(현행 무조건 리셋
+      // 유지).
+      //
+      // **정규화 후(sanitizeMoveInput 결과) 값으로 판정한다** — 정규화
+      // 전 원본 payload로 판정하면 변조된 클라이언트가 숫자가 아닌 값
+      // (예: `dirX: "x"`)을 실어 보내 `!== 0` 비교를 항상 참으로 만들어
+      // 판정을 우회할 수 있다. `sanitizeMoveInput`이 숫자가 아닌 값을
+      // 전부 0으로 접으므로(RQ-61 방어적 파싱, 위 `sanitizeMoveInput`
+      // 참고) 이 우회가 막힌다. `Number.isFinite` 가드는 그중에서도
+      // `NaN`(타입은 `'number'`라 `sanitizeMoveInput`을 그대로 통과하지만
+      // 어떤 값과 비교해도 `!==`가 참이 되는 값)을 활동으로 오인하는
+      // 잔여 우회를 추가로 닫는다.
+      //
+      // `mode`(walk/crouch)는 활동으로 치지 않는다(팀리드 판단 — 미결
+      // 스펙 질의 대상, 잔여 판단 ①로 남겨둠): walk/crouch는 누른 상태가
+      // 유지되는 값이라 가만히 있어도 계속 전송되므로, 이를 활동으로
+      // 인정하면 그 키만 눌러 고정한 세션이 영원히 AFK 판정을 피한다.
+      const isMoveActivity =
+        (Number.isFinite(input.dirX) && input.dirX !== 0) || (Number.isFinite(input.dirZ) && input.dirZ !== 0) || input.jump
+      if (isMoveActivity) {
+        this.touchAfkTimer(client.sessionId)
+      }
+
+      // AFK 판정과 무관하게 pendingInputs는 항상 갱신한다 — RQ-62 예측·
+      // 이동 시뮬레이션은 유휴 입력(정지 상태)도 다음 틱에 반영해야 한다.
+      this.pendingInputs.set(client.sessionId, input)
 
       const seq = parseInputSeq(payload)
       if (seq !== undefined) {
@@ -281,20 +315,26 @@ export class GameRoom extends Room<GameState> {
   }
 
   /**
-   * RQ-43: 4종 메시지(move/fire/chat/reload) 수신 시점마다 호출한다 —
-   * 발신자가 현재 **플레이어**일 때만 `lastInputAtTick`을 현재 틱으로
-   * 갱신한다(관전자는 RQ-43 원문이 "플레이어가"로 한정하므로 대상이 아니다).
+   * RQ-43: 발신자가 현재 **플레이어**일 때만 `lastInputAtTick`을 현재
+   * 틱으로 갱신한다(관전자는 RQ-43 원문이 "플레이어가"로 한정하므로
+   * 대상이 아니다). 호출부는 `fire`/`chat`/`reload` 3종은 무조건, `move`는
+   * 조건부(위 `'move'` 핸들러의 `isMoveActivity` 참고 — 리뷰 blocker 수정)
+   * 로 부른다.
    *
    * **coder 판단(스펙·골든 미규정 — `_workspace/RQ-43/01_test-writer_red.md`
-   * §2 "결정하지 않고 coder 자유로 남긴 것")**: 게임 로직상 최종 수락
-   * 여부(예: 시신의 fire, rate-limit에 막힌 fire, 재장전 중 재요청)와
-   * 무관하게 항상 갱신한다 — 각 핸들러 진입 시 `sanitize*`·`canAct`·
-   * rate-limit·탄약 게이트를 타기 **전에** 이 호출을 둔 이유다. RQ-43
-   * 원문 "5분간 입력이 없으면"의 "입력"은 서버가 게임 로직상 그 입력을
-   * 수락했는지가 아니라 그 세션이 여전히 무언가를 보내고 있다는 활동
-   * 신호로 해석했다 — 그렇지 않으면(수락된 입력만 리셋) 예컨대 탄창이
-   * 빈 채로 조준만 계속하는 플레이어, 또는 죽어서 `fire`가 전부 무시되는
-   * 플레이어가 실제로는 계속 조작 중인데도 AFK로 킥될 수 있다.
+   * §2 "결정하지 않고 coder 자유로 남긴 것")**: `fire`/`chat`/`reload`는
+   * 게임 로직상 최종 수락 여부(예: 시신의 fire, rate-limit에 막힌 fire,
+   * 재장전 중 재요청)와 무관하게 항상 갱신한다 — 각 핸들러 진입 시
+   * `sanitize*`·`canAct`·rate-limit·탄약 게이트를 타기 **전에** 이 호출을
+   * 둔 이유다. RQ-43 원문 "5분간 입력이 없으면"의 "입력"은 서버가 게임
+   * 로직상 그 입력을 수락했는지가 아니라 그 세션이 여전히 무언가를 보내고
+   * 있다는 활동 신호로 해석했다 — 그렇지 않으면(수락된 입력만 리셋) 예컨대
+   * 탄창이 빈 채로 조준만 계속하는 플레이어, 또는 죽어서 `fire`가 전부
+   * 무시되는 플레이어가 실제로는 계속 조작 중인데도 AFK로 킥될 수 있다.
+   * 이 논증은 어디까지나 **수락되지 않은 사용자 조작**을 살리기 위한
+   * 것이지, **조작이 전혀 없는 하트비트**(실 클라이언트가 30Hz로 보내는
+   * 유휴 `move`)까지 입력으로 인정하는 근거는 아니다 — 그래서 `move`만
+   * 별도로 조건부다(리뷰 blocker, `_workspace/review/feat-RQ-43-afk-kick.md`).
    */
   private touchAfkTimer(sessionId: string): void {
     if (!this.state.players.has(sessionId)) return
