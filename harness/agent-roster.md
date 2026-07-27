@@ -191,7 +191,7 @@ evaluator는 "테스트가 스펙을 검증하는가"를 보고, reviewer는 **"
 **입력/출력**
 - 입력: 리뷰 대상 diff, 변경 파일 목록, 관련 RQ/ADR 번호 목록 (대화 없음)
 - 출력: `_workspace/review/{브랜치명의 `/`를 `-`로 치환}.md` — 판정
-  (APPROVE/REQUEST_CHANGES), 지적마다 심각도(blocker/major/minor)·근거 인용·수정 방법.
+  (APPROVE/REQUEST_CHANGES), 지적마다 심각도(blocker/major/minor)·**분류(`in-PR(a)`|`in-PR(b)`|`이월`, ADR-0012)**·근거 인용·수정 방법. 이월이면 **착수 트리거**까지.
   브랜치명이 `feat/<RQ-ID>-<설명>` 형태라 치환하지 않으면 중첩 디렉토리가 되어
   재리뷰 시 이전 보고서를 찾지 못한다
 

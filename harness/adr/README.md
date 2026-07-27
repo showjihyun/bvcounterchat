@@ -2,7 +2,7 @@
 
 2026-07-21 초안 9건 작성 → 같은 날 Deep Interview(37문항)로 RQ-90~95가
 확정되어 **9건 전부 승인** 상태가 됐다. 이후 로드맵 1단계(프로젝트 초기화)
-착수 시 레이아웃 결정이 없다는 것이 드러나 ADR-0010을 신설했다. 답변 근거는
+착수 시 레이아웃 결정이 없다는 것이 드러나 ADR-0010을 신설했다. 이후 구현 라운드를 돌리면서 **ADR-0011**(선별 Red)·**ADR-0012**(검증 꼬리 간소화)를 추가해 총 **12건**이다. 답변 근거는
 `harness/specs/interview/answers.md`, 요구사항은
 `harness/specs/requirements.md`(v1.0, 🟡 0개).
 
@@ -18,6 +18,8 @@
 | [ADR-0008](0008-test-strategy.md) | 테스트 전략 | TDD, Vitest, 순수 tick 함수 결정론, 렌더링 비단위테스트 | 승인 |
 | [ADR-0009](0009-deployment.md) | 배포 | Docker(서버 이미지) + Nginx(HTTP/WS, TLS 불요) + Redis, 멀티 컨테이너 단일 호스트 | 승인 |
 | [ADR-0010](0010-project-layout.md) | 프로젝트 레이아웃 | 단일 package.json + `src/{client,server,shared}`, `@shared/*` 별칭 | 승인 |
+| [ADR-0011](0011-selective-red.md) | Red-first 적용 범위 | `src/shared`·서버 판정 로직·결함 재현만 Red-first, 그 외는 test-after(coder 테스트는 순증만) | 승인 |
+| [ADR-0012](0012-review-tail-slim.md) | 검증 꼬리 길이 | CI 선행 · minor 기본 이월(분류 주체 = reviewer) · 델타 재검증은 blocker·major·계약위반·CI대응에만 | 승인 |
 
 > ADR-0001·0002·0003·0006·0009는 `docs/req/03_Technical_Architecture.md`가
 > 스택을 이미 확정해 승인. ADR-0004·0005·0007은 req가 침묵한 세부(물리
