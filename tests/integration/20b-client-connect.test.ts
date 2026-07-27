@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import type { StoreApi } from 'zustand/vanilla'
 import { buildServer } from '@server/index'
 import { createGameStore, type GameStoreState } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
+import { NET } from '@shared/constants'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — netcode 레이어
@@ -49,6 +50,19 @@ import { connectToGame } from '@client/net/connection'
  *     nickname: string,
  *     store: StoreApi<GameStoreState>,
  *   ): Promise<GameConnection>
+ *
+ * **REV(RQ-64/F1, `_workspace/RQ-64/03_evaluator_report.md`) — `getRttMs()`
+ * 추가**: 평가 blocker(클라이언트가 `rttMs`를 전혀 보내지 않아 RQ-64 랙보상이
+ * 제품에서 발화하지 않음) 대응 — `GameConnection`에 `getRttMs(): number`가
+ * 추가된다. 내부적으로 `sendMoveInput`이 `predictor.applyInput`이 반환하는
+ * `seq`를 `@client/net/rttEstimator`의 `RttEstimator.recordSend(seq,
+ * now())`에 기록하고, `handleStateChange`가 `readSelfAuthoritativeState`로
+ * 확인한 `lastProcessedInputSeq`를 `RttEstimator.onAck(...)`에 전달한다
+ * (그린필드 계약은 `tests/unit/rq-64-rtt-estimator.test.ts` 상단 참고). 이
+ * 파일 맨 끝의 새 `describe`가 이 왕복이 실 WebSocket으로 실제로 표본을
+ * 만드는지 검증한다 — `rq-64-rtt-estimator.test.ts`(순수 로직)와의 A/B
+ * 레벨 분리: 그 파일이 "표본·평활 계산이 정확한가", 이 파일이 "그 계산이
+ * 실 연결에 배선됐는가".
  *
  * 룸 이름은 기존 통합 테스트들과 동일하게 `'game'` 하나로 고정된다고
  * 가정한다(이 파일 안에 상수로 노출하지 않는다 — connectToGame 내부
@@ -498,5 +512,406 @@ describe("20b/RQ-40 M1: connectToGame이 'chat-history' 이력 복원을 store.c
       ])
     },
     25_000,
+  )
+})
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** `connection.getRttMs()`는 store가 아니라 net 모듈이 직접 들고 있는
+ * 동기 getter다(`readSelfAuthoritativeState`처럼 room.state를 즉시
+ * 읽는 값과 동일한 위상 — store 구독이 아니라 짧은 간격 폴링으로
+ * 기다린다). 단일 틱(≈33ms)을 노리는 폴링이 아니라 "여러 왕복이 누적돼
+ * 0에서 양수로 바뀌는" 훨씬 넓은 창을 노리므로(`rq-18` REV3 "정확히 그
+ * 틱을 잡아야 하는" 폴링과는 성격이 다르다) 지터에 안전하다. */
+function waitForRttCondition(
+  connection: Connection,
+  predicate: (rttMs: number) => boolean,
+  timeoutMs: number,
+  label: string,
+): Promise<number> {
+  return withTimeout(
+    new Promise<number>((resolve) => {
+      const tryResolve = (): boolean => {
+        const rtt = connection.getRttMs()
+        if (predicate(rtt)) {
+          resolve(rtt)
+          return true
+        }
+        return false
+      }
+      if (tryResolve()) return
+      const interval = setInterval(() => {
+        if (tryResolve()) clearInterval(interval)
+      }, 15)
+    }),
+    timeoutMs,
+    label,
+  )
+}
+
+/**
+ * RQ-64/F1(`_workspace/RQ-64/03_evaluator_report.md`) — 경계면 교차 검증.
+ * 서버(`GameRoom.handleFire`)가 `rttMs`를 신뢰하지 않고 절단하는 로직은
+ * `rq-64-lag-compensation-bound.test.ts`가 이미 고정했고, 그 값을 계산하는
+ * 순수 로직은 `rq-64-rtt-estimator.test.ts`가 고정한다. 이 테스트는 그
+ * 둘 사이 — **"클라이언트가 실 네트워크 왕복으로 실제로 rttMs를 만들어
+ * 내는가"**를 확인한다. 평가가 실증했듯 이 배선이 없으면 RQ-64는 제품에서
+ * 전혀 발화하지 않는다(원장 22g의 RQ-43 선례와 동일한 결함 계열).
+ *
+ * 실 이동 입력을 `sendMoveInput`(client-side seq 부여 경로, `room.send`
+ * 직접 호출이 아니다 — 그러면 seq가 실리지 않아 RTT를 측정할 경로 자체가
+ * 없다)로 반복 전송해 서버 확인(`lastProcessedInputSeq`) 왕복을 여러 번
+ * 만든 뒤, `connection.getRttMs()`가 0(초기값)에서 양수로 바뀌는지 확인한다.
+ *
+ * **REV(RQ-64/F3, `_workspace/RQ-64/06_evaluator_delta.md` F3 — blocker)**:
+ * F1을 닫으려고 초기에 채택했다 폐기된 "move/seq 왕복 재사용" 방식은 표본에 서버
+ * 지연(다음 틱까지 0~33.3ms + 다음 패치까지 0~50ms, Colyseus 기본
+ * `patchRate`=20Hz)이 구조적으로 섞여 실측 편향 **+62.28ms**를 냈다(평가
+ * §F3 — 순수 소켓 왕복 0.48ms vs 추정값 62.76ms). 이 편향은 RQ-64 원문의
+ * 두 수치 보장(사수 RTT만큼 되감기·150ms 이내 정상 보장)을 실제로 깬다.
+ *
+ * 아래 기존 케이스에 **정밀 상한 단언**을 순증했다 — 표본 출처가 무엇이든
+ * (폐기된 move/seq 왕복이든, 최종 채택된 전용 ping/pong이든)
+ * `connection.getRttMs()`라는 **관측 가능한 계약**만 검사하므로, 표본
+ * 출처 교체(coder 몫)가 일어나도 이 테스트 자체는 손댈 필요가 없다 —
+ * "표본이 실제로 흐르는가"(기존 `>0` 대기)와 "그 표본이 틱·패치 지연으로
+ * 오염되지 않았는가"(신규 상한) 두 조건을 **함께** 요구해야 어느 한쪽만
+ * 만족하는 회귀(예: ping은 있지만 결과를 안 씀 / 값이 있지만 편향됨)를
+ * 모두 잡는다.
+ *
+ * **임계값 근거 — `NET.TICK_MS`(≈33.33ms)**: 새 매직 넘버를 만들지 않고
+ * 기존 공유 상수를 재사용한다(ADR-0010). 이 값을 고른 이유는 정확히
+ * "틱·패치 지연이 섞이지 않았다"를 검사하는 것과 의미가 통하기
+ * 때문이다 — 평가가 유도한 현재 방식의 **이론적 하한**(평균 ≈41.7ms,
+ * 최악 ≈83ms, 둘 다 `NET.TICK_MS`보다 크다)보다 낮으므로, 이 상한을
+ * 만족하려면 표본에 틱·패치 지연이 구조적으로 섞이지 않는 출처여야
+ * 한다. 반대로 순수 소켓 왕복(평가 실측 중앙값 0.48ms, 최댓값 1.3ms)은
+ * 이 값보다 한 자릿수 이상 작아 여유가 크다.
+ *
+ * **루프백 전제(과적합 방지 근거를 명시)**: 이 값은 **같은 프로세스 안에서
+ * 기동한 서버 + `127.0.0.1` 루프백**(이 파일의 `startServer()`, 다른 모든
+ * 통합 테스트와 동일 — 실 인터넷 구간이 아니다)이라는 전제 위에서만
+ * 의미가 있다. 실 네트워크 RTT가 수십ms를 넘는 배포 환경(원거리)에서
+ * 이 단언을 그대로 쓰면 정상적으로도 거짓 실패할 수 있다 — 그런 환경의
+ * 회귀 검증은 이 테스트의 스코프가 아니다(RQ-80 "사내망 단일 서버" 전제와
+ * 별개로, **테스트 자체**가 실행되는 이 프로세스 내 루프백 조건 위에서만
+ * 성립한다는 뜻).
+ */
+describe('20b/RQ-64/F1: connection.getRttMs()가 실 ping↔pong 왕복(실 WebSocket)으로 측정된다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    '접속 직후 짧은 시간 안에 되감기 웜업이 끝나고(RQ-64 리뷰 major 1 회귀 가드), 반복된 이동 입력·서버 확인 왕복 후에도 connection.getRttMs()가 실 소켓 왕복 자릿수 안에 머문다(RQ-64/F3 회귀 가드)',
+    async () => {
+      const store = createGameStore()
+      const connection: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'pinger', store),
+        CONNECT_TIMEOUT_MS,
+        "connectToGame(nickname: 'pinger')",
+      )
+
+      // 공허화 방지(리뷰 major 1 대응, `_workspace/review/feat-RQ-64-
+      // lag-compensation.md`) — 원래는 "첫 ping이 NET.RTT_PING_INTERVAL_MS
+      // (1000ms) 뒤에야 나간다"는 웜업 지연을 전제로, 그 창 안에서
+      // `getRttMs()`가 계속 0인지 먼저 확인한 뒤 "양수로 바뀐다"는 단언이
+      // 우연히 항상 참인 상수 때문이 아님을 대조했다. 그런데 major 1
+      // 수정(접속 즉시 첫 ping 발사)이 그 창 자체를 없애므로, 이 단언은
+      // 더 이상 "1초 동안 0"이라는 안전한 시간 여유에 기댈 수 없다 —
+      // **그 목적(하드코딩된 상수가 아니라는 증거)을 그대로 지키면서**
+      // 위치만 옮겼다. `connectToGame`이 resolve된 바로 다음 줄(중간에
+      // 다른 `await` 없음)에서 읽는 것은 즉시 ping이 있어도 여전히
+      // 안전하다 — Node의 이벤트 루프는 프라미스 마이크로태스크를 전부
+      // 비운 뒤에야 다음 매크로태스크(소켓 'message' 이벤트 등 실 I/O
+      // 콜백)로 넘어간다. `connectToGame` 내부에서 동기로 `sendPing()`을
+      // 호출해도, 그 pong 응답은 실제 네트워크 I/O를 한 바퀴 거쳐야
+      // 도착하므로 **이 시점(같은 마이크로태스크 체인 안)에는 아직
+      // 도착할 수 없다** — 아무리 빠른 루프백이라도 성립하는, 실측
+      // 네트워크 속도가 아니라 JS 실행 모델 자체가 주는 보장이다. (아래
+      // `rq-64-rtt-estimator.test.ts`의 "표본 없음 → 0" 단위 계약과
+      // 합쳐, "이 값이 배선에서 나온 진짜 표본이지 하드코딩된 상수가
+      // 아니다"는 원래 목적이 그대로 유지된다.)
+      expect(connection.getRttMs()).toBe(0)
+
+      // 리뷰 major 1 회귀 가드 — 접속 직후 짧은 시간 안에 되감기가 실제로
+      // 적용 가능한 상태(getRttMs() > 0)가 되는지 확인한다. 수정 전 구현은
+      // 첫 ping을 NET.RTT_PING_INTERVAL_MS(1000ms) 뒤로 미뤄, 그 창
+      // 전체에서 되감기가 전혀 적용되지 않았다(RQ-64 EARS 문면에는 웜업
+      // 예외가 없다). 새 매직 넘버를 넣지 않고 기존 상수의 절반을
+      // 임계값으로 쓴다 — "옛 방식(1주기 뒤 첫 발화)이라면 이 시간 안에
+      // 도달할 수 없다"는 것과 "정상 네트워크 변동에는 넉넉한 여유"라는
+      // 것이 동시에 성립하는 값이다.
+      const IMMEDIATE_PING_TIMEOUT_MS = NET.RTT_PING_INTERVAL_MS / 2
+      await waitForRttCondition(
+        connection,
+        (value) => value > 0,
+        IMMEDIATE_PING_TIMEOUT_MS,
+        `RQ-64 리뷰 major 1: 접속 후 ${IMMEDIATE_PING_TIMEOUT_MS}ms 안에 connection.getRttMs()가 양수가 되길 대기 — 계속 0이면 첫 ping이 아직 NET.RTT_PING_INTERVAL_MS만큼 지연되고 있다는 뜻(되감기 웜업 창 미해소)`,
+      )
+
+      await waitForSelfNickname(store, connection.sessionId)
+
+      // 실 30Hz 전송 주기(NET.TICK_MS)로 여러 차례 이동 입력을 보내
+      // seq↔lastProcessedInputSeq 왕복을 다수 발생시킨다.
+      const SEND_COUNT = 20
+      for (let i = 0; i < SEND_COUNT; i += 1) {
+        connection.sendMoveInput({ dirX: 1, dirZ: 0, mode: 'run', jump: false })
+        await sleep(NET.TICK_MS)
+      }
+
+      const rtt = await waitForRttCondition(
+        connection,
+        (value) => value > 0,
+        STORE_TIMEOUT_MS,
+        'connection.getRttMs()가 실 왕복으로 양수가 되길 대기 — 계속 0이면 클라이언트가 rttMs를 측정·전송하지 않는다는 뜻이다(평가 F1)',
+      )
+      // 로컬 루프백 + Colyseus 패치 배치(기본 20Hz) 지연을 감안해도 이
+      // 자릿수를 넘으면 명백히 잘못된 값이다(터무니없이 큰 값만 배제하는
+      // 관대한 상한 — 정밀한 상한 자체는 `rq-64-rtt-estimator.test.ts`의
+      // 몫이 아니다, 그 파일은 순수 계산만 다룬다).
+      expect(rtt).toBeLessThan(2_000)
+
+      // RQ-64/F3(평가 blocker) 회귀 가드 — 위 관대한 상한과 별개로,
+      // "실 소켓 왕복 자릿수 안"인지 정밀하게 확인한다(근거·루프백 전제는
+      // 이 describe 상단 REV 절 참고). 현재(move/seq 재사용) 구현은
+      // 구조적으로 이 상한을 넘긴다 — 이 단언은 지금 반드시 실패해야 한다.
+      expect(rtt).toBeLessThan(NET.TICK_MS)
+
+      await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
+    },
+    20_000,
+  )
+})
+
+/**
+ * ping 타이머 발화 횟수를 센다 — `globalThis.setInterval`을 감싸,
+ * **`connectToGame`이 직접 등록한 호출만** 계수한다.
+ *
+ * **실측으로 발견한 함정(주기만으로는 부족하다)**: 처음에는
+ * `NET.RTT_PING_INTERVAL_MS`(1000ms)와 주기가 일치하는 호출만 걸렀는데,
+ * 이 저장소의 의존성 `@colyseus/core → @pm2/io`가 `colyseus`를 최초
+ * 임포트하는 시점에 **자신의 메트릭 수집용 `setInterval`을 정확히 같은
+ * 1000ms 주기로 4개**(`PMX.init` → `metrics`/`notify` 기능들) 설치한다는
+ *것을 실행 중 트레이스로 확인했다(`node_modules/@pm2/io/build/main/
+ * features/{metrics,notify}.js`). 이 초기화가 **딱 한 번**(모듈 최초
+ * 로드 시점, Node 모듈 캐시로 이후 재호출 없음) 일어나는 시점이 테스트
+ * 실행 순서에 따라 달라져(이 파일을 단독 실행하면 이 `it()`의
+ * `startServer()`가 그 최초 트리거가 될 수 있다) 계수기 설치 **이후**에
+ * 걸릴 수도, 이전에 이미 끝나 있을 수도 있다 — 순서 의존적이라 주기만
+ * 보는 필터는 신뢰할 수 없다(실측: 단독 실행 시 PM2의 4개까지 잡혀
+ * 발화 횟수가 부풀었다).
+ *
+ * **해법**: 호출 시점의 스택 트레이스에서 `connectToGame`(정확히 이
+ * 함수 이름 — `connection.ts`의 `setInterval(sendPing, NET
+ * .RTT_PING_INTERVAL_MS)` 호출부가 있는 그 함수)이 보이는 경우만
+ * 계수한다. 이 판별은 주기·모듈 로딩 순서와 무관하게 항상 정확하다 —
+ * 스택은 "누가 이 setInterval을 실제로 호출했는가"라는 사실 자체이기
+ * 때문이다.
+ *
+ * **전역 오염 방지**: 원본 `setInterval`을 클로저에 보관하고 `restore()`
+ * 가 되돌린다 — 호출자가 `afterEach`에서 항상 호출한다.
+ */
+function wrapGlobalSetIntervalForPingCount(targetIntervalMs: number): {
+  getFireCount: () => number
+  restore: () => void
+} {
+  const original = globalThis.setInterval
+  let fireCount = 0
+  globalThis.setInterval = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
+    const isPingTimer = timeout === targetIntervalMs && (new Error().stack ?? '').includes('connectToGame')
+    if (isPingTimer) {
+      const counting = (...cbArgs: unknown[]): void => {
+        fireCount += 1
+        handler(...cbArgs)
+      }
+      return original(counting, timeout, ...args)
+    }
+    return original(handler, timeout, ...args)
+  }) as typeof setInterval
+  return {
+    getFireCount: () => fireCount,
+    restore: () => {
+      globalThis.setInterval = original
+    },
+  }
+}
+
+/** `getCount()`가 `threshold` 이상이 될 때까지 폴링한다 — 발화 횟수는
+ * 감소하지 않는 단조 신호이므로 `waitForRttCondition`(이 파일 §20b/F1)과
+ * 동일한 정신의 안전한 대기 술어다. 폴링 간격(15ms)은
+ * `NET.RTT_PING_INTERVAL_MS`(1000ms)와 달라 `wrapGlobalSetIntervalFor
+ * PingCount`의 계수 대상이 되지 않는다(전역 오염 없음). resolve·timeout
+ * 어느 쪽으로 끝나도 `interval`을 정리한다. */
+function waitForFireCountAtLeast(getCount: () => number, threshold: number, timeoutMs: number, label: string): Promise<number> {
+  return withTimeout(
+    new Promise<number>((resolve, reject) => {
+      const tryResolve = (): void => {
+        const count = getCount()
+        if (count >= threshold) {
+          clearInterval(interval)
+          resolve(count)
+        }
+      }
+      tryResolve()
+      const interval = setInterval(tryResolve, 15)
+      // withTimeout이 바깥에서 시간 초과를 던지면 이 인터벌은 정리할
+      // 기회가 없다 — 별도 안전망으로 timeoutMs 시점에 직접 clearInterval
+      // 하고 reject한다(withTimeout의 reject와 경합해도 Promise는 한 번만
+      // 정착하므로 안전하다).
+      setTimeout(() => {
+        clearInterval(interval)
+        reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+      }, timeoutMs)
+    }),
+    timeoutMs,
+    label,
+  )
+}
+
+/**
+ * RQ-64/O-2(평가, `_workspace/RQ-64/09_evaluator_delta2.md`·`10_coder_o2.md`)
+ * — 회귀 가드: 침묵 disconnect(서버 강제 종료 — `disconnect()`를 부르지
+ * 않는 연결 종료, 네트워크 단절·서버 재시작·AFK 강제 퇴장이 모두 이
+ * 경로다) 이후 ping 타이머가 계속 발화하면 죽은 룸에 영원히 `send`를
+ * 시도하고, 재접속 시 이전 타이머가 새 타이머와 함께 누적된다.
+ *
+ * **관측 방식 선택 근거**: 평가·coder가 이미 쓴 "`setInterval`을 감싸
+ * 발화 횟수를 계수"하는 방식을 그대로 채택했다 — `connection.ts`가
+ * ping 타이머 id(`pingIntervalId`)를 모듈 내부에 캡슐화해 노출하지
+ * 않으므로(공개 계약 `GameConnection`에 그 id를 얻는 방법이 없다),
+ * 화이트박스로 클로저 내부를 직접 찌를 수 없다 — 유일하게 관측 가능한
+ * 지점은 "타이머를 만드는 전역 API 자체"뿐이다. 대안(서버가 수신한
+ * `'ping'` 메시지 횟수를 화이트박스로 셈)은 기각했다 — `GameRoom`에
+ * ping 수신 횟수를 보관하는 상태가 없어(즉시 echo만 하고 버린다) 새
+ * 계약을 만들어야 하는데, 그건 `src/`를 건드리는 일이다(이 라운드 제약).
+ *
+ * **전역 오염 방지**: `afterEach`에서 항상 `restore()`한다 — 이 describe의
+ * 모든 `it()`(현재 1건)이 끝나면 원본 `setInterval`로 되돌아간다.
+ *
+ * **대기 술어**: "발화 횟수 ≥ N"은 단조 신호(감소하지 않는다)이고,
+ * "그 이상 발화하지 않는다"는 rq-12의 "HP 불변" 확인과 동일한 이유로
+ * 사건 기반 대기가 불가능해(부재를 증명하는 것이라 이벤트가 없다)
+ * 고정 대기를 쓴다 — 전부 `NET.RTT_PING_INTERVAL_MS`의 배수로 계산해
+ * 매직 넘버를 넣지 않았다.
+ */
+describe('20b/RQ-64/O-2: 침묵 disconnect 시 ping 타이머가 정리되고, 재접속 시 중복 생성되지 않는다', () => {
+  let counter: ReturnType<typeof wrapGlobalSetIntervalForPingCount>
+
+  afterEach(() => {
+    counter.restore()
+  })
+
+  it(
+    '정상 접속 중에는 ping이 주기적으로 발화하고(양성 대조군), 서버 강제 종료(침묵 disconnect) 후에는 발화가 멈추며, 재접속 후에는 단일 타이머 속도로만 발화한다',
+    async () => {
+      // 카운터는 connectToGame 호출(내부에서 setInterval을 동기적으로
+      // 만든다) **전에** 설치해야 그 호출을 가로챌 수 있다.
+      counter = wrapGlobalSetIntervalForPingCount(NET.RTT_PING_INTERVAL_MS)
+
+      let server1: RunningServer | undefined = await startServer()
+      const store1 = createGameStore()
+      const conn1: Connection = await withTimeout(
+        connectToGame(server1.endpoint, 'leaker', store1),
+        CONNECT_TIMEOUT_MS,
+        "connectToGame(nickname: 'leaker')",
+      )
+
+      try {
+        // 양성 대조군 — 정상 접속 중에는 ping이 실제로 주기적으로
+        // 발화한다(2회 이상 관측해 "1회만 우연히" 발화한 것이 아님을
+        // 확인한다). 이게 없으면 아래 "더 이상 늘지 않는다"는 애초에
+        // ping이 돌지 않아도 통과해 버린다.
+        const baselineTimeoutMs = NET.RTT_PING_INTERVAL_MS * 4
+        await waitForFireCountAtLeast(
+          counter.getFireCount,
+          2,
+          baselineTimeoutMs,
+          `ping이 정상 접속 중 2회 이상 발화하길 대기(양성 대조군) — ${baselineTimeoutMs}ms 안에 2회가 안 되면 ping 타이머 자체가 배선되지 않았다는 뜻`,
+        )
+
+        // 침묵 disconnect — 서버를 강제 종료한다(`connection.disconnect()`를
+        // 부르지 않는다). `connection.onDisconnect`는 `room.onLeave`와
+        // 같은 신호를 쓰고, `connection.ts`의 `cleanupPingTimer`도 같은
+        // `room.onLeave`를 구독한다 — `cleanupPingTimer`가 **먼저**
+        // 등록되므로(connectToGame 내부, 이 테스트의 onDisconnect 구독보다
+        // 먼저) 표준 이벤트 리스너 등록 순서상 이 프라미스가 resolve되는
+        // 시점에는 타이머가 이미 정리돼 있다.
+        const disconnected = new Promise<void>((resolve) => {
+          conn1.onDisconnect(resolve)
+        })
+        const countBeforeStop = counter.getFireCount()
+        await stopServer(server1)
+        server1 = undefined
+        await withTimeout(
+          disconnected,
+          LEAVE_TIMEOUT_MS,
+          'RQ-64/O-2: 서버 강제 종료 후 connection.onDisconnect(침묵 disconnect 신호) 대기',
+        )
+        const countAtDisconnect = counter.getFireCount()
+        // 강제 종료 시점과 disconnect 확정 시점 사이에 최대 한 번의
+        // "이미 예약된" 발화가 겹칠 수 있다는 것을 인정하되(타이머 콜백과
+        // 소켓 종료 이벤트가 같은 매크로태스크 경합에 들어갈 아주 좁은
+        // 창), 그 이후로는 절대 늘지 않아야 한다.
+        expect(countAtDisconnect).toBeGreaterThanOrEqual(countBeforeStop)
+
+        // "더 이상 발화하지 않는다"는 부재를 증명하는 것이라 이벤트 기반
+        // 대기가 불가능하다(rq-12 "HP 불변" 확인과 동일한 이유) — 고정
+        // 대기를 쓴다. `NET.RTT_PING_INTERVAL_MS`의 배수로 계산(매직
+        // 넘버 없음) — 평가·coder가 실측 확인한 "3.3주기 동안 증가분 0"
+        // 보다 여유 있게 3주기를 그대로 기다린다.
+        await sleep(NET.RTT_PING_INTERVAL_MS * 3)
+        expect(counter.getFireCount()).toBe(countAtDisconnect)
+
+        // 재접속 — 새 서버(이전 서버는 이미 멈췄다)에 새 연결을 맺는다.
+        // 이전 타이머가 살아있다면 여기서부터 두 타이머가 겹쳐 발화
+        // 속도가 약 2배가 된다.
+        const server2 = await startServer()
+        try {
+          const store2 = createGameStore()
+          const conn2: Connection = await withTimeout(
+            connectToGame(server2.endpoint, 'leaker2', store2),
+            CONNECT_TIMEOUT_MS,
+            "connectToGame(nickname: 'leaker2') — 재접속",
+          )
+          try {
+            const countAtReconnect = counter.getFireCount()
+            // "속도가 중복되지 않는다"는 고정 관측 창이 필요하다(순간값이
+            // 아니라 구간당 증가량을 봐야 하므로) — 2주기어치를 넉넉히
+            // 웃도는 2.5주기를 기다린 뒤 그 구간의 증가분을 확인한다.
+            await sleep(NET.RTT_PING_INTERVAL_MS * 2.5)
+            const increaseAfterReconnect = counter.getFireCount() - countAtReconnect
+            // 단일 타이머라면 2.5주기 동안 2회 근처(웜업 지연으로 t=1.0·2.0
+            // 주기에 발화) — 중복 타이머라면 그 두 배 근처(약 4회 이상)가
+            // 된다. 팀리드 지시("2주기에 2회, 중복이면 ~4회")대로 3을
+            // 경계로 확실히 가른다(2 이하는 단일, 4 근처는 중복 — 그
+            // 사이에 여유가 크다).
+            expect(increaseAfterReconnect).toBeGreaterThanOrEqual(1) // 새 연결의 타이머는 실제로 돈다(양성 대조군)
+            expect(increaseAfterReconnect).toBeLessThan(3) // 중복 타이머(약 4회)라면 여기서 죽는다
+          } finally {
+            await withTimeout(conn2.disconnect(), LEAVE_TIMEOUT_MS, 'conn2.disconnect()')
+          }
+        } finally {
+          await stopServer(server2)
+        }
+      } finally {
+        if (server1) {
+          await stopServer(server1)
+        }
+      }
+    },
+    // 정상 발화 대기(≤4주기) + 침묵 disconnect 확인 + 3주기 무발화 대기 +
+    // 재접속 2.5주기 관측 — 전부 실 시간(NET.RTT_PING_INTERVAL_MS=1000ms
+    // 기준)이라 다른 RQ-64 케이스보다 오래 걸린다(팀리드 지시 — 소요 시간
+    // 보고 대상, `_workspace/RQ-64/11_test-writer_o2-guard.md` 참고).
+    30_000,
   )
 })

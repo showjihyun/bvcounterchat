@@ -46,8 +46,11 @@ export interface ChatGatedActions {
    * 항상 전송은 하되(정지 상태를 서버에 알려야 함), 값만 게이트한다. */
   sendMoveInput(input: MoveInput): void
   /** 채팅 포커스 중이면 아예 `'fire'` 메시지를 보내지 않는다
-   * (`gateFireIntent`). */
-  fire(direction: AimDirection): void
+   * (`gateFireIntent`). `rttMs`(RQ-64 랙 보상, 평가 F1 대응 —
+   * `_workspace/RQ-64/03_evaluator_report.md`)는 사수의 RTT 추정값
+   * (`@client/net/rttEstimator`, `connection.getRttMs()`)을 그대로 받아
+   * payload에 병합해 보낸다 — 이 함수는 값을 만들지 않고 전달만 한다. */
+  fire(direction: AimDirection, rttMs: number): void
 }
 
 /**
@@ -80,9 +83,9 @@ export function createChatGatedActions(
     sendMoveInput(input: MoveInput): void {
       connection.sendMoveInput(gateMoveInput(isChatFocused(), input))
     },
-    fire(direction: AimDirection): void {
+    fire(direction: AimDirection, rttMs: number): void {
       if (!gateFireIntent(isChatFocused(), true)) return
-      connection.room.send('fire', direction)
+      connection.room.send('fire', { ...direction, rttMs })
     },
   }
 }

@@ -9,6 +9,7 @@ import {
   type InterpolationPosition,
   type RemoteEntityInterpolator,
 } from '@client/net/interpolation'
+import { createRttEstimator, type RttEstimator } from '@client/net/rttEstimator'
 import { NET } from '@shared/constants'
 
 /** 서버 전역에 상설 세션은 이 룸 하나뿐이다(RQ-04 GA-29, `GameRoom` 참고). */
@@ -26,6 +27,26 @@ const ROOM_NAME = 'game'
  * 주입하는 프로덕션 판단이다.
  */
 const INTERPOLATION_DELAY_MS = NET.TICK_MS * 2
+
+/**
+ * RQ-64 랙 보상 — RTT 추정 EMA 평활 계수(평가 F1 대응,
+ * `_workspace/RQ-64/03_evaluator_report.md`). `@client/net/rttEstimator`의
+ * `smoothingAlpha`는 필수 인자라(모듈 코멘트 "임의의 튜닝 상수를 모듈
+ * 내부에 감추지 않는다") 이 배선 계층이 실제 값을 정한다 — Jacobson/Karels류
+ * RTT 추정에서 흔히 쓰이는 자릿수(1/8~1/4)의 중간값을 택했다. 급격한
+ * 표본 하나에 과민 반응하지 않으면서도(값이 작을수록 느리게 반응) 실제
+ * RTT 변화(혼잡·이동)를 몇 표본 안에 따라잡는다(값이 클수록 빠르게 반응).
+ * 정밀 튜닝은 밸런싱 판단이라 이 계약이 규정하지 않는다(`combat-tuning.ts`
+ * "값 발명 금지"와 같은 정신 — 여기서는 코드 상수로 두되 근거를 남긴다).
+ */
+const RTT_SMOOTHING_ALPHA = 0.2
+
+/** RQ-64 랙 보상 — 전용 RTT 측정 ping payload(seq 왕복 전용, `move`의
+ * 시퀀스와는 별개 카운터 — `@client/net/rttEstimator`의 `seq`는 "전송 단위를
+ * 식별하는 아무 정수"면 되고 `move` 시퀀스와 같은 값일 필요가 없다). */
+interface PingPayload {
+  seq: number
+}
 
 /**
  * 실제 시각(ms) 실측 — 이 모듈이 유일하게 성능 시계를 읽는 지점이다
@@ -156,6 +177,17 @@ export interface GameConnection {
    */
   sendMoveInput(input: MoveInput): void
   /**
+   * RQ-64 랙 보상 — 사수의 현재 RTT 추정치(ms). 내부적으로 전용 `ping`/
+   * `pong` 왕복(평가 F3 대응 — `_workspace/RQ-64/06_evaluator_delta.md`,
+   * `@client/net/rttEstimator`)에서 계산한다. `GameRoom`이 틱·패치 지연
+   * 없이 즉시 응답하므로 표본이 순수 네트워크 왕복에 가깝다(F1 시도의
+   * `move`/`seq` 재사용은 틱·패치 배치 지연이 섞여 폐기됐다). 유효 표본이
+   * 아직 없으면 0(되감기 미적용과 동일한 안전한 기본값) —
+   * `@client/input/chatInputGate`의 `fire(direction, rttMs)`가 이 값을
+   * 그대로 실어 `'fire'` payload에 병합한다.
+   */
+  getRttMs(): number
+  /**
    * 침묵 disconnect(사용자가 `disconnect()`를 호출하지 않은 연결 종료 —
    * 네트워크 단절 등 `room.onLeave`가 발생하는 모든 경우, 명시적
    * `disconnect()`가 유발하는 consented leave도 포함) 발생 시 `callback`을
@@ -223,6 +255,94 @@ export async function connectToGame(
     room.sessionId,
     INTERPOLATION_DELAY_MS,
   )
+  // RQ-64 랙 보상 — RTT 추정기. **표본 출처는 전용 ping/pong이다**(평가 F3
+  // 수정 — `_workspace/RQ-64/06_evaluator_delta.md`). 이전(F1) 구현은 기존
+  // `move`↔`seq`↔`lastProcessedInputSeq` 왕복을 재사용했으나, 그 확인은
+  // 서버 틱(≤`NET.TICK_MS`)과 Colyseus 상태 패치 배치(기본 20Hz, ≤50ms)를
+  // 거쳐야만 도착해 표본에 구조적 지연이 섞였다(실측 +62ms 편향 — RQ-64가
+  // 요구하는 "RTT 150ms 이내 정상 플레이 보장"을 실제로 깼다). 아래
+  // ping/pong은 `GameRoom`이 틱 루프 밖에서 즉시 응답하므로(`handleChat`과
+  // 동일한 위상) 그 지연이 표본에 섞이지 않는다.
+  const rttEstimator: RttEstimator = createRttEstimator(RTT_SMOOTHING_ALPHA)
+  let nextPingSeq = 1
+  // RQ-64: pong의 seq가 곧 recordSend가 기록한 그 ping의 seq다 — 도착
+  // 시각(now())과 전송 시각의 차이가 RTT 표본이다(rttEstimator.ts 참고).
+  // 이 핸들러도 이름을 붙여 보관한다 — disconnect()가 해제해야 하는
+  // 구독이라 unbindChat/unbindChatHistory와 동일한 패턴을 따른다.
+  const unbindPong = room.onMessage<PingPayload>('pong', (payload) => {
+    if (typeof payload?.seq === 'number') {
+      rttEstimator.onAck(payload.seq, now())
+    }
+  })
+  function sendPing(): void {
+    const seq = nextPingSeq
+    nextPingSeq += 1
+    rttEstimator.recordSend(seq, now())
+    room.send('ping', { seq })
+  }
+  // `window.setInterval`이 아니라 전역 `setInterval`을 쓴다 — 이 모듈은
+  // 통합 테스트(Node 환경, `window` 없음)에서 직접 실행되므로
+  // `PlayerControls.tsx`(브라우저 전용, 렌더 계층 면제 대상)와 달리
+  // `window` 참조가 있으면 그 자체로 테스트가 깨진다.
+  const pingIntervalId = setInterval(sendPing, NET.RTT_PING_INTERVAL_MS)
+  // 리뷰 major 1 수정(`_workspace/review/feat-RQ-64-lag-compensation.md`)
+  // — 접속 직후 즉시 첫 표본을 만든다. 이전 버전은 첫 ping을 1주기
+  // (`NET.RTT_PING_INTERVAL_MS`=1000ms) 뒤로 미뤘는데, RQ-64 EARS
+  // 문면에는 웜업 예외가 없어 그 창 전체(모든 접속·재접속마다 반복)에서
+  // 되감기가 전혀 적용되지 않는 실질 결함이었다 — 사내망(RTT≈1ms)에서도
+  // 이 창의 판정 오차는 히트박스 반지름(0.3m)을 넘는다(리뷰 실측). 그
+  // 지연의 근거로 들었던 "TLS 핸드셰이크 이상치 회피"는 이 배포에
+  // 애초에 성립하지 않는다 — RQ-80·ADR-0009가 "HTTP/WS, TLS 불요"로
+  // 확정했고, 이 시점에는 이미 이 함수 앞부분의
+  // `await client.joinOrCreate(...)`(매치메이킹 요청 → 좌석 예약 → WS
+  // 업그레이드 → JOIN_ROOM ack → 초기 상태 패치)가 끝나 있어 이 소켓의
+  // 최소 3~4번째 왕복이지 콜드 왕복이 아니다.
+  //
+  // **동기 호출이 계약의 일부다**: `sendPing()`을 여기서 `await`나
+  // `setTimeout`/`Promise.then` 등으로 감싸 미루지 않는다 — 이 호출과
+  // 아래 `connectToGame`의 `return` 사이에 다른 비동기 대기가 없어야,
+  // 그 사이 어떤 소켓 콜백(이 ping의 `pong` 응답 포함)도 끼어들 수
+  // 없다는 것이 JS 실행 모델(마이크로태스크가 전부 비워진 뒤에만 다음
+  // 매크로태스크로 넘어감) 자체의 보장이 된다. 통합 테스트
+  // (`tests/integration/20b-client-connect.test.ts`, 해당 describe 상단
+  // REV 절)의 공허화 방지 단언(`connectToGame` resolve 직후
+  // `getRttMs()===0`)이 정확히 이 보장에 의존한다 — 이 호출을 비동기
+  // 형태로 바꾸면 그 단언의 근거가 깨진다.
+  //
+  // 이후 주기 발화(`pingIntervalId`, 위)는 그대로 유지한다 — 즉시 1회 +
+  // 이후 매 `NET.RTT_PING_INTERVAL_MS`.
+  sendPing()
+
+  /**
+   * RQ-64 평가 O-2 수정(`_workspace/RQ-64/09_evaluator_delta2.md`) — ping
+   * 타이머·`pong` 구독 정리를 공용 함수로 뽑아, 명시적 `disconnect()`
+   * 경로와 침묵 disconnect(네트워크 단절·서버 강제 종료 — AFK 킥 포함,
+   * 아래 `room.onLeave` 구독) 경로가 **모두 이 함수 하나만** 거치게
+   * 한다 — 한쪽에만 정리를 두면(이전 버전의 결함) 다른 경로로 끊긴
+   * 연결이 죽은 룸에 계속 ping을 쏘고(오류 없이 조용히), 재접속 시 이전
+   * 세션의 타이머가 새 타이머와 함께 누적된다(서버 쪽 `onLeave` 부기
+   * 정리 관례 — 22k·이 RQ 자신의 F2 — 의 클라이언트 대응물).
+   *
+   * **멱등(idempotent)**: `clearInterval`은 이미 정리된 id에 다시 호출해도
+   * 안전한 no-op이고(표준 동작), `unbindPong`(nanoevents 기반 구독 해제 —
+   * `createNanoEvents().on(...)`이 반환하는 함수)도 이미 제거된 핸들러를
+   * 다시 제거하려 해도 배열에서 찾지 못해 조용히 no-op이다(`nanoevents.js`
+   * `filter(i => cb !== i)` — 이미 없는 항목을 걸러내는 필터는 그대로
+   * 반환한다). 그래서 이 함수는 몇 번을 호출해도(`disconnect()`를 두 번
+   * 부르는 경우, 또는 `disconnect()` 호출 자체가 `room.leave(true)`를 거쳐
+   * 아래 `room.onLeave` 구독도 함께 발화시키는 경우 포함) 안전하다.
+   */
+  function cleanupPingTimer(): void {
+    clearInterval(pingIntervalId)
+    unbindPong()
+  }
+  // `room.onLeave`는 정상 종료·침묵 disconnect 원인과 무관하게 항상
+  // 발화한다(이 파일의 `onDisconnect`가 이미 같은 신호로 `App.tsx`의
+  // 침묵 disconnect 처리를 배선한다) — `App.tsx`의 `onDisconnect` 콜백은
+  // React 상태만 비울 뿐 이 net 모듈 내부 타이머는 모르므로, 여기서 직접
+  // 구독해야 `disconnect()`를 거치지 않는 경로(네트워크 단절·AFK 강제
+  // 퇴장 등)에서도 정리된다.
+  room.onLeave(cleanupPingTimer)
 
   // 이름 붙인 핸들러로 보관 — `disconnect()`가 `room.onStateChange.remove(...)`
   // 로 해제할 수 있어야 한다(20b 리뷰 minor 3: 이전엔 익명 함수라 구독을
@@ -257,6 +377,9 @@ export async function connectToGame(
       store.getState().setSelfPredictedState(predicted)
       room.send('move', { ...input, seq })
     },
+    getRttMs(): number {
+      return rttEstimator.getRttMs()
+    },
     onDisconnect(callback: () => void): () => void {
       const handleLeave = (): void => callback()
       room.onLeave(handleLeave)
@@ -266,6 +389,7 @@ export async function connectToGame(
       room.onStateChange.remove(handleStateChange)
       unbindChat()
       unbindChatHistory()
+      cleanupPingTimer() // RQ-64 평가 O-2: room.onLeave 구독과 공유하는 멱등 정리(위 정의 참고)
       await room.leave(true)
     },
   }

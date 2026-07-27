@@ -111,7 +111,9 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       if (!fireCooldown.tryFire(connection.now())) return
       const { yaw, pitch } = mouseLook.getAngles()
       // RQ-40 M4: 채팅 게이트는 `gatedActions.fire` 안에서 처리한다.
-      gatedActions.fire(yawPitchToDirection(yaw, pitch))
+      // RQ-64(평가 F1 대응): 사수의 현재 RTT 추정치를 함께 실어 보낸다 —
+      // 서버(`GameRoom.handleFire`)가 이 값으로 대상 위치를 되감는다.
+      gatedActions.fire(yawPitchToDirection(yaw, pitch), connection.getRttMs())
     }
     canvas.addEventListener('mousedown', handleFireDown)
 
