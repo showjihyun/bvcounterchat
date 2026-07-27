@@ -193,6 +193,7 @@ interface PlayerLike {
   x?: number
   z?: number
   nickname?: string
+  lastProcessedInputSeq?: number
 }
 interface MembershipLike<T> {
   get?: (key: string) => T | undefined
@@ -231,6 +232,19 @@ function readPlayerXZ(room: Room, sessionId: string): { x: number; z: number } |
   const player = state?.players?.get?.(sessionId)
   if (!player || typeof player.x !== 'number' || typeof player.z !== 'number') return undefined
   return { x: player.x, z: player.z }
+}
+
+/** 리뷰 blocker 회귀 가드(pendingSeqs 보존, `_workspace/RQ-41/
+ * 07_coder_seq-fix.md`) 관측용 — 지정한 sessionId의 `lastProcessedInputSeq`
+ * 를 클라 복제본(`room.state`)에서 읽는다. 아직 `players`에 없거나(관전
+ * 중) 필드가 스키마 타입이 아니면(패치 미도착) `undefined` — 호출부는
+ * `waitForCondition`으로 이 값이 기대 seq에 도달할 때까지 기다린다(대기
+ * 술어 컨벤션 ①: 한 번 도달하면 이후 계속 유지되는 단조 신호 — 이
+ * 테스트는 승격 후 추가 `move`를 보내지 않으므로 값이 다시 바뀌지 않는다). */
+function readLastProcessedInputSeq(room: Room, sessionId: string): number | undefined {
+  const state = room.state as RoomStateLike | null
+  const player = state?.players?.get?.(sessionId)
+  return typeof player?.lastProcessedInputSeq === 'number' ? player.lastProcessedInputSeq : undefined
 }
 
 /** RQ-18/43 선례와 동일한 일반화된 상태 술어 대기 — 대기 술어 컨벤션 ①②를
@@ -780,6 +794,121 @@ describe('RQ-41 슬롯 승격(사유 무관) — 정상 퇴장 경로', () => {
         expect(seam.magazines.get(spectatorId)).toBe(WEAPON.MAGAZINE)
         // 이전 점유자의 키 자체도 남아있지 않다(22k (a)와 동일 원칙).
         expect(seam.magazines.has(departingId)).toBe(false)
+      } finally {
+        await Promise.all([
+          ...players.slice(1).map((room) => leaveRoom(room).catch(() => undefined)),
+          leaveRoom(spectator).catch(() => undefined),
+        ])
+      }
+    },
+    30_000,
+  )
+
+  /**
+   * 리뷰 blocker 회귀 가드(원장 grep 없음 — 리뷰가 지적한 "그물 0건",
+   * `_workspace/review/feat-RQ-41-slot-promotion.md`) — `initializePlayer`가
+   * `pendingSeqs`까지 지우는 회귀(수정 커밋 `6a67f5c`가 되돌림)를 고정한다.
+   *
+   * **배경**: 22i 수정 당시 `pendingInputs`와 `pendingSeqs`를 **둘 다**
+   * 지웠는데, 후자가 틀렸다 — `pendingSeqs`는 실 `move` 페이로드의 seq만
+   * 기록하고(합성값이 아니다), 실 클라이언트는 관전 중에도 `move`를 계속
+   * 보내 그 세션의 연결 단위 seq 카운터를 올린다. 승격 시 이걸 지우면
+   * 승격 직후 첫 스냅샷의 `lastProcessedInputSeq`가 스키마 기본값 0으로
+   * 나가는데, 클라 예측 버퍼는(관전 중 `reconcile`이 불리지 않아) seq가
+   * 쌓인 채로 남아있어 "0보다 큰 건 전부 미확인"으로 해석해 관전 중 쌓인
+   * 입력 전량을 재생한다(ADR-0003 "클라는 미확인 입력만 재생한다" 위반).
+   * `6a67f5c`가 `this.pendingSeqs.delete(sessionId)` 한 줄을 제거해
+   * 고쳤다 — 이 케이스가 그 동작을 관측하는 첫 그물이다.
+   *
+   * **관측 지점(팀리드 지시 — 이번 라운드에서 층 선택 실수로 FAIL이
+   * 한 번 났다, `_workspace/RQ-41/05_test-writer_capacity-fix.md` 참고)**:
+   * 이 값(`lastProcessedInputSeq`)은 **스키마 필드**라 서버 권위 상태가
+   * 곧바로가 아니라 **다음 실 틱**(`stepPlayerMovement`)에서만 갱신되고,
+   * 그 갱신이 클라 복제본에 보이려면 그 뒤 20Hz 패치까지 기다려야 한다
+   * — 동기 화이트박스 조작(22j)과는 다른 층이다. 그래서 최종 단언은
+   * 클라 복제본을 `waitForCondition`(패치 도착을 실제로 기다리는 구독형
+   * 대기)으로 읽는다. 그 전에 "서버가 마지막 move까지 이미 처리했다"는
+   * 것만은 화이트박스로 즉시(동기) 확인한다 — `seam.pendingSeqs`는 순수
+   * 서버 부기 맵이라 동기 읽기가 그 자체로 안전하다(22j처럼 클라
+   * 복제본과 혼동할 여지가 없다 — 애초에 클라로 전파되는 필드가 아니다).
+   *
+   * **대기 술어 컨벤션**: ① `readLastProcessedInputSeq`가 도달할 값은
+   * 이 테스트가 승격 후 추가 `move`를 보내지 않으므로 한 번 도달하면
+   * 계속 유지되는 단조 신호다. ② 리스너 등록 직전에 `spectatorMembership`
+   * 을 동기 확인했고(관전자 상태), 그 뒤로 트리거(퇴장) 전까지 승격을
+   * 유발할 이벤트가 전혀 없었다 — 구독 시점에 술어가 거짓임이 보장된다.
+   * **자기 시야**: 승격되는 `spectator`는 연결이 끊기지 않으므로 자기
+   * 시야 사용이 안전하다(파일 상단 "자기 시야 규칙") — 그래도 제3자
+   * (bystander) 시야로 교차 확인한다.
+   */
+  it(
+    'RQ-41 회귀 가드(리뷰 blocker — pendingSeqs 보존): 승격 직후 첫 스냅샷의 lastProcessedInputSeq는 관전 중 마지막으로 보낸 seq를 반영한다(0으로 후퇴하지 않는다)',
+    async () => {
+      const players = await fillPlayers(server, 'seq-filler')
+      const departing = players[0]
+      const bystander = players[1]
+      if (!departing || !bystander) throw new Error('플레이어 정원 채우기 실패 — players가 비어 있다')
+
+      const spectator = await joinGame(server, 'seq-spectator')
+      const departingId = departing.sessionId
+      const spectatorId = spectator.sessionId
+      const LAST_SEQ = 9
+
+      try {
+        await waitForCondition(bystander, () => isPlayer(bystander, departingId), '퇴장 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        const spectatorMembership = await waitForOwnMembership(spectator, STATE_TIMEOUT_MS)
+        expect(spectatorMembership).toBe('spectators')
+
+        // given: 관전 중인 spectator가 서로 다른 seq 3개를 연속으로
+        // 보낸다 — `onMessage('move')`가 발신자의 역할을 검사하지
+        // 않으므로(22i가 이미 지목) 이동은 적용되지 않아도(관전 중이라
+        // `stepPlayerMovement`가 순회하지 않는다) `pendingSeqs`는 그
+        // 세션의 실제 진행값으로 계속 갱신된다. 값 3개를 다르게 골라
+        // "아무 seq나"가 아니라 **가장 최근 값**이 반영되는지도 함께
+        // 고정한다.
+        spectator.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false, seq: 3 })
+        spectator.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false, seq: 5 })
+        spectator.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false, seq: LAST_SEQ })
+
+        // 서버가 세 메시지를 전부 처리했음을 chat echo로 동기화한다(파일
+        // 상단 "메시지 처리 순서 동기화" 절 — 같은 연결의 메시지는 도착
+        // 순서대로 처리된다).
+        const syncMarker = 'rq-41-seq-guard-sync-marker'
+        await Promise.all([
+          waitForOwnChatEcho(spectator, syncMarker, SYNC_TIMEOUT_MS, 'RQ-41 seq 가드: move 3건의 서버 처리 완료 동기화(chat echo) 대기'),
+          (async () => {
+            spectator.send('chat', { text: syncMarker })
+          })(),
+        ])
+
+        // 결정론적 보조 단언(coder 제안, `07_coder_seq-fix.md` §5) — 서버
+        // 권위 부기 맵을 직접 대조한다(클라 패치 타이밍 무관, 순수 서버
+        // 전유 상태라 동기 읽기 자체가 안전하다).
+        const seam = getServerRoom(bystander)
+        expect(seam.pendingSeqs.get(spectatorId)).toBe(LAST_SEQ)
+
+        // 대기 술어 ② — 리스너를 먼저 등록한 다음에만 트리거(정상 퇴장)를
+        // 호출한다.
+        const spectatorSeesOwnSeq = waitForCondition(
+          spectator,
+          () => isPlayer(spectator, spectatorId) && readLastProcessedInputSeq(spectator, spectatorId) === LAST_SEQ,
+          'RQ-41 seq 가드: 관전자 자신의 시야에서 승격 + lastProcessedInputSeq 반영 대기',
+          PROMOTION_TIMEOUT_MS,
+        )
+        const bystanderSeesSeq = waitForCondition(
+          bystander,
+          () => isPlayer(bystander, spectatorId) && readLastProcessedInputSeq(bystander, spectatorId) === LAST_SEQ,
+          'RQ-41 seq 가드: 제3자(bystander) 시야에서 승격된 세션의 lastProcessedInputSeq 반영 대기',
+          PROMOTION_TIMEOUT_MS,
+        )
+
+        await Promise.all([leaveRoom(departing), spectatorSeesOwnSeq, bystanderSeesSeq])
+
+        // then: 회귀(pendingSeqs를 다시 지우는 변이) 시 이 값은 스키마
+        // 기본값 0이 된다 — 관전 중 마지막으로 보낸 값을 그대로
+        // 반영해야 한다(리뷰 blocker).
+        expect(readLastProcessedInputSeq(bystander, spectatorId)).toBe(LAST_SEQ)
+        expect(readLastProcessedInputSeq(spectator, spectatorId)).toBe(LAST_SEQ)
       } finally {
         await Promise.all([
           ...players.slice(1).map((room) => leaveRoom(room).catch(() => undefined)),
