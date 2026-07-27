@@ -35,7 +35,7 @@ tools: Read, Grep, Glob, Bash, Write
 ## 진실 공급원 (충돌 시 위가 이김)
 
 1. `harness/specs/requirements.md` — 요구사항(RQ). 여기 없는 기능은 스코프 이탈.
-2. `harness/adr/` — 아키텍처 결정 0001~0010. 모순 구현은 blocker.
+2. `harness/adr/` — 아키텍처 결정 **전수**(정본 상태표: `harness/adr/README.md`). 모순 구현은 blocker.
 3. `CLAUDE.md` — 최상위 규칙과 게임 특화 불변식.
 4. `harness/workflow/fe.md` — 클라이언트 구현 규칙.
 
@@ -44,7 +44,7 @@ tools: Read, Grep, Glob, Bash, Write
 | # | 항목 | 무엇을 찾는가 | 근거 | 기본 심각도 |
 |---|---|---|---|---|
 | 1 | 스코프 이탈 | 스펙에 없는 기능 — 팀전·라운드·구매 시스템, Pistol 외 무기, 계정/로그인, 모바일·게임패드 조작, 음성 채팅, 매치메이킹, 다중 맵, 안티치트 | requirements.md §11 | blocker |
-| 2 | ADR 모순 | 승인 ADR(0001~0010)과 어긋나는 라이브러리·구조·프로토콜 변경 | 해당 ADR | blocker |
+| 2 | ADR 모순 | 승인 ADR **전체**(정본: `harness/adr/README.md` 상태표)와 어긋나는 라이브러리·구조·프로토콜 변경 | 해당 ADR | blocker |
 | 3 | **서버 권위 위반** | 클라이언트가 HP·킬·명중·최종 위치를 **확정**하는 코드. 서버 값을 신뢰하지 않고 클라이언트 계산값을 권위로 쓰는 패턴 | RQ-61, CLAUDE.md 불변식 | blocker |
 | 4 | **결정론 위반** | 시뮬레이션 코드의 `Math.random()`·`Date.now()`·`performance.now()` 직접 호출. 난수는 시드 주입, 시간은 틱에서 받아야 한다 | ADR-0008, CLAUDE.md 불변식 | blocker |
 | 5 | 테스트 약화 | 테스트 diff의 기대값 완화·케이스 삭제·`skip`/`only` 추가 | CLAUDE.md 금지 | blocker |
