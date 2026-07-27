@@ -564,6 +564,40 @@ function waitForRttCondition(
  * 직접 호출이 아니다 — 그러면 seq가 실리지 않아 RTT를 측정할 경로 자체가
  * 없다)로 반복 전송해 서버 확인(`lastProcessedInputSeq`) 왕복을 여러 번
  * 만든 뒤, `connection.getRttMs()`가 0(초기값)에서 양수로 바뀌는지 확인한다.
+ *
+ * **REV(RQ-64/F3, `_workspace/RQ-64/06_evaluator_delta.md` F3 — blocker)**:
+ * F1을 닫으려고 채택한 "기존 move/seq 왕복 재사용" 방식은 표본에 서버
+ * 지연(다음 틱까지 0~33.3ms + 다음 패치까지 0~50ms, Colyseus 기본
+ * `patchRate`=20Hz)이 구조적으로 섞여 실측 편향 **+62.28ms**를 냈다(평가
+ * §F3 — 순수 소켓 왕복 0.48ms vs 추정값 62.76ms). 이 편향은 RQ-64 원문의
+ * 두 수치 보장(사수 RTT만큼 되감기·150ms 이내 정상 보장)을 실제로 깬다.
+ *
+ * 아래 기존 케이스에 **정밀 상한 단언**을 순증했다 — 표본 출처가 무엇이든
+ * (현재의 move/seq 왕복이든, 이 결함을 고치기 위한 전용 ping/pong이든)
+ * `connection.getRttMs()`라는 **관측 가능한 계약**만 검사하므로, 표본
+ * 출처 교체(coder 몫)가 일어나도 이 테스트 자체는 손댈 필요가 없다 —
+ * "표본이 실제로 흐르는가"(기존 `>0` 대기)와 "그 표본이 틱·패치 지연으로
+ * 오염되지 않았는가"(신규 상한) 두 조건을 **함께** 요구해야 어느 한쪽만
+ * 만족하는 회귀(예: ping은 있지만 결과를 안 씀 / 값이 있지만 편향됨)를
+ * 모두 잡는다.
+ *
+ * **임계값 근거 — `NET.TICK_MS`(≈33.33ms)**: 새 매직 넘버를 만들지 않고
+ * 기존 공유 상수를 재사용한다(ADR-0010). 이 값을 고른 이유는 정확히
+ * "틱·패치 지연이 섞이지 않았다"를 검사하는 것과 의미가 통하기
+ * 때문이다 — 평가가 유도한 현재 방식의 **이론적 하한**(평균 ≈41.7ms,
+ * 최악 ≈83ms, 둘 다 `NET.TICK_MS`보다 크다)보다 낮으므로, 이 상한을
+ * 만족하려면 표본에 틱·패치 지연이 구조적으로 섞이지 않는 출처여야
+ * 한다. 반대로 순수 소켓 왕복(평가 실측 중앙값 0.48ms, 최댓값 1.3ms)은
+ * 이 값보다 한 자릿수 이상 작아 여유가 크다.
+ *
+ * **루프백 전제(과적합 방지 근거를 명시)**: 이 값은 **같은 프로세스 안에서
+ * 기동한 서버 + `127.0.0.1` 루프백**(이 파일의 `startServer()`, 다른 모든
+ * 통합 테스트와 동일 — 실 인터넷 구간이 아니다)이라는 전제 위에서만
+ * 의미가 있다. 실 네트워크 RTT가 수십ms를 넘는 배포 환경(원거리)에서
+ * 이 단언을 그대로 쓰면 정상적으로도 거짓 실패할 수 있다 — 그런 환경의
+ * 회귀 검증은 이 테스트의 스코프가 아니다(RQ-80 "사내망 단일 서버" 전제와
+ * 별개로, **테스트 자체**가 실행되는 이 프로세스 내 루프백 조건 위에서만
+ * 성립한다는 뜻).
  */
 describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSocket)으로 측정된다', () => {
   let server: RunningServer
@@ -577,7 +611,7 @@ describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSo
   })
 
   it(
-    '반복된 이동 입력·서버 확인 왕복 후 connection.getRttMs()가 0에서 양수로 바뀐다',
+    '반복된 이동 입력·서버 확인 왕복 후 connection.getRttMs()가 0에서 양수로 바뀌고, 실 소켓 왕복 자릿수 안에 머문다(RQ-64/F3 회귀 가드)',
     async () => {
       const store = createGameStore()
       const connection: Connection = await withTimeout(
@@ -611,6 +645,12 @@ describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSo
       // 관대한 상한 — 정밀한 상한 자체는 `rq-64-rtt-estimator.test.ts`의
       // 몫이 아니다, 그 파일은 순수 계산만 다룬다).
       expect(rtt).toBeLessThan(2_000)
+
+      // RQ-64/F3(평가 blocker) 회귀 가드 — 위 관대한 상한과 별개로,
+      // "실 소켓 왕복 자릿수 안"인지 정밀하게 확인한다(근거·루프백 전제는
+      // 이 describe 상단 REV 절 참고). 현재(move/seq 재사용) 구현은
+      // 구조적으로 이 상한을 넘긴다 — 이 단언은 지금 반드시 실패해야 한다.
+      expect(rtt).toBeLessThan(NET.TICK_MS)
 
       await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
     },
