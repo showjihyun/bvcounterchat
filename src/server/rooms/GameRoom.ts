@@ -25,6 +25,7 @@ import {
 } from '@shared/sim/lifecycle'
 import { fallDamageForHeight } from '@shared/sim/fallDamage'
 import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, isReloading, shouldStartReload } from '@shared/sim/ammo'
+import { AFK_TICKS, isAfkDue } from '@shared/sim/afk'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 import { filterProfanity } from '@shared/chat/profanityFilter'
@@ -211,6 +212,15 @@ export class GameRoom extends Room<GameState> {
    * `as unknown as` 캐스팅이라 **`tsc`가 대조하지 않는다** — 리네임은 타입
    * 오류가 아니라 실행 시 단언 실패로만 드러난다(리뷰 minor 2). */
   private readonly fallPeakY = new Map<string, number>()
+  /** RQ-43: 세션별 "마지막 입력 처리 틱" — move/fire/chat/reload 4종 중
+   * 하나를 수신할 때마다 갱신한다(`touchAfkTimer`). `isAfkDue`의 기준점이다.
+   * 관전자는 대상이 아니므로(RQ-43 원문 "플레이어가") 플레이어로 있는
+   * 동안만 값을 갖는다 — `initializePlayer`가 채우고, `onLeave`가 지운다.
+   * **이름을 바꾸지 않는다** — 통합 테스트(`rq-43-afk-kick.test.ts`의
+   * `AfkTestSeam`)가 `matchMaker.getLocalRoomById`로 이 정확한 필드명을
+   * 화이트박스 주입 대상으로 참조한다(`fallPeakY`와 동일한 결합 방식 —
+   * `as unknown as` 캐스팅이라 `tsc`가 대조하지 않는다). */
+  private readonly lastInputAtTick = new Map<string, number>()
   /** RQ-31: 룸 전역 스폰 로테이션 커서 — 세션이 아니라 룸 하나가 갖는다
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
@@ -245,6 +255,7 @@ export class GameRoom extends Room<GameState> {
    */
   private registerMessageHandlers(): void {
     this.onMessage('move', (client, payload: unknown) => {
+      this.touchAfkTimer(client.sessionId)
       this.pendingInputs.set(client.sessionId, sanitizeMoveInput(payload))
 
       const seq = parseInputSeq(payload)
@@ -254,16 +265,40 @@ export class GameRoom extends Room<GameState> {
     })
 
     this.onMessage('fire', (client, payload: unknown) => {
+      this.touchAfkTimer(client.sessionId)
       this.handleFire(client.sessionId, sanitizeFireInput(payload))
     })
 
     this.onMessage('chat', (client, payload: unknown) => {
+      this.touchAfkTimer(client.sessionId)
       this.handleChat(client.sessionId, sanitizeChatText(payload))
     })
 
     this.onMessage('reload', (client) => {
+      this.touchAfkTimer(client.sessionId)
       this.handleReload(client.sessionId)
     })
+  }
+
+  /**
+   * RQ-43: 4종 메시지(move/fire/chat/reload) 수신 시점마다 호출한다 —
+   * 발신자가 현재 **플레이어**일 때만 `lastInputAtTick`을 현재 틱으로
+   * 갱신한다(관전자는 RQ-43 원문이 "플레이어가"로 한정하므로 대상이 아니다).
+   *
+   * **coder 판단(스펙·골든 미규정 — `_workspace/RQ-43/01_test-writer_red.md`
+   * §2 "결정하지 않고 coder 자유로 남긴 것")**: 게임 로직상 최종 수락
+   * 여부(예: 시신의 fire, rate-limit에 막힌 fire, 재장전 중 재요청)와
+   * 무관하게 항상 갱신한다 — 각 핸들러 진입 시 `sanitize*`·`canAct`·
+   * rate-limit·탄약 게이트를 타기 **전에** 이 호출을 둔 이유다. RQ-43
+   * 원문 "5분간 입력이 없으면"의 "입력"은 서버가 게임 로직상 그 입력을
+   * 수락했는지가 아니라 그 세션이 여전히 무언가를 보내고 있다는 활동
+   * 신호로 해석했다 — 그렇지 않으면(수락된 입력만 리셋) 예컨대 탄창이
+   * 빈 채로 조준만 계속하는 플레이어, 또는 죽어서 `fire`가 전부 무시되는
+   * 플레이어가 실제로는 계속 조작 중인데도 AFK로 킥될 수 있다.
+   */
+  private touchAfkTimer(sessionId: string): void {
+    if (!this.state.players.has(sessionId)) return
+    this.lastInputAtTick.set(sessionId, this.state.tick)
   }
 
   /**
@@ -605,9 +640,24 @@ export class GameRoom extends Room<GameState> {
    * `currentTick`은 `startTickLoop`가 역산해 넘긴, 이 반복이 대응하는
    * 정확한 틱 번호다. */
   private stepPlayerMovement(currentTick: number): void {
+    // RQ-43: AFK 판정된 세션을 아래 forEach 도중 즉시 처리하지 않는다 —
+    // `kickAfkPlayer`가 승격으로 `state.players`에 새 항목을 추가할 수
+    // 있는데, 순회 중인 `MapSchema`(`$items` = 네이티브 Map)를 같은 순회
+    // 안에서 변형하면 반복 결과가 불명확해진다. 그래서 이 순회는 대상만
+    // 모으고, 실제 퇴장·승격은 순회가 끝난 뒤 일괄 처리한다.
+    const afkSessionIds: string[] = []
+
     this.state.players.forEach((player, sessionId) => {
       const previous = this.moveStates.get(sessionId)
       if (!previous) return // onJoin이 채워두므로 정상 경로에서는 발생하지 않는다.
+
+      // RQ-43: 생존·사망 여부와 무관하게 입력 무활동만 본다 — `canAct`
+      // 가드(사망자 갭)와는 별개 판정이다. `lastInputAtTick`이 없으면(관전
+      // 상태에서만 있던 세션은 애초에 여기 들어오지 않는다) 대상이 아니다.
+      const lastInput = this.lastInputAtTick.get(sessionId)
+      if (lastInput !== undefined && isAfkDue(lastInput, currentTick, AFK_TICKS)) {
+        afkSessionIds.push(sessionId)
+      }
 
       // RQ-11(가정 5): 재장전 완료 판정을 틱 루프에서 매 틱 사전 판정한다
       // (계약은 트리거 시점을 규정하지 않으나, 팀리드 지시대로 틱 루프에서
@@ -655,6 +705,13 @@ export class GameRoom extends Room<GameState> {
       // `registerDeath`로 리스폰까지 예약된다 — 22e 후속 ① 해소).
       this.trackFallDamage(sessionId, player, previous, next, currentTick)
     })
+
+    // RQ-43: 순회 종료 후 일괄 처리(위 주석 참고) — 정원 10 상한이라
+    // 매 틱 배열 하나를 새로 만들어도 틱 예산(RQ-60, 33ms)에 부담을
+    // 주지 않는다.
+    for (const sessionId of afkSessionIds) {
+      this.kickAfkPlayer(sessionId)
+    }
   }
 
   /** RQ-31: 룸 전역 순환 커서를 한 칸 전진시키고 그 스폰 지점을 반환한다
@@ -757,18 +814,7 @@ export class GameRoom extends Room<GameState> {
     const nickname = this.uniqueNickname(requested)
 
     if (this.state.players.size < CAPACITY.PLAYERS) {
-      const player = new Player()
-      player.nickname = nickname
-      const point = this.allocateSpawnPoint()
-      player.x = point.x
-      player.y = point.y
-      player.z = point.z
-      this.state.players.set(client.sessionId, player)
-      this.moveStates.set(client.sessionId, spawnMoveState(point))
-      this.spawnedAtTick.set(client.sessionId, this.state.tick)
-      this.firedSinceSpawn.set(client.sessionId, false)
-      // RQ-10: 최초 입장은 탄창 가득 참(`WEAPON.MAGAZINE`)에서 시작한다.
-      this.magazines.set(client.sessionId, WEAPON.MAGAZINE)
+      this.initializePlayer(client.sessionId, nickname)
       client.send('chat-history', [...this.chatHistory])
       return
     }
@@ -814,6 +860,82 @@ export class GameRoom extends Room<GameState> {
     // 이전 세션의 낙하 진행 상태를 이어받지 않는다(다른 모든 세션 전유
     // 부기 상태와 동일한 정리 패턴).
     this.fallPeakY.delete(client.sessionId)
+    // RQ-43: 재접속 시 이전 세션의 AFK 타이머를 이어받지 않는다(다음
+    // onJoin이 initializePlayer로 새로 초기화한다) — 다른 모든 세션 전유
+    // 부기 상태와 동일한 정리 패턴. 관전자였던 세션은 애초에 이 맵에
+    // 항목이 없으므로 delete는 멱등하게 no-op이다.
+    this.lastInputAtTick.delete(client.sessionId)
+  }
+
+  /**
+   * RQ-02/RQ-10/RQ-15/RQ-16/RQ-43 공통: 세션을 플레이어로 (신규) 초기화한다
+   * — 최초 입장(`onJoin`)과 AFK 승격(`promoteWaitingSpectator`) 양쪽이
+   * 정확히 동일한 필드 집합을 채워야 한다(팀리드 지시: "onJoin 최초 입장과
+   * 동일한 필드 초기화"). 두 경로가 각자 이 초기화를 반복하면 한쪽에서만
+   * 필드 하나가 누락되는 결함이 생기기 쉬워, 이 라운드에서 단일 지점으로
+   * 추출했다(동작 변경 없음 — 기존 `onJoin` 로직을 그대로 옮긴 것에
+   * `lastInputAtTick` 초기화만 추가).
+   */
+  private initializePlayer(sessionId: string, nickname: string): void {
+    const player = new Player()
+    player.nickname = nickname
+    const point = this.allocateSpawnPoint()
+    player.x = point.x
+    player.y = point.y
+    player.z = point.z
+    this.state.players.set(sessionId, player)
+    this.moveStates.set(sessionId, spawnMoveState(point))
+    this.spawnedAtTick.set(sessionId, this.state.tick)
+    this.firedSinceSpawn.set(sessionId, false)
+    // RQ-10: 최초 입장·승격 모두 탄창 가득 참(`WEAPON.MAGAZINE`)에서 시작한다.
+    this.magazines.set(sessionId, WEAPON.MAGAZINE)
+    // RQ-43: 방금 플레이어가 된 세션의 AFK 타이머를 지금 시점으로 새로
+    // 시작한다 — 그렇지 않으면 부재중이던 관전자 대기 시간이 그대로
+    // 넘어와 승격 직후 곧바로 AFK 판정될 수 있다.
+    this.lastInputAtTick.set(sessionId, this.state.tick)
+  }
+
+  /**
+   * RQ-43: AFK 퇴장으로 빈 슬롯을 대기 중인 관전자에게 넘긴다. 관전자가
+   * 없으면 아무 것도 하지 않는다(퇴장 자체는 이 메서드 밖에서 그대로
+   * 진행된다 — 팀리드 지시: "관전자가 없어도 퇴장 자체는 일어나야 한다").
+   *
+   * **coder 판단(스펙·골든 미규정 — 승격 대상이 2명 이상일 때의 선택
+   * 순서, `_workspace/RQ-43/01_test-writer_red.md` §2 "결정하지 않고
+   * coder 자유로 남긴 것")**: 가장 먼저 접속한 관전자를 승격한다(FIFO).
+   * `MapSchema`(`$items`가 내부적으로 네이티브 `Map`)의 `keys()`가 삽입
+   * 순서를 보존한다는 것을 이용한 결정론적 선택이다(ADR-0008 —
+   * `Math.random()` 등 난수 사용 금지). "먼저 기다린 사람 먼저"가
+   * 직관적이고 공정하며 결정론적으로 테스트 가능해 택했다.
+   */
+  private promoteWaitingSpectator(): void {
+    const waitingId = this.state.spectators.keys().next().value
+    if (waitingId === undefined) return
+
+    const spectator = this.state.spectators.get(waitingId)
+    if (!spectator) return // 방어적 가드 — 이론상 keys()가 준 키는 항상 존재한다
+
+    this.state.spectators.delete(waitingId)
+    this.initializePlayer(waitingId, spectator.nickname)
+  }
+
+  /**
+   * RQ-43: AFK 판정된 세션을 처리한다 — (a) 대기 중인 관전자가 있으면 그
+   * 슬롯으로 승격하고 (b) 해당 세션의 접속을 서버가 강제 종료한다.
+   * 승격을 먼저 수행하는 순서 자체는 결과에 영향이 없다(관전자 승격은
+   * `state.players`에 새 항목을 추가할 뿐 AFK 세션의 제거를 전제하지
+   * 않는다) — "슬롯이 열린다"는 서술을 코드 순서로도 드러낸 것뿐이다.
+   *
+   * 세션별 부기 상태(`lastInputAtTick` 포함) 정리는 이 메서드가 직접 하지
+   * 않는다 — `client.leave()`가 촉발하는 소켓 close → 기존 `onLeave` 경로가
+   * 이미 전담한다(재사용, 중복 삭제 방지). `this.clients.getById`가
+   * `undefined`를 반환하면(이미 다른 경로로 끊긴 세션과 경합) 조용히
+   * 무시한다 — `handleFire`/`handleChat`의 "존재하지 않으면 무시" 방어적
+   * 패턴과 동일.
+   */
+  private kickAfkPlayer(sessionId: string): void {
+    this.promoteWaitingSpectator()
+    this.clients.getById(sessionId)?.leave()
   }
 
   /**
