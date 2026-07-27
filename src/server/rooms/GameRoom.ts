@@ -212,8 +212,12 @@ export class GameRoom extends Room<GameState> {
    * `as unknown as` 캐스팅이라 **`tsc`가 대조하지 않는다** — 리네임은 타입
    * 오류가 아니라 실행 시 단언 실패로만 드러난다(리뷰 minor 2). */
   private readonly fallPeakY = new Map<string, number>()
-  /** RQ-43: 세션별 "마지막 입력 처리 틱" — move/fire/chat/reload 4종 중
-   * 하나를 수신할 때마다 갱신한다(`touchAfkTimer`). `isAfkDue`의 기준점이다.
+  /** RQ-43: 세션별 "마지막 **활동** 처리 틱" — `isAfkDue`의 기준점이다.
+   * `fire`/`chat`/`reload`는 **명시적 조작**이므로 수신 즉시 갱신하지만,
+   * `move`는 **조건부**다 — 클라이언트(`PlayerControls`)가 키 입력과 무관하게
+   * 30Hz로 유휴 payload를 계속 보내기 때문에, 수신 자체를 활동으로 치면
+   * **RQ-43이 제품에서 영원히 발화하지 않는다**(리뷰 blocker로 실증됨).
+   * 실제 조작(`dirX`/`dirZ` ≠ 0 또는 `jump`)이 담긴 payload만 갱신한다.
    * 관전자는 대상이 아니므로(RQ-43 원문 "플레이어가") 플레이어로 있는
    * 동안만 값을 갖는다 — `initializePlayer`가 채우고, `onLeave`가 지운다.
    * **이름을 바꾸지 않는다** — 통합 테스트(`rq-43-afk-kick.test.ts`의
@@ -956,6 +960,10 @@ export class GameRoom extends Room<GameState> {
    * 이미 확보된 뒤에만 호출된다). 그래도 향후 다른 호출 경로가 추가될
    * 가능성에 대비한 방어선으로 남겨둔다 — 공짜에 가깝다(맵 크기 비교 1회).
    */
+  /** 승격 대상 선택은 **FIFO**(먼저 기다린 사람 먼저) — `Math.random()`을
+   * 쓰지 않는다(ADR-0008 결정론). `MapSchema.keys()`가 내부 `$items`(네이티브
+   * `Map`)의 삽입 순서를 그대로 위임하는 것을 이용한다 — 다만 이건 문서화된
+   * 계약이 아니라 **구현 세부**다(colyseus 3.0.76 실측). 원장 22h 참고. */
   private promoteWaitingSpectator(): void {
     if (this.state.players.size >= CAPACITY.PLAYERS) return
 

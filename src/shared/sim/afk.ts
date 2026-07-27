@@ -17,8 +17,9 @@ import { PLAYER } from '@shared/constants'
  * (나머지 없음 — `msToTicks`의 ceil이 이 값에는 영향을 주지 않는다). */
 export const AFK_TICKS: number = msToTicks(PLAYER.AFK_TIMEOUT_MS)
 
-/** RQ-43: `lastInputAtTick`(해당 세션이 move/fire/chat/reload 메시지 중
- * 하나를 마지막으로 수신 처리한 틱)부터 `currentTick`까지 경과가
+/** RQ-43: `lastInputAtTick`(해당 세션의 마지막 **활동** 틱 — `fire`/`chat`/
+ * `reload` 수신, 또는 실제 조작이 담긴 `move`. 유휴 `move` 하트비트는
+ * 활동이 아니다 — 호출자 `GameRoom` 참고)부터 `currentTick`까지 경과가
  * `afkTicks` 이상이면 AFK 퇴장 대상이다(경계 포함 — `isRespawnDue`와
  * 동일한 부호 규칙). */
 export function isAfkDue(lastInputAtTick: number, currentTick: number, afkTicks: number): boolean {
