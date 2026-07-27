@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
-import { CAPACITY } from '@shared/constants'
+import { CAPACITY, NET } from '@shared/constants'
 import { AFK_TICKS } from '@shared/sim/afk'
 
 /**
@@ -132,6 +132,48 @@ import { AFK_TICKS } from '@shared/sim/afk'
  * 명시적으로 경고한 그 절반)은 정원 미만 상태에서는 여전히 이중 승격을
  * 허용한 채 (a)만 통과시킬 수 있다 — (b)가 그 틈을 막는다.
  *
+ * ## 설계 쟁점 5 — 리뷰 blocker 재현: 유휴 `move` 하트비트가 AFK를 무력화한다
+ *
+ * 리뷰(`_workspace/review/feat-RQ-43-afk-kick.md` blocker)가 실증한 결함:
+ * 실 `src/client/scene/PlayerControls.tsx:121-127`은 조작 여부와 무관하게
+ * 매 `NET.TICK_MS`(33ms)마다 `move`를 보낸다(아무 키도 안 눌렸으면
+ * `{dirX:0,dirZ:0,mode:'run',jump:false}`, `movementInput.ts:54-59`가
+ * 반환하는 정상 유휴값). 서버 `touchAfkTimer`(`GameRoom.ts:299-302`)는
+ * payload 내용과 무관하게 무조건 `lastInputAtTick`을 갱신하므로, **실
+ * 클라이언트를 켜 둔 세션은 절대 AFK로 판정되지 않는다** — GA-13의
+ * given("어떤 입력도 보내지 않았고")이 이 클라이언트로는 도달 불가능한
+ * 상태였다. 기존 통합 테스트(GA-13 등)가 이 결함을 못 잡은 이유: 테스트
+ * 클라이언트는 `PlayerControls`를 마운트하지 않는 순수 `colyseus.js`
+ * `Room`이라 아무것도 자동 전송하지 않는다 — 제품이 실제로 보내는 30Hz
+ * 유휴 하트비트를 관측하는 테스트가 0건이었다.
+ *
+ * **재현 설계 — 단발 레이스가 아니라 지속 하트비트로 재현한다**: 화이트박스로
+ * "곧 임계"인 상태를 한 번 주입한 뒤 그 순간 하트비트가 먼저 도착하는지
+ * 서버 스캔이 먼저 도는지를 다투는 **단발 경합**으로 설계하면 결과가 실행마다
+ * 갈릴 수 있다(운에 좌우됨 — ADR-0008이 배제하는 비결정론). 그래서 이 파일은
+ * `forceAfkRemaining`에 **하트비트 주기(33ms)보다 훨씬 큰 여유**
+ * (`IDLE_HEARTBEAT_MARGIN_TICKS`=60틱≈2000ms)를 주고, 그 여유가 흐르는 **내내**
+ * 하트비트를 계속 보낸다 — 실 결함의 성질 그대로("매 하트비트가 무조건
+ * 리셋"하므로 ≈60번의 기회 중 단 한 번만 서버에 도달해도 마감이 다시
+ * 늘어난다) 재현하는 것이라, 단 한 번의 타이밍이 아니라 하트비트가 실제로
+ * 계속 흐르는 한 결정론적으로 재현된다(현재 코드에서 이 여유 안에 하트비트가
+ * 전혀 도달하지 않을 정도의 지속적 지연은 로컬 WS에서 일어나지 않는다).
+ *
+ * **대조군(팀리드 지시 — 과잉 수정 방지)**: 같은 절차를 **실제 조작이 담긴**
+ * payload(`dirZ:1`)로도 반복해, 그 세션은 킥되지 **않아야** 함을 확인한다.
+ * 이 대조군이 없으면 "`move`를 전부 무시하게" 만드는 과잉 수정(예: `move`
+ * 핸들러 자체를 비활성화)도 첫 번째(재현) 테스트를 통과시킬 수 있다 — 대조군은
+ * 지금(수정 전) 코드에서도, 수정 후에도 항상 통과해야 한다(실제 조작은 어느
+ * 쪽 구현에서도 AFK를 리셋해야 정상이다).
+ *
+ * **미결 — 스펙 질의 대상(리뷰가 지적, 이 파일은 어느 방향으로도 단언하지
+ * 않는다)**: ① 앉기(crouch) 키를 누른 채 가만히 있는 세션 — `mode`가
+ * `'crouch'`로 계속 전송되는데 이를 "활동"으로 볼지는 스펙 침묵. ②
+ * 마우스 룩(시점 회전)만 하는 플레이어 — yaw/pitch가 와이어에 실리지
+ * 않아(`GameState.ts` `Player`에 없음) 서버가 관측할 수 없다. 두 경우 모두
+ * 스펙·골든이 답을 요구하지 않으며, 이 재현 가드는 오직 "완전한 유휴값
+ * 하트비트"(`{dirX:0,dirZ:0,mode:'run',jump:false}`) 하나만 재현·단언한다.
+ *
  * ## 대기 술어 컨벤션(팀리드 지시 — 반드시 준수, 근거는 각 호출부에 명시)
  *
  * ① 대기 조건은 단조·안정 신호만 쓴다 — 이 파일의 모든 `waitForCondition`/
@@ -208,6 +250,27 @@ const F1_CAPACITY_SPECTATOR_COUNT = 3
 const F1_UNDER_CAPACITY_REMAINING_PLAYERS = 2
 /** F1 회귀 가드(b) — 같은 시나리오의 대기 관전자 수. */
 const F1_UNDER_CAPACITY_SPECTATOR_COUNT = 3
+
+/** 리뷰 blocker 재현(설계 쟁점 5) — 실 `PlayerControls.tsx`와 동일한
+ * 하트비트 주기. */
+const IDLE_HEARTBEAT_INTERVAL_MS = NET.TICK_MS
+
+/** 하트비트 재현 시나리오에서 주입하는 여유 틱 — 60틱≈2000ms. 하트비트
+ * 주기(33ms)보다 훨씬 커서, 그 사이 하트비트가 ≈60회 도착할 기회를 준다
+ * (설계 쟁점 5 "단발 경합이 아니라 지속 하트비트로 재현" 참고 — 단 한
+ * 번의 타이밍에 좌우되지 않는다). */
+const IDLE_HEARTBEAT_MARGIN_TICKS = 60
+
+/** 하트비트가 계속 흐르는 동안 킥을 관측하는 상한 — 여유(≈2000ms)의
+ * 4배 가까이 잡아 CI 지터를 흡수한다. 결함이 남아있으면(하트비트가 계속
+ * 막으면) 이 상한에서 타임아웃되고, 고쳐지면 여유가 지나는 즉시 킥이
+ * 관측된다. */
+const IDLE_HEARTBEAT_KICK_TIMEOUT_MS = 8_000
+
+/** 대조군(실제 조작 payload)에서 "여유가 명백히 지난 뒤에도 살아있어야
+ * 한다"를 확인하는 고정 대기 — 여유(≈2000ms)를 충분히 지난 시점까지
+ * 기다린다. */
+const IDLE_HEARTBEAT_SURVIVE_MS = 3_000
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -422,6 +485,36 @@ async function assertInputResetsAfkTimer(room: Room, bystander: Room, sendInput:
   const kicked = waitForLeave(room, KICK_OBSERVE_TIMEOUT_MS, 'RQ-43 양성 대조군: 리셋 없이 재주입하면 실제로 AFK 킥이 발생하는지(onLeave) 대기')
   forceImmediateAfkDue(room, sessionId)
   await kicked
+}
+
+interface HeartbeatMoveInput {
+  dirX: number
+  dirZ: number
+  mode: 'run' | 'walk' | 'crouch'
+  jump: boolean
+}
+
+/**
+ * 리뷰 blocker 재현(설계 쟁점 5) — 실 `src/client/scene/PlayerControls
+ * .tsx:121-127`이 매 `NET.TICK_MS`마다 조작 여부와 무관하게 `move`를
+ * 보내는 것과 동일한 하트비트를 재현한다. payload 형태도 실 `src/client
+ * /net/connection.ts:258`의 `room.send('move', { ...input, seq })`와
+ * 동일하게(증가하는 `seq` 포함) 맞춘다 — 서버는 `seq`가 없어도 정상
+ * 동작하지만(하위 호환), 재현 충실도를 위해 그대로 포함한다.
+ *
+ * `input`이 유휴값(`{dirX:0,dirZ:0,mode:'run',jump:false}`)이면 실제
+ * 방치 플레이어를, 조작값(예: `dirZ:1`)이면 대조군을 재현한다. 반환하는
+ * 함수를 호출하면 하트비트를 멈춘다 — 호출자는 반드시 `finally`에서
+ * 멈춰야 한다(멈추지 않으면 `room.leave()` 이후에도 인터벌이 남아
+ * 다음 케이스로 새는 리소스 누수가 된다).
+ */
+function startIdleHeartbeat(room: Room, input: HeartbeatMoveInput): () => void {
+  let seq = 0
+  const intervalId = setInterval(() => {
+    room.send('move', { ...input, seq })
+    seq += 1
+  }, IDLE_HEARTBEAT_INTERVAL_MS)
+  return () => clearInterval(intervalId)
 }
 
 describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
@@ -774,5 +867,88 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
       }
     },
     25_000,
+  )
+
+  // ---------------------------------------------------------------------
+  // 리뷰 blocker 재현(`_workspace/review/feat-RQ-43-afk-kick.md`, 설계
+  // 쟁점 5) — 유휴 move 하트비트가 AFK를 무력화한다. `src/`는 이 세션이
+  // 건드리지 않는다(팀리드 지시) — coder가 별도로 수정한다. 아래 재현
+  // 케이스는 현재 코드에서 **반드시 Red**여야 하고, 대조군은 **반드시
+  // Green**이어야 한다.
+  // ---------------------------------------------------------------------
+
+  it(
+    'RQ-43 리뷰 blocker 재현: 유휴 move 하트비트(실 PlayerControls와 동일 주기·payload)를 계속 보내도 AFK 킥이 일어나야 한다',
+    async () => {
+      const bystander = await joinGame(newClient(server))
+      const room = await joinGame(newClient(server))
+      const sessionId = room.sessionId
+
+      // 실 PlayerControls는 조작 여부와 무관하게 이 주기로 계속 보낸다 —
+      // 여기서도 test가 끝날 때까지(finally에서 정지) 멈추지 않는다.
+      const stopHeartbeat = startIdleHeartbeat(room, { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+
+      try {
+        await waitForCondition(bystander, () => isPlayer(bystander, sessionId), '재현 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+
+        // 대기 술어 ② — 리스너를 먼저 등록한 다음에만 화이트박스 주입한다.
+        const leftPromise = waitForLeave(
+          room,
+          IDLE_HEARTBEAT_KICK_TIMEOUT_MS,
+          'RQ-43 리뷰 blocker 재현: 유휴 하트비트가 계속 흘러도 AFK 킥이 실제로 발생하는지(onLeave) 대기',
+        )
+
+        forceAfkRemaining(room, sessionId, IDLE_HEARTBEAT_MARGIN_TICKS)
+
+        // 하트비트를 멈추지 않은 채로 기다린다 — 현재(결함) 코드에서는
+        // 하트비트가 매 도착마다 무조건 타이머를 리셋해 이 대기가
+        // 타임아웃된다(§ "설계 쟁점 5"). 고쳐지면 유휴 payload는 더 이상
+        // 리셋하지 않으므로 주입된 여유(≈2000ms)가 실제로 지나 킥된다.
+        await leftPromise
+
+        // 자기 시야가 아니라 제3자(bystander) 시야로 최종 상태를
+        // 확인한다(F2에서 배운 원칙 — 끊긴 세션의 자기 시야는 무효).
+        await waitForCondition(
+          bystander,
+          () => !isPlayer(bystander, sessionId),
+          'RQ-43 리뷰 blocker 재현: 재현 대상 제거 반영(제3자 시야) 대기',
+          KICK_OBSERVE_TIMEOUT_MS,
+        )
+        expect(isPlayer(bystander, sessionId)).toBe(false)
+      } finally {
+        stopHeartbeat()
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
+      }
+    },
+    IDLE_HEARTBEAT_KICK_TIMEOUT_MS + 10_000,
+  )
+
+  it(
+    'RQ-43 리뷰 blocker 대조군: 실제 조작이 담긴 move 하트비트(dirZ=1)를 계속 보내는 세션은 AFK로 킥되지 않는다',
+    async () => {
+      const bystander = await joinGame(newClient(server))
+      const room = await joinGame(newClient(server))
+      const sessionId = room.sessionId
+
+      // 유휴값이 아니라 실제 조작(전진)이 담긴 payload를 같은 주기로
+      // 계속 보낸다 — 과잉 수정("move를 전부 무시") 방지용 대조군.
+      const stopHeartbeat = startIdleHeartbeat(room, { dirX: 0, dirZ: 1, mode: 'run', jump: false })
+
+      try {
+        await waitForCondition(bystander, () => isPlayer(bystander, sessionId), '대조군 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+
+        forceAfkRemaining(room, sessionId, IDLE_HEARTBEAT_MARGIN_TICKS)
+
+        // 여유(≈2000ms)를 명백히 지난 뒤에도 여전히 접속 중이어야 한다 —
+        // 실제 조작은 지금도, 고쳐진 뒤에도 AFK를 리셋해야 정상이다.
+        await sleep(IDLE_HEARTBEAT_SURVIVE_MS)
+
+        expect(isPlayer(bystander, sessionId)).toBe(true)
+      } finally {
+        stopHeartbeat()
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
+      }
+    },
+    IDLE_HEARTBEAT_SURVIVE_MS + 10_000,
   )
 })
