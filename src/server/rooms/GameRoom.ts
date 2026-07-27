@@ -908,7 +908,17 @@ export class GameRoom extends Room<GameState> {
    * `Math.random()` 등 난수 사용 금지). "먼저 기다린 사람 먼저"가
    * 직관적이고 공정하며 결정론적으로 테스트 가능해 택했다.
    */
+  /**
+   * **평가 F1 수정(2026-07-27, `_workspace/RQ-43/04_evaluator_report.md`
+   * §7 "수정 방법" 2)**: 정원 방어선 — `kickAfkPlayer`가 AFK 세션을
+   * `state.players`에서 **먼저** 지운 뒤(§ 아래 `kickAfkPlayer` 참고) 이
+   * 메서드를 부르므로, 정상 경로에서는 이 가드가 걸릴 일이 없다(빈 슬롯이
+   * 이미 확보된 뒤에만 호출된다). 그래도 향후 다른 호출 경로가 추가될
+   * 가능성에 대비한 방어선으로 남겨둔다 — 공짜에 가깝다(맵 크기 비교 1회).
+   */
   private promoteWaitingSpectator(): void {
+    if (this.state.players.size >= CAPACITY.PLAYERS) return
+
     const waitingId = this.state.spectators.keys().next().value
     if (waitingId === undefined) return
 
@@ -922,18 +932,51 @@ export class GameRoom extends Room<GameState> {
   /**
    * RQ-43: AFK 판정된 세션을 처리한다 — (a) 대기 중인 관전자가 있으면 그
    * 슬롯으로 승격하고 (b) 해당 세션의 접속을 서버가 강제 종료한다.
-   * 승격을 먼저 수행하는 순서 자체는 결과에 영향이 없다(관전자 승격은
-   * `state.players`에 새 항목을 추가할 뿐 AFK 세션의 제거를 전제하지
-   * 않는다) — "슬롯이 열린다"는 서술을 코드 순서로도 드러낸 것뿐이다.
    *
-   * 세션별 부기 상태(`lastInputAtTick` 포함) 정리는 이 메서드가 직접 하지
-   * 않는다 — `client.leave()`가 촉발하는 소켓 close → 기존 `onLeave` 경로가
-   * 이미 전담한다(재사용, 중복 삭제 방지). `this.clients.getById`가
-   * `undefined`를 반환하면(이미 다른 경로로 끊긴 세션과 경합) 조용히
-   * 무시한다 — `handleFire`/`handleChat`의 "존재하지 않으면 무시" 방어적
-   * 패턴과 동일.
+   * **평가 F1 수정(2026-07-27, `_workspace/RQ-43/04_evaluator_report.md`
+   * §7, 재현 가드 `_workspace/RQ-43/05_test-writer_f1f2.md`)**: 원래
+   * 구현은 `client.leave()`만 부르고 `state.players`에서의 실제 제거는
+   * 소켓 close 핸드셰이크가 끝난 뒤의 비동기 `onLeave`에 전적으로
+   * 맡겼다. close는 피어의 close 프레임 응답을 기다리는 실 네트워크
+   * 왕복이라 1틱(33ms)보다 오래 걸리는 쪽이 오히려 흔하다(RTT가 있는
+   * 모든 연결, 특히 AFK의 대표 원인인 무응답 연결에서는 최대 `ws`
+   * `closeTimeout`까지) — 그동안 세션이 여전히 `state.players`에 남아
+   * 있어 `stepPlayerMovement`가 매 틱 같은 세션을 다시 AFK로 재판정하고,
+   * 그때마다 `promoteWaitingSpectator()`가 다시 실행돼 슬롯 1개에
+   * 관전자가 여러 명 승격됐다(정원 초과, F1).
+   *
+   * 수정: `this.state.players.delete(sessionId)`의 **반환값을 멱등성
+   * 가드로 쓴다** — 킥을 **결정한 이 시점**에 즉시 `state.players`에서
+   * 제거한다(RQ-61 서버 권위: 서버가 이미 확정한 결과이므로 소켓이 실제로
+   * 닫히기를 기다릴 이유가 없다). 이미 처리된 세션이면(동일 동기 구간
+   * 안에서의 중복 호출이든, 다음 틱의 재판정이든) `delete`가 `false`를
+   * 반환해 이 메서드가 즉시 아무 것도 하지 않는다 — 다음 틱 순회에도 이
+   * 세션이 `state.players`에 아예 없으므로 재판정 자체가 구조적으로
+   * 불가능해진다.
+   *
+   * 세션별 나머지 부기 상태(`lastInputAtTick` 포함)는 여기서 정리하지
+   * 않는다 — `onLeave`가 나중에(소켓이 실제로 닫힐 때) 정리한다. `onLeave`
+   * 맨 앞의 `if (!this.state.players.delete(...)) { this.state.spectators
+   * .delete(...) }` 가드는 이미 지워진 키에 대한 재호출을 전제하는데,
+   * `Map#delete`(및 이를 감싼 `MapSchema#delete`)는 존재하지 않는 키에
+   * `false`를 반환할 뿐 부작용이 없다 — 표준 멱등 동작이다. 그 아래 나머지
+   * 정리 라인들도 전부 같은 `Map#delete`라 마찬가지로 안전하다. 즉 이
+   * 메서드가 `state.players`만 먼저 지우고 나가도, 나중에 실제로 도착하는
+   * `onLeave` 실행이 나머지를 안전하게 마저 정리한다.
+   *
+   * 그 사이(킥 결정~실제 소켓 close) 그 세션에서 메시지가 도착해도
+   * 위험하지 않다 — `handleFire`/`handleChat`/`touchAfkTimer` 등은 전부
+   * `this.state.players.get`/`has(sessionId)`로 존재를 먼저 확인하는
+   * 방어적 가드를 이미 갖추고 있어(`handleChat`의 "onLeave와 경합해 이미
+   * 나간 세션" 주석과 동일한 패턴), 이 세션은 그냥 "이미 나간 세션"과
+   * 동일하게 조용히 무시된다.
+   *
+   * `this.clients.getById`가 `undefined`를 반환하면(이미 다른 경로로
+   * 끊긴 세션과 경합) 조용히 무시한다 — 위와 동일한 방어적 패턴.
    */
   private kickAfkPlayer(sessionId: string): void {
+    if (!this.state.players.delete(sessionId)) return // 멱등 가드 — 이미 처리된 세션
+
     this.promoteWaitingSpectator()
     this.clients.getById(sessionId)?.leave()
   }
