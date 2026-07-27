@@ -26,6 +26,13 @@ import {
 import { fallDamageForHeight } from '@shared/sim/fallDamage'
 import { RELOAD_TICKS, canFireAmmo, consumeRound, isReloadComplete, isReloading, shouldStartReload } from '@shared/sim/ammo'
 import { AFK_TICKS, isAfkDue } from '@shared/sim/afk'
+import {
+  appendPositionSnapshot,
+  POSITION_HISTORY_CAPACITY,
+  rewindTicksFor,
+  sampleRewoundPosition,
+  type PositionSnapshot,
+} from '@shared/sim/rewind'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 import { filterProfanity } from '@shared/chat/profanityFilter'
@@ -77,6 +84,10 @@ interface FireInput {
   dirX: number
   dirY: number
   dirZ: number
+  /** RQ-64: 사수가 보고한 RTT(ms) — 되감기 산술(`rewindTicksFor`)의
+   * 유일한 입력. 정규화 후 항상 유한한 숫자다(방어는 `rewindTicksFor`가
+   * 맡는다 — 이 필드 자체는 "숫자였는가"만 보장한다). */
+  rttMs: number
 }
 
 /**
@@ -100,18 +111,26 @@ function sanitizeChatText(payload: unknown): string {
 }
 
 /**
- * `fire` 메시지 payload에서 조준 방향(`dirX`·`dirY`·`dirZ`)만 뽑는다.
- * 클라이언트가 같은 payload에 명중·데미지·헤드샷·대상 주장 필드(RQ-12
- * GA-06 — 악의적 클라이언트가 실어 보낼 수 있는 필드)를 실어도 여기서
- * 아예 읽지 않으므로 서버 상태에 닿을 경로가 없다(RQ-61) —
+ * `fire` 메시지 payload에서 조준 방향(`dirX`·`dirY`·`dirZ`)과 RQ-64
+ * `rttMs`만 뽑는다. 클라이언트가 같은 payload에 명중·데미지·헤드샷·대상
+ * 주장 필드(RQ-12 GA-06 — 악의적 클라이언트가 실어 보낼 수 있는 필드)를
+ * 실어도 여기서 아예 읽지 않으므로 서버 상태에 닿을 경로가 없다(RQ-61) —
  * `sanitizeMoveInput`과 동일한 패턴.
+ *
+ * **`rttMs`(RQ-64)**: `typeof === 'number'` 방어로만 뽑는다(레거시
+ * 클라이언트·필드 부재·문자열 등 숫자가 아닌 값은 전부 0으로 대체 —
+ * `rewindTicksFor(0) === 0`이라 되감기가 적용되지 않는다, 회귀 방지). 값의
+ * 상한 절단(200ms/6틱)·NaN 방어는 여기서 하지 않는다 — 그건
+ * `rewindTicksFor`(`@shared/sim/rewind`)의 책임이다(관심사 분리, `canFire`가
+ * "허용 여부"만 판정하고 발사 자체는 호출자가 하는 것과 동일한 패턴).
  */
 function sanitizeFireInput(payload: unknown): FireInput {
-  const raw = payload as { dirX?: unknown; dirY?: unknown; dirZ?: unknown } | null | undefined
+  const raw = payload as { dirX?: unknown; dirY?: unknown; dirZ?: unknown; rttMs?: unknown } | null | undefined
   return {
     dirX: typeof raw?.dirX === 'number' ? raw.dirX : 0,
     dirY: typeof raw?.dirY === 'number' ? raw.dirY : 0,
     dirZ: typeof raw?.dirZ === 'number' ? raw.dirZ : 0,
+    rttMs: typeof raw?.rttMs === 'number' ? raw.rttMs : 0,
   }
 }
 
@@ -225,6 +244,20 @@ export class GameRoom extends Room<GameState> {
    * 화이트박스 주입 대상으로 참조한다(`fallPeakY`와 동일한 결합 방식 —
    * `as unknown as` 캐스팅이라 `tsc`가 대조하지 않는다). */
   private readonly lastInputAtTick = new Map<string, number>()
+  /** RQ-64: 세션별 위치 이력 링버퍼(최근 `POSITION_HISTORY_CAPACITY`(7)개
+   * 스냅샷) — 랙 보상 되감기(`sampleRewoundPosition`)의 조회 대상이다.
+   * `stepPlayerMovement`가 살아있는(canAct) 플레이어의 `moveStates`를 갱신
+   * 하는 바로 그 자리에서 그 틱의 발 위치를 적립한다(`_workspace/RQ-64/
+   * 01_test-writer_red.md` §8 가정 3). 사망한 플레이어는 `moveStates`와
+   * 동일하게 위치가 고정되므로 이력도 추가하지 않는다. `appendPositionSnapshot`
+   * 은 매 호출마다 새 배열을 반환하는 순수 함수 계약이다(`@shared/sim/rewind`
+   * 주석 참고 — 정원 10 × 상한 7 = 최대 70 엘리먼트 복사라 틱 예산에 부담이
+   * 없다). **이름을 바꾸지 않는다** — 통합 테스트(`rq-64-lag-compensation
+   * -bound.test.ts`의 `RewindTestSeam`)가 `matchMaker.getLocalRoomById`로
+   * 이 정확한 필드명을 화이트박스 주입 대상으로 참조한다(`fallPeakY`·
+   * `lastInputAtTick`과 동일한 결합 방식 — `as unknown as` 캐스팅이라 `tsc`가
+   * 대조하지 않는다). */
+  private readonly positionHistory = new Map<string, PositionSnapshot[]>()
   /** RQ-31: 룸 전역 스폰 로테이션 커서 — 세션이 아니라 룸 하나가 갖는다
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
@@ -380,7 +413,7 @@ export class GameRoom extends Room<GameState> {
   /**
    * RQ-12(서버 hitscan) + RQ-13(헤드샷 배율) + RQ-14(HP·사망·킬) + RQ-15
    * (사망자 갭·리스폰 스케줄) + RQ-16(스폰 보호) + RQ-17(팀 없음 — 사수
-   * 자신을 제외한 전원이 대상) + ADR-0005(rate-limit).
+   * 자신을 제외한 전원이 대상) + RQ-64(랙 보상) + ADR-0005(rate-limit).
    *
    * **사망자 갭(RQ-15 item D)**: `canAct(shooterPlayer.hp)`가 false면(시신)
    * 요청을 완전히 무시한다 — rate-limit 갱신도, `firedSinceSpawn` 갱신도
@@ -391,7 +424,15 @@ export class GameRoom extends Room<GameState> {
    * REV §12) — 사수의 현재 추적 위치(`moveStates`, RQ-20)에
    * `DEFAULT_HITBOX.eyeHeightM`을 더한 지점을 인라인 산술이 아니라 이
    * 공유 함수로 계산해, 클라이언트 1인칭 카메라 높이 계산과 값이 어긋나지
-   * 않게 한다.
+   * 않게 한다. **사수 자신의 레이 원점은 되감기지 않는다**(RQ-64 원문 —
+   * "대상 플레이어의 위치"만 되감는다, 사수 자신은 대상이 아니다).
+   * **되감기 대상 포즈(RQ-64)**: 각 대상의 포즈는 `moveStates`(현재 위치)가
+   * 아니라 `sampleRewoundPosition(positionHistory.get(id) ?? [], state.tick,
+   * rewindTicksFor(input.rttMs))`로 구한다(없으면 `moveStates`로 폴백 —
+   * 버퍼가 비어 있는 경우만 발생, `sampleRewoundPosition` 계약). 되감기
+   * 틱 수는 서버가 `rewindTicksFor`로 상한(`REWIND_CAP_TICKS`=6, 200ms)에서
+   * 클램프하므로, 사수가 임의로 먼 과거를 요구해도(RQ-61 방어) 상한을 넘지
+   * 않는다.
    * **`firedSinceSpawn`(RQ-16)**: canAct·rate-limit을 통과해 사격을 실제로
    * 처리할 때마다(명중 여부와 무관하게) 사수 자신의 값을 true로 갱신한다.
    * **스폰 보호(RQ-16)**: 피해를 적용하기 직전 피해자가 보호 중이면
@@ -453,6 +494,10 @@ export class GameRoom extends Room<GameState> {
       direction: { x: input.dirX, y: input.dirY, z: input.dirZ },
     }
 
+    // RQ-64: 사수가 보고한 RTT를 되감기 틱 수로 환산(+상한 클램프)한다 —
+    // 대상 전원에게 동일하게 적용되는 값이라 순회 밖에서 한 번만 계산한다.
+    const rewindTicks = rewindTicksFor(input.rttMs)
+
     const candidates: HitCandidate[] = []
     this.state.players.forEach((player, sessionId) => {
       if (sessionId === shooterId) return // RQ-17: 팀 없음 — 사수 자신만 제외, 그 외 전원이 대상
@@ -465,7 +510,11 @@ export class GameRoom extends Room<GameState> {
       // 수도 없다(이 가드). 밸런싱 단계에서 뒤집힐 수 있는 게임 감각
       // 결정이며, 뒤집는다면 이 한 줄만 지우면 된다.
       if (!canAct(player.hp)) return
-      const targetState = this.moveStates.get(sessionId)
+      // RQ-64: 대상 포즈는 되감긴 위치를 우선 쓴다 — 버퍼가 비어 있으면만
+      // (접속 직후 등, `sampleRewoundPosition([]) === undefined`)
+      // `moveStates`(현재 위치)로 폴백한다.
+      const rewound = sampleRewoundPosition(this.positionHistory.get(sessionId) ?? [], this.state.tick, rewindTicks)
+      const targetState = rewound ?? this.moveStates.get(sessionId)
       if (!targetState) return
       candidates.push({ id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } })
     })
@@ -727,6 +776,20 @@ export class GameRoom extends Room<GameState> {
       player.x = next.x
       player.y = next.y
       player.z = next.z
+
+      // RQ-64: 살아있는(canAct) 플레이어만 이력을 적립한다 — 시신은
+      // `moveStates`처럼 위치가 고정되므로(위 `if (!canAct(...))` 분기가
+      // 이미 return 했다) 이 지점에 도달한 세션은 전부 canAct다.
+      // `appendPositionSnapshot`은 새 배열을 반환하는 순수 함수라(위
+      // `positionHistory` 필드 코멘트 참고) 매번 재할당한다.
+      this.positionHistory.set(
+        sessionId,
+        appendPositionSnapshot(
+          this.positionHistory.get(sessionId) ?? [],
+          { tick: currentTick, x: next.x, y: next.y, z: next.z },
+          POSITION_HISTORY_CAPACITY,
+        ),
+      )
       // RQ-62(21a-2): 클라이언트 예측 재조정이 공중 상태를 이어받으려면
       // 속도가 와이어에 실려야 한다(`grounded`는 4필드 확정에 없어 제외).
       player.vx = next.vx
@@ -931,6 +994,10 @@ export class GameRoom extends Room<GameState> {
     // 부기 상태와 동일한 정리 패턴. 관전자였던 세션은 애초에 이 맵에
     // 항목이 없으므로 delete는 멱등하게 no-op이다.
     this.lastInputAtTick.delete(client.sessionId)
+    // RQ-64: 재접속 시 이전 세션의 위치 이력을 이어받지 않는다(다음
+    // onJoin/stepPlayerMovement가 새로 적립한다) — 다른 모든 세션 전유
+    // 부기 상태와 동일한 정리 패턴(누수 방지).
+    this.positionHistory.delete(client.sessionId)
 
     // RQ-41 개정: 방금 비운 슬롯이 players였을 때만 대기 관전자를 승격한다
     // (FIFO, `promoteWaitingSpectator` 참고). AFK 경로와의 이중 승격 방지
