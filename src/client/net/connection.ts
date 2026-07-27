@@ -41,6 +41,13 @@ const INTERPOLATION_DELAY_MS = NET.TICK_MS * 2
  */
 const RTT_SMOOTHING_ALPHA = 0.2
 
+/** RQ-64 랙 보상 — 전용 RTT 측정 ping payload(seq 왕복 전용, `move`의
+ * 시퀀스와는 별개 카운터 — `@client/net/rttEstimator`의 `seq`는 "전송 단위를
+ * 식별하는 아무 정수"면 되고 `move` 시퀀스와 같은 값일 필요가 없다). */
+interface PingPayload {
+  seq: number
+}
+
 /**
  * 실제 시각(ms) 실측 — 이 모듈이 유일하게 성능 시계를 읽는 지점이다
  * (ADR-0008 정신: 순수 보간·예측 로직은 값 주입만 받고, 실시간 API 호출은
@@ -170,12 +177,14 @@ export interface GameConnection {
    */
   sendMoveInput(input: MoveInput): void
   /**
-   * RQ-64 랙 보상 — 사수의 현재 RTT 추정치(ms, 평가 F1 대응). 내부적으로
-   * `sendMoveInput`이 보낸 `seq`와 서버가 확정한 `lastProcessedInputSeq`
-   * 왕복(`@client/net/rttEstimator`)에서 계산한다. 유효 표본이 아직 없으면
-   * 0(되감기 미적용과 동일한 안전한 기본값) — `@client/input/chatInputGate`
-   * 의 `fire(direction, rttMs)`가 이 값을 그대로 실어 `'fire'` payload에
-   * 병합한다.
+   * RQ-64 랙 보상 — 사수의 현재 RTT 추정치(ms). 내부적으로 전용 `ping`/
+   * `pong` 왕복(평가 F3 대응 — `_workspace/RQ-64/06_evaluator_delta.md`,
+   * `@client/net/rttEstimator`)에서 계산한다. `GameRoom`이 틱·패치 지연
+   * 없이 즉시 응답하므로 표본이 순수 네트워크 왕복에 가깝다(F1 시도의
+   * `move`/`seq` 재사용은 틱·패치 배치 지연이 섞여 폐기됐다). 유효 표본이
+   * 아직 없으면 0(되감기 미적용과 동일한 안전한 기본값) —
+   * `@client/input/chatInputGate`의 `fire(direction, rttMs)`가 이 값을
+   * 그대로 실어 `'fire'` payload에 병합한다.
    */
   getRttMs(): number
   /**
@@ -246,9 +255,42 @@ export async function connectToGame(
     room.sessionId,
     INTERPOLATION_DELAY_MS,
   )
-  // RQ-64 랙 보상(평가 F1 대응) — 기존 move↔seq 왕복을 그대로 재사용해 RTT를
-  // 추정한다(신규 ping/pong 없음, `rttEstimator.ts` 모듈 코멘트 참고).
+  // RQ-64 랙 보상 — RTT 추정기. **표본 출처는 전용 ping/pong이다**(평가 F3
+  // 수정 — `_workspace/RQ-64/06_evaluator_delta.md`). 이전(F1) 구현은 기존
+  // `move`↔`seq`↔`lastProcessedInputSeq` 왕복을 재사용했으나, 그 확인은
+  // 서버 틱(≤`NET.TICK_MS`)과 Colyseus 상태 패치 배치(기본 20Hz, ≤50ms)를
+  // 거쳐야만 도착해 표본에 구조적 지연이 섞였다(실측 +62ms 편향 — RQ-64가
+  // 요구하는 "RTT 150ms 이내 정상 플레이 보장"을 실제로 깼다). 아래
+  // ping/pong은 `GameRoom`이 틱 루프 밖에서 즉시 응답하므로(`handleChat`과
+  // 동일한 위상) 그 지연이 표본에 섞이지 않는다.
   const rttEstimator: RttEstimator = createRttEstimator(RTT_SMOOTHING_ALPHA)
+  let nextPingSeq = 1
+  // RQ-64: pong의 seq가 곧 recordSend가 기록한 그 ping의 seq다 — 도착
+  // 시각(now())과 전송 시각의 차이가 RTT 표본이다(rttEstimator.ts 참고).
+  // 이 핸들러도 이름을 붙여 보관한다 — disconnect()가 해제해야 하는
+  // 구독이라 unbindChat/unbindChatHistory와 동일한 패턴을 따른다.
+  const unbindPong = room.onMessage<PingPayload>('pong', (payload) => {
+    if (typeof payload?.seq === 'number') {
+      rttEstimator.onAck(payload.seq, now())
+    }
+  })
+  function sendPing(): void {
+    const seq = nextPingSeq
+    nextPingSeq += 1
+    rttEstimator.recordSend(seq, now())
+    room.send('ping', { seq })
+  }
+  // 접속 직후 즉시 보내지 않는다 — 첫 주기(`NET.RTT_PING_INTERVAL_MS`)가
+  // 지나기 전까지 `getRttMs()`는 0(안전한 기본값, 되감기 미적용)이다. 이
+  // 창은 `sampleRewoundPosition`의 "버퍼 미충전 시 절단"과 같은 성격의
+  // 정상적인 웜업 구간이라 별도 처리가 필요 없다(20b `getRttMs()===0`
+  // 초기값 확인이 이 창에 의존한다 — 즉시 전송하면 그 공허화 방지 단언이
+  // 우연히 깨진다).
+  // `window.setInterval`이 아니라 전역 `setInterval`을 쓴다 — 이 모듈은
+  // 통합 테스트(Node 환경, `window` 없음)에서 직접 실행되므로
+  // `PlayerControls.tsx`(브라우저 전용, 렌더 계층 면제 대상)와 달리
+  // `window` 참조가 있으면 그 자체로 테스트가 깨진다.
+  const pingIntervalId = setInterval(sendPing, NET.RTT_PING_INTERVAL_MS)
 
   // 이름 붙인 핸들러로 보관 — `disconnect()`가 `room.onStateChange.remove(...)`
   // 로 해제할 수 있어야 한다(20b 리뷰 minor 3: 이전엔 익명 함수라 구독을
@@ -258,10 +300,6 @@ export async function connectToGame(
 
     const authoritative = readSelfAuthoritativeState(room)
     if (authoritative) {
-      // RQ-64: 서버가 확정한 lastProcessedInputSeq가 곧 recordSend가 기록한
-      // seq에 대한 확인 응답이다 — 도착 시각(now())과 전송 시각의 차이가
-      // RTT 표본이다(rttEstimator.ts 참고).
-      rttEstimator.onAck(authoritative.lastProcessedInputSeq, now())
       const reconciled = predictor.reconcile(authoritative)
       store.getState().setSelfPredictedState(reconciled)
     }
@@ -284,10 +322,6 @@ export async function connectToGame(
     now,
     sendMoveInput(input: MoveInput): void {
       const { seq, predicted } = predictor.applyInput(input)
-      // RQ-64: 이 seq의 전송 시각을 기록해 둔다 — 서버가 이 seq를
-      // lastProcessedInputSeq로 확정해 돌아오면(위 handleStateChange의
-      // onAck 호출) 왕복 시간이 RTT 표본이 된다.
-      rttEstimator.recordSend(seq, now())
       store.getState().setSelfPredictedState(predicted)
       room.send('move', { ...input, seq })
     },
@@ -303,6 +337,8 @@ export async function connectToGame(
       room.onStateChange.remove(handleStateChange)
       unbindChat()
       unbindChatHistory()
+      clearInterval(pingIntervalId) // RQ-64: ping 타이머 정리
+      unbindPong()
       await room.leave(true)
     },
   }

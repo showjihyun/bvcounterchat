@@ -352,6 +352,27 @@ export class GameRoom extends Room<GameState> {
       this.touchAfkTimer(client.sessionId)
       this.handleReload(client.sessionId)
     })
+
+    // RQ-64 랙 보상(평가 F3 대응, `_workspace/RQ-64/06_evaluator_delta.md`)
+    // — 전용 RTT 측정 ping/pong. `client.send`는 이 콜백 안에서 동기
+    // 호출되므로 다음 시뮬레이션 틱이나 다음 상태 패치를 기다리지 않는다
+    // (`handleChat`과 동일한 위상 — 수신 즉시 처리). **왜 필요한가**: 이전
+    // 시도(F1)는 기존 `move`↔`seq`↔`lastProcessedInputSeq` 왕복을 RTT
+    // 표본으로 재사용했으나, 그 확인은 서버 틱(최대 `NET.TICK_MS`)과
+    // Colyseus 상태 패치 배치(기본 20Hz, 최대 50ms)를 반드시 거쳐야 도착해
+    // 표본에 구조적 지연이 섞였다(평가 실측 +62ms 편향 — "RTT 150ms 이내
+    // 정상 플레이 보장"을 실제로 깼다). **왜 브로드캐스트가 아니라
+    // `client.send`인가**: 요청한 클라이언트 자신에게만 필요한 응답이라
+    // 다른 클라이언트의 대역폭을 쓸 이유가 없다. 게임 상태(`state`)에
+    // 닿지 않으므로 관전자·플레이어 구분 없이 응답한다(AFK 판정
+    // `touchAfkTimer`도 호출하지 않는다 — 클라이언트가 자동으로 보내는
+    // 타이머 기반 하트비트라 RQ-43 "유휴 move 하트비트는 활동이 아니다"와
+    // 동일한 이유로 사용자 조작으로 치지 않는다). payload를 검증·해석하지
+    // 않고 그대로 반사한다 — 왕복 식별(`seq`)은 클라이언트
+    // (`@client/net/rttEstimator`)의 관심사이지 서버가 해석할 대상이 아니다.
+    this.onMessage('ping', (client, payload: unknown) => {
+      client.send('pong', payload)
+    })
   }
 
   /**
