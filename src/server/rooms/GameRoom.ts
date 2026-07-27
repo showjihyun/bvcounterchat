@@ -878,11 +878,33 @@ export class GameRoom extends Room<GameState> {
     )
   }
 
+  /**
+   * RQ-41 개정(2026-07-27, 사유 무관 슬롯 승격): 정상 퇴장이든 비정상 연결
+   * 끊김이든 Colyseus는 이유를 구분하지 않고 이 메서드를 부른다 — 그래서
+   * 이 메서드 하나가 "플레이어 슬롯이 비면 사유와 무관하게 승격한다"는
+   * 개정 문면을 그대로 충족하는 유일한 지점이다(승격 호출 지점 일원화 —
+   * `kickAfkPlayer`와 이 메서드 둘 다 `promoteWaitingSpectator()` 하나만
+   * 거친다).
+   *
+   * **AFK 경로와의 이중 승격 방지**: `kickAfkPlayer`는 킥을 **결정한
+   * 시점**에 이미 `state.players`에서 지우고 그 자리에서 즉시 승격한다
+   * (아래 `kickAfkPlayer` 참고, 평가 F1 수정 — 소켓 close까지 기다리면
+   * 그 사이 같은 세션이 매 틱 재킥·재승격돼 정원을 초과했다). 그렇게
+   * 이미 처리된 세션에 대해 나중에 실제 소켓 close로 도달하는 이 `onLeave`
+   * 실행에서는 아래 `players.delete()`가 이미 없는 키를 지우려다 `false`를
+   * 반환한다 — `wasPlayer`가 false가 되어 이 메서드가 다시 승격을 호출하지
+   * 않는다(멱등 가드, `kickAfkPlayer`가 F1에서 고친 것과 같은 형태의
+   * 이중 승격을 이 경로에서도 구조적으로 막는다).
+   */
   override onLeave(client: Client): void {
     // 사용 중 닉네임 목록이 현재 접속자 기준으로 정리돼야 다음 입장자의
     // 중복 판정이 정확하다. 소속 컬렉션이 players/spectators 둘 중 어느
     // 쪽인지 미리 알 필요 없이, players에 없으면 spectators를 시도한다.
-    if (!this.state.players.delete(client.sessionId)) {
+    // 반환값(`wasPlayer`)은 메서드 맨 끝의 승격 호출 게이트로도 쓴다 —
+    // 방금 지운 세션이 실제로 플레이어 슬롯을 점유하던 세션이었을 때만
+    // 슬롯이 빈 것이고, 관전자가 나간 경우는 애초에 승격할 슬롯이 없다.
+    const wasPlayer = this.state.players.delete(client.sessionId)
+    if (!wasPlayer) {
       this.state.spectators.delete(client.sessionId)
     }
     // RQ-20: 재접속 시 이전 세션의 이동 상태를 이어받지 않도록 정리한다
@@ -909,6 +931,13 @@ export class GameRoom extends Room<GameState> {
     // 부기 상태와 동일한 정리 패턴. 관전자였던 세션은 애초에 이 맵에
     // 항목이 없으므로 delete는 멱등하게 no-op이다.
     this.lastInputAtTick.delete(client.sessionId)
+
+    // RQ-41 개정: 방금 비운 슬롯이 players였을 때만 대기 관전자를 승격한다
+    // (FIFO, `promoteWaitingSpectator` 참고). AFK 경로와의 이중 승격 방지
+    // 근거는 위 메서드 docblock 참고.
+    if (wasPlayer) {
+      this.promoteWaitingSpectator()
+    }
   }
 
   /**
@@ -933,6 +962,48 @@ export class GameRoom extends Room<GameState> {
     this.firedSinceSpawn.set(sessionId, false)
     // RQ-10: 최초 입장·승격 모두 탄창 가득 참(`WEAPON.MAGAZINE`)에서 시작한다.
     this.magazines.set(sessionId, WEAPON.MAGAZINE)
+    // RQ-41 개정 회수(원장 22i) — `respawnPlayer`(리뷰 minor 11)는 리스폰
+    // 직전 남은 `pendingInputs`가 부활 직후 스폰 좌표를 벗어나 이동시키는
+    // 것을 막으려 이미 이 맵을 지운다. 이 메서드(최초 입장 + 승격)는 그
+    // 대칭을 갖추지 못했다 — `onMessage('move', ...)`가 발신자의
+    // 플레이어 여부를 검사하지 않아(RQ-61 서버 권위와 무관하게 단순
+    // 미검사), **관전 중에 보낸 move 입력**이 이 세션의 sessionId 아래
+    // `pendingInputs`에 남을 수 있다. 승격 전에는 `stepPlayerMovement`가
+    // 관전자를 순회하지 않아 잠들어 있다가, 승격 직후 첫 틱부터 그
+    // 잔여 입력이 그대로 적용돼 "입력을 보내지 않았는데 움직인다"는
+    // 결함으로 발화한다 — 여기서 지워 respawnPlayer와 동일하게 다음 실제
+    // 입력이 도착할 때까지 정지 상태를 유지한다.
+    //
+    // **`pendingSeqs`는 지우지 않는다**(리뷰 blocker 수정 —
+    // `_workspace/review/feat-RQ-41-slot-promotion.md`). 이전 버전의 이
+    // 주석은 "관전 중 보낸 합성 seq"·"클라가 보내지 않은 seq"를 지우는
+    // 근거로 들었으나 **둘 다 사실이 아니었다** — `pendingSeqs`는
+    // `onMessage('move')`가 `parseInputSeq(payload)`로 실제 `move`
+    // 페이로드에서 읽은 값만 기록한다(합성값이 아니다). 관전 중에도 실
+    // 클라이언트(`PlayerControls`)는 관전 여부와 무관하게 계속 `move`를
+    // 보내며 자신의 연결 단위 seq 카운터를 올린다 — 그 세션이 "보낸 적
+    // 없는" seq가 아니라 **가장 최근에 실제로 보낸** seq다.
+    //
+    // `pendingInputs`(적용될 조작)와 `pendingSeqs`(클라와 공유하는 진행
+    // 카운터)는 성격이 다르다. 전자를 지우는 것은 "잔여 조작을 적용하지
+    // 않는다"는 뜻이지만, 후자를 지우면 승격 직후 첫 스냅샷의
+    // `lastProcessedInputSeq`가 스키마 기본값 0으로 브로드캐스트된다 —
+    // 그런데 클라의 예측 버퍼(`src/client/net/prediction.ts`)는 그동안
+    // (관전 중 `reconcile`이 한 번도 호출되지 않아) seq가 계속 쌓여있다.
+    // 서버가 0을 보내면 클라는 "0보다 큰 seq는 전부 미확인"으로 해석해
+    // 관전 중 쌓인 입력 전량을 서버가 준 스폰 좌표 위에서 재생한다 —
+    // ADR-0003("서버는 처리한 마지막 시퀀스 번호를 반환하고 클라는
+    // 미확인 입력만 재생한다")이 정의한 재조정 계약을 승격 경로에서만
+    // 되돌리는 회귀다. `respawnPlayer`(리뷰 minor 11, `:781-793`)가 이미 정확히
+    // 같은 두 맵에 대해 내린 결론(`pendingInputs`는 지우고 `pendingSeqs`는
+    // 보존한다)이 이 메서드에도 **그대로 적용된다** — 이 메서드로
+    // 플레이어가 되는 세션은(최초 입장이든 승격이든) 항상 그 세션이 실제로
+    // 보낸 최신 seq를 이어받아야, 승격 직후 첫 틱이 `lastProcessedInputSeq`
+    // 를 정확히 확정해 클라 버퍼를 정상적으로 비운다(잔여 조작 차단과
+    // 버퍼 정리를 동시에 얻는다 — `pendingInputs`만 지우고 `pendingSeqs`는
+    // 남기면 첫 틱이 `IDLE_MOVE_INPUT`을 적용해 스폰 좌표에 머무르면서도
+    // seq는 갱신되기 때문이다).
+    this.pendingInputs.delete(sessionId)
     // RQ-43: 방금 플레이어가 된 세션의 AFK 타이머를 지금 시점으로 새로
     // 시작한다 — 그렇지 않으면 부재중이던 관전자 대기 시간이 그대로
     // 넘어와 승격 직후 곧바로 AFK 판정될 수 있다.
@@ -954,11 +1025,14 @@ export class GameRoom extends Room<GameState> {
    */
   /**
    * **평가 F1 수정(2026-07-27, `_workspace/RQ-43/04_evaluator_report.md`
-   * §7 "수정 방법" 2)**: 정원 방어선 — `kickAfkPlayer`가 AFK 세션을
-   * `state.players`에서 **먼저** 지운 뒤(§ 아래 `kickAfkPlayer` 참고) 이
-   * 메서드를 부르므로, 정상 경로에서는 이 가드가 걸릴 일이 없다(빈 슬롯이
-   * 이미 확보된 뒤에만 호출된다). 그래도 향후 다른 호출 경로가 추가될
-   * 가능성에 대비한 방어선으로 남겨둔다 — 공짜에 가깝다(맵 크기 비교 1회).
+   * §7 "수정 방법" 2)**: 정원 방어선 — 호출자(`kickAfkPlayer`·`onLeave`)
+   * 양쪽 다 `state.players`에서 **먼저** 슬롯을 지운(또는 이미 비어있음을
+   * 확인한) 뒤에만 이 메서드를 부르므로, 정상 경로에서는 이 가드가 걸릴
+   * 일이 없다(빈 슬롯이 이미 확보된 뒤에만 호출된다). **RQ-41 개정
+   * (2026-07-27)으로 `onLeave`도 두 번째 호출자가 됐다** — 승격 호출
+   * 지점을 이 메서드 하나로 일원화한 것(팀리드 지시)이 바로 이 방어선이
+   * 애초에 대비하던 "향후 다른 호출 경로"다. 그래도 방어선 자체는
+   * 유지한다 — 공짜에 가깝다(맵 크기 비교 1회).
    */
   /** 승격 대상 선택은 **FIFO**(먼저 기다린 사람 먼저) — `Math.random()`을
    * 쓰지 않는다(ADR-0008 결정론). `MapSchema.keys()`가 내부 `$items`(네이티브

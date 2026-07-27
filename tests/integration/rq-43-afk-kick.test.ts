@@ -428,16 +428,43 @@ function waitForLeave(room: Room, timeoutMs: number, label: string): Promise<num
   )
 }
 
+/** 부기 맵 원소를 키로 지울 수 있다는 최소 계약 — `MapSchema#delete`/
+ * `Map#delete`가 공통으로 만족한다(`Map#delete`와 동일한 표준 시그니처). */
+interface DeletableMap {
+  delete(key: string): boolean
+}
+
 /** 화이트박스 접근 대상 계약 — 파일 상단 "설계 쟁점 2" 참고.
  * `lastInputAtTick`은 아직 존재하지 않는 신규 필드다(Red 전제, `sim-afk
  * .test.ts` 상단 "가정" 절이 정본). `state`는 신규 계약이 아니다 —
  * `@colyseus/core`의 `Room.state`가 이미 public이다. `kickAfkPlayer`도
  * 신규 계약이 아니다 — F1 회귀 가드(설계 쟁점 4)를 위한 접근이며,
- * coder 구현이 이미 이 이름으로 존재한다(`GameRoom.ts` 확인 완료). */
+ * coder 구현이 이미 이 이름으로 존재한다(`GameRoom.ts` 확인 완료).
+ *
+ * **RQ-41 개정(2026-07-27) F1 "정원 무관" 셋업 갱신(원장 22n,
+ * `_workspace/RQ-41/03_test-writer_f1-setup.md` §1 "새 셋업의 근거"가
+ * 정본)으로 추가**: `state.players`/`state.spectators`(둘 다 이미
+ * public `Room.state` 하위라 신규 계약이 아니다 — 여기서는 `.delete()`
+ * 시그니처만 별도로 타입한다)와 `onLeave`가 정리하는 나머지 세션별
+ * 부기 맵 전부. `evictFillerWithoutPromotion`(아래)이 `onLeave`와 동일한
+ * 정리를 수행하되 승격 호출만 생략하기 위해 필요하다 — 전부 신규
+ * 계약이 아니다(`GameRoom.ts`에 이미 이 정확한 이름으로 존재함을 직접
+ * 읽어 확인했다, `fallPeakY`·`lastInputAtTick`과 동일한 화이트박스
+ * 결합 방식). */
 interface AfkTestSeam {
   lastInputAtTick: Map<string, number>
-  state: { tick: number }
+  state: { tick: number; players: DeletableMap; spectators: DeletableMap }
   kickAfkPlayer(sessionId: string): void
+  moveStates: Map<string, unknown>
+  pendingInputs: Map<string, unknown>
+  pendingSeqs: Map<string, number>
+  lastFireAtMs: Map<string, number>
+  diedAtTick: Map<string, number>
+  spawnedAtTick: Map<string, number>
+  firedSinceSpawn: Map<string, boolean>
+  magazines: Map<string, number>
+  reloadStartedAtTick: Map<string, number>
+  fallPeakY: Map<string, number>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 이미 확립한
@@ -466,6 +493,41 @@ function forceImmediateAfkDue(room: Room, sessionId: string): void {
 function forceAfkRemaining(room: Room, sessionId: string, remainingTicks: number): void {
   const seam = getServerRoom(room)
   seam.lastInputAtTick.set(sessionId, seam.state.tick - (AFK_TICKS - remainingTicks))
+}
+
+/**
+ * RQ-41 개정(2026-07-27) F1 "정원 무관" 셋업 갱신 — `onLeave`가 하는
+ * 세션별 부기 정리(`GameRoom.ts` `onLeave`)를 **동일하게** 수행하되
+ * `promoteWaitingSpectator()` 호출만 생략한다. 필러를 승격을 전혀
+ * 유발하지 않고 조용히 제거해, "players가 정원보다 훨씬 적으면서
+ * spectators는 손대지 않은" 전제를 화이트박스로 구성한다 — 이 전제가
+ * 왜 실 접속/퇴장 흐름으로는 더 이상 도달 불가능한지는 아래 F1 "정원
+ * 무관" 케이스 상단 주석과 `_workspace/RQ-41/03_test-writer_f1-setup.md`
+ * §1을 보라.
+ *
+ * 실 소켓은 이 함수가 건드리지 않는다(열린 채로 남는다) — 호출자가
+ * 테스트 종료 시 `leaveRoom()`으로 정상적으로 닫아야 한다. 그 시점의
+ * 실 `onLeave`는 이미 지워진 세션이라 `state.players.delete()`가
+ * `false`를 반환해 `wasPlayer=false`가 되고, 나머지 정리 라인들도 전부
+ * 이미 지워진 키에 대한 `Map#delete` 재호출이라 표준 멱등 동작으로
+ * 안전하게 아무 것도 하지 않는다(`onLeave` 자체 문서화 — "이미 지워진
+ * 키에 대한 재호출을 전제하는데... 표준 멱등 동작이다") — 그리고
+ * `wasPlayer=false`이므로 승격도 다시 호출되지 않는다.
+ */
+function evictFillerWithoutPromotion(room: Room, sessionId: string): void {
+  const seam = getServerRoom(room)
+  seam.state.players.delete(sessionId)
+  seam.moveStates.delete(sessionId)
+  seam.pendingInputs.delete(sessionId)
+  seam.pendingSeqs.delete(sessionId)
+  seam.lastFireAtMs.delete(sessionId)
+  seam.diedAtTick.delete(sessionId)
+  seam.spawnedAtTick.delete(sessionId)
+  seam.firedSinceSpawn.delete(sessionId)
+  seam.magazines.delete(sessionId)
+  seam.reloadStartedAtTick.delete(sessionId)
+  seam.fallPeakY.delete(sessionId)
+  seam.lastInputAtTick.delete(sessionId)
 }
 
 /**
@@ -801,11 +863,36 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
     'RQ-43 F1 회귀 가드(정원 무관): 정원보다 훨씬 적은 인원에서도 같은 세션의 이중 AFK 판정은 승격을 최대 1명으로 제한해야 한다(정원 클램프의 부수효과가 아니라 킥 자체의 멱등성)',
     async () => {
       // 관전자는 RQ-03에 따라 플레이어 정원이 찬 상태에서만 생긴다 —
-      // 그래서 먼저 정원(10)을 채워 관전자를 확보한 뒤, 필러 플레이어
-      // 대부분을 자발적으로 퇴장시켜 인위적으로 "정원보다 훨씬 적은" 상태를
-      // 만든다. 자발적 퇴장은 승격을 유발하지 않는다(스코프 밖, 원장 22g —
-      // `promoteWaitingSpectator`는 `kickAfkPlayer`에서만 호출된다) — 그래서
-      // 이 절차로도 관전자 수는 그대로 유지된다.
+      // 그래서 먼저 정원(10)을 채운 뒤 관전자를 확보한다.
+      //
+      // **셋업 갱신(RQ-41 개정 2026-07-27, 원장 22n,
+      // `_workspace/RQ-41/03_test-writer_f1-setup.md` §1 "새 셋업의
+      // 근거"가 정본)**: 예전 절차는 필러를 `leaveRoom()`으로 자발
+      // 퇴장시켜 "정원보다 훨씬 적은" 상태를 만들었다 — 그 전제("자발적
+      // 퇴장은 승격을 유발하지 않는다, `promoteWaitingSpectator`는
+      // `kickAfkPlayer`에서만 호출된다")를 이번 개정이 뒤집었다:
+      // `onLeave`도 이제 `promoteWaitingSpectator()`를 호출한다
+      // (`GameRoom.ts` `onLeave`). 그 결과 spectators.size>0인 한 어떤
+      // 실 퇴장이든(정상이든 AFK든) `state.players.delete()` 직후 같은
+      // 동기 호출 스택 안에서 즉시 재승격이 일어나 players가 다시
+      // 채워진다 — "players가 정원보다 훨씬 적으면서 spectators는 손대지
+      // 않은" 상태는 이제 실 접속/퇴장 흐름만으로는 **구조적으로 도달
+      // 불가능**하다(증명: spectators가 남아있는 한 퇴장 1건의 players
+      // 순변화는 항상 0이고 spectators만 -1이다 — spectators가 전부
+      // 소진된 뒤에야 추가 퇴장이 players를 실제로 줄이는데, 그 시점엔
+      // 이미 spectators=0이라 "손대지 않은 spectators"가 존재하지
+      // 않는다. 중간 상태를 관측할 틈도 없다 — delete와 재승격이 같은
+      // 동기 구간에서 즉시 이어진다).
+      //
+      // 그래서 이 케이스는 화이트박스로 그 전제를 직접 구성한다 —
+      // `evictFillerWithoutPromotion`(위)이 `onLeave`와 동일한 세션별
+      // 부기 정리를 하되 승격 호출만 생략해, 필러를 승격 유발 없이
+      // 조용히 제거한다. 이 테스트가 검증하는 불변식("players가 정원보다
+      // 훨씬 적을 때도 같은 세션의 이중 AFK 판정은 승격을 최대 1명으로
+      // 제한한다")은 필러가 어떻게 사라졌는지와 무관하다 — 실제로 검증
+      // 대상인 `kickAfkPlayer`/`promoteWaitingSpectator` 코드 경로,
+      // AFK 대상·bystander·spectator 3명의 실 연결은 전부 그대로다.
+      // 화이트박스는 오직 "정원 미만" 전제를 만드는 데만 쓰인다.
       const players: Room[] = []
       for (let i = 0; i < CAPACITY.PLAYERS; i += 1) {
         players.push(await joinGame(newClient(server)))
@@ -830,14 +917,17 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
           STATE_TIMEOUT_MS,
         )
 
-        // 필러(players[2..]) 전원을 자발적으로 퇴장시켜 정원보다 훨씬 적은
-        // 상태를 만든다 — 남는 것은 afkTarget·bystander 둘뿐이다.
-        const fillers = players.slice(2)
-        await Promise.all(fillers.map((room) => leaveRoom(room)))
+        // 필러(players[2..]) 전원을 화이트박스로 제거해 정원보다 훨씬
+        // 적은 상태를 만든다(위 "셋업 갱신" 참고 — 실 leaveRoom()을 쓰면
+        // spectators가 즉시 재소진돼 이 전제에 구조적으로 도달할 수
+        // 없다). 남는 것은 afkTarget·bystander 둘뿐이다.
+        for (const filler of players.slice(2)) {
+          evictFillerWithoutPromotion(bystander, filler.sessionId)
+        }
         await waitForCondition(
           bystander,
           () => playersCount(bystander) === F1_UNDER_CAPACITY_REMAINING_PLAYERS,
-          '필러 퇴장 반영(정원보다 훨씬 적은 상태) 확인',
+          '필러 화이트박스 제거 반영(정원보다 훨씬 적은 상태, spectators 손대지 않음) 확인',
           STATE_TIMEOUT_MS,
         )
 
@@ -865,13 +955,22 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
 
         // 핵심 불변식(일반형) — players.size는 CAPACITY.PLAYERS 근처에도
         // 가지 않으므로(initialPlayerCount=2 ≪ CAPACITY.PLAYERS=10), 정원
-        // 클램프만으로는 이 단언을 통과시킬 수 없다 — 킥 자체가 멱등해야만
-        // 통과한다. 현재 코드에서는 반드시 Red다.
+        // 클램프(`promoteWaitingSpectator`의 `players.size >=
+        // CAPACITY.PLAYERS` 가드)만으로는 이 단언을 통과시킬 수 없다 —
+        // 킥 자체(`kickAfkPlayer`의 `state.players.delete()` 반환값
+        // 멱등 가드)가 멱등해야만 통과한다. 변이 검증으로 확인
+        // (`_workspace/RQ-41/03_test-writer_f1-setup.md` §3 "가드의
+        // 이빨 재확인"): 그 멱등 가드만 제거하면(정원 가드는 그대로
+        // 둬도) 이 단언이 실제로 깨진다 — 형제 케이스(F1 정원 시나리오)는
+        // 같은 변이에서도 살아남는다(첫 승격이 players를 정원까지 이미
+        // 채워, 두 번째 시도가 정원 가드에 걸린다 — 이 케이스는 애초에
+        // 정원 근처에 가지 않으므로 그 대비가 통하지 않는다).
         expect(finalPlayerCount).toBe(initialPlayerCount)
         expect(finalSpectatorCount).toBe(initialSpectatorCount - 1)
       } finally {
         await Promise.all([
           leaveRoom(bystander).catch(() => undefined),
+          ...players.slice(2).map((room) => leaveRoom(room).catch(() => undefined)),
           ...spectators.map((room) => leaveRoom(room).catch(() => undefined)),
         ])
       }
