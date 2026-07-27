@@ -9,6 +9,7 @@ import {
   type InterpolationPosition,
   type RemoteEntityInterpolator,
 } from '@client/net/interpolation'
+import { createRttEstimator, type RttEstimator } from '@client/net/rttEstimator'
 import { NET } from '@shared/constants'
 
 /** 서버 전역에 상설 세션은 이 룸 하나뿐이다(RQ-04 GA-29, `GameRoom` 참고). */
@@ -26,6 +27,19 @@ const ROOM_NAME = 'game'
  * 주입하는 프로덕션 판단이다.
  */
 const INTERPOLATION_DELAY_MS = NET.TICK_MS * 2
+
+/**
+ * RQ-64 랙 보상 — RTT 추정 EMA 평활 계수(평가 F1 대응,
+ * `_workspace/RQ-64/03_evaluator_report.md`). `@client/net/rttEstimator`의
+ * `smoothingAlpha`는 필수 인자라(모듈 코멘트 "임의의 튜닝 상수를 모듈
+ * 내부에 감추지 않는다") 이 배선 계층이 실제 값을 정한다 — Jacobson/Karels류
+ * RTT 추정에서 흔히 쓰이는 자릿수(1/8~1/4)의 중간값을 택했다. 급격한
+ * 표본 하나에 과민 반응하지 않으면서도(값이 작을수록 느리게 반응) 실제
+ * RTT 변화(혼잡·이동)를 몇 표본 안에 따라잡는다(값이 클수록 빠르게 반응).
+ * 정밀 튜닝은 밸런싱 판단이라 이 계약이 규정하지 않는다(`combat-tuning.ts`
+ * "값 발명 금지"와 같은 정신 — 여기서는 코드 상수로 두되 근거를 남긴다).
+ */
+const RTT_SMOOTHING_ALPHA = 0.2
 
 /**
  * 실제 시각(ms) 실측 — 이 모듈이 유일하게 성능 시계를 읽는 지점이다
@@ -156,6 +170,15 @@ export interface GameConnection {
    */
   sendMoveInput(input: MoveInput): void
   /**
+   * RQ-64 랙 보상 — 사수의 현재 RTT 추정치(ms, 평가 F1 대응). 내부적으로
+   * `sendMoveInput`이 보낸 `seq`와 서버가 확정한 `lastProcessedInputSeq`
+   * 왕복(`@client/net/rttEstimator`)에서 계산한다. 유효 표본이 아직 없으면
+   * 0(되감기 미적용과 동일한 안전한 기본값) — `@client/input/chatInputGate`
+   * 의 `fire(direction, rttMs)`가 이 값을 그대로 실어 `'fire'` payload에
+   * 병합한다.
+   */
+  getRttMs(): number
+  /**
    * 침묵 disconnect(사용자가 `disconnect()`를 호출하지 않은 연결 종료 —
    * 네트워크 단절 등 `room.onLeave`가 발생하는 모든 경우, 명시적
    * `disconnect()`가 유발하는 consented leave도 포함) 발생 시 `callback`을
@@ -223,6 +246,9 @@ export async function connectToGame(
     room.sessionId,
     INTERPOLATION_DELAY_MS,
   )
+  // RQ-64 랙 보상(평가 F1 대응) — 기존 move↔seq 왕복을 그대로 재사용해 RTT를
+  // 추정한다(신규 ping/pong 없음, `rttEstimator.ts` 모듈 코멘트 참고).
+  const rttEstimator: RttEstimator = createRttEstimator(RTT_SMOOTHING_ALPHA)
 
   // 이름 붙인 핸들러로 보관 — `disconnect()`가 `room.onStateChange.remove(...)`
   // 로 해제할 수 있어야 한다(20b 리뷰 minor 3: 이전엔 익명 함수라 구독을
@@ -232,6 +258,10 @@ export async function connectToGame(
 
     const authoritative = readSelfAuthoritativeState(room)
     if (authoritative) {
+      // RQ-64: 서버가 확정한 lastProcessedInputSeq가 곧 recordSend가 기록한
+      // seq에 대한 확인 응답이다 — 도착 시각(now())과 전송 시각의 차이가
+      // RTT 표본이다(rttEstimator.ts 참고).
+      rttEstimator.onAck(authoritative.lastProcessedInputSeq, now())
       const reconciled = predictor.reconcile(authoritative)
       store.getState().setSelfPredictedState(reconciled)
     }
@@ -254,8 +284,15 @@ export async function connectToGame(
     now,
     sendMoveInput(input: MoveInput): void {
       const { seq, predicted } = predictor.applyInput(input)
+      // RQ-64: 이 seq의 전송 시각을 기록해 둔다 — 서버가 이 seq를
+      // lastProcessedInputSeq로 확정해 돌아오면(위 handleStateChange의
+      // onAck 호출) 왕복 시간이 RTT 표본이 된다.
+      rttEstimator.recordSend(seq, now())
       store.getState().setSelfPredictedState(predicted)
       room.send('move', { ...input, seq })
+    },
+    getRttMs(): number {
+      return rttEstimator.getRttMs()
     },
     onDisconnect(callback: () => void): () => void {
       const handleLeave = (): void => callback()

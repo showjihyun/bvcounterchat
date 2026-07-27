@@ -249,7 +249,10 @@ export class GameRoom extends Room<GameState> {
    * `stepPlayerMovement`가 살아있는(canAct) 플레이어의 `moveStates`를 갱신
    * 하는 바로 그 자리에서 그 틱의 발 위치를 적립한다(`_workspace/RQ-64/
    * 01_test-writer_red.md` §8 가정 3). 사망한 플레이어는 `moveStates`와
-   * 동일하게 위치가 고정되므로 이력도 추가하지 않는다. `appendPositionSnapshot`
+   * 동일하게 위치가 고정되므로 이력도 추가하지 않는다. **리스폰 시
+   * `respawnPlayer`가 이 맵의 해당 세션 항목을 삭제한다**(평가 F2 수정 —
+   * 그 함수 docblock 참고, 삭제하지 않으면 이전 생의 이력이 남아 되감기가
+   * 시신 지점을 반환한다). `appendPositionSnapshot`
    * 은 매 호출마다 새 배열을 반환하는 순수 함수 계약이다(`@shared/sim/rewind`
    * 주석 참고 — 정원 10 × 상한 7 = 최대 70 엘리먼트 복사라 틱 예산에 부담이
    * 없다). **이름을 바꾸지 않는다** — 통합 테스트(`rq-64-lag-compensation
@@ -869,6 +872,36 @@ export class GameRoom extends Room<GameState> {
    * 한다.** 지금은 그 값을 보존하는 편이 "재장전 중 사망해도 리스폰하면
    * 남은 재장전이 계속 진행돼 그대로 완료된다"는 게임 감각과 일치하고
    * 스펙이 이 경로에 침묵하므로 바꾸지 않는다.
+   *
+   * **평가 F2 수정(2026-07-27, `_workspace/RQ-64/03_evaluator_report.md`
+   * F2)**: `positionHistory`(RQ-64 되감기 링버퍼)를 정리한다.
+   * `stepPlayerMovement`는 사망 중(`canAct===false`) 조기 반환해 이력을
+   * 갱신하지 않으므로, 정리하지 않으면 사망 시점(이전 생) 스냅샷이 리스폰
+   * 후에도 몇 틱(최대 `REWIND_CAP_TICKS`≈200ms)간 되감기 후보로 남아
+   * 시신 지점이 유령 명중하거나(반대로 실제 리스폰 위치를 정확히 겨눈
+   * 사격이 빗나가거나) 한다 — 평가가 실측(14.07 m 오차)으로 확인한 blocker.
+   *
+   * **삭제 vs 시딩(현재 위치로 새 스냅샷을 즉시 채우는 방식) 중 삭제를
+   * 택한 근거**: 삭제 후 버퍼가 비면 `sampleRewoundPosition([])`이
+   * `undefined`를 반환해 `handleFire`가 `moveStates`(리스폰 지점, 이
+   * 함수가 몇 줄 위에서 이미 갱신했다)로 폴백한다 — 이는 **접속 직후
+   * (onJoin) 신규 플레이어와 정확히 같은 경로**다: `initializePlayer`도
+   * `positionHistory`를 시딩하지 않고 첫 스냅샷은 다음
+   * `stepPlayerMovement` 틱이 자연히 채운다. 리스폰은 "같은 세션의 새
+   * 생(生)"이라는 점에서 신규 입장과 동일한 위상이므로(이 함수가
+   * `diedAtTick`·`spawnedAtTick`·`firedSinceSpawn`·`pendingInputs`를
+   * `initializePlayer`와 동일하게 초기화하는 것과 같은 원칙), 시딩이라는
+   * 별도 경로를 새로 만들기보다 이미 검증된(onJoin 경로) 폴백을 그대로
+   * 재사용하는 편이 일관적이다. 시딩은 이 폴백과 최종 결과가 동일하면서도
+   * (되감기 요청이 오면 어차피 그 시딩값 하나만 있는 버퍼에서 그 값이
+   * 선택된다) 코드 경로만 하나 더 늘린다 — 이득 없이 표면적만 넓어진다.
+   *
+   * **`onLeave`의 `positionHistory.delete`와의 의미 차이**: `onLeave`는
+   * "세션 자체가 끝난다"는 정리(누수 방지 — 다시는 이 sessionId로 이
+   * 세션이 돌아오지 않는다)이고, 여기는 "같은 세션이 새 생으로 이어진다"는
+   * 정리(이전 생의 흔적을 다음 생으로 넘기지 않는다)다 — 트리거하는
+   * 사건은 다르지만 "이 시점 이전의 위치 이력은 더 이상 유효한 판정
+   * 근거가 아니다"라는 의미는 같다.
    */
   private respawnPlayer(sessionId: string, player: Player, currentTick: number): void {
     const point = this.allocateSpawnPoint()
@@ -881,6 +914,7 @@ export class GameRoom extends Room<GameState> {
     player.vz = 0
     player.hp = PLAYER.MAX_HP
     this.diedAtTick.delete(sessionId)
+    this.positionHistory.delete(sessionId) // RQ-64 평가 F2 — 이전 생의 위치 이력을 이어받지 않는다(위 문서 참고)
     this.spawnedAtTick.set(sessionId, currentTick)
     this.firedSinceSpawn.set(sessionId, false)
     this.pendingInputs.delete(sessionId)
