@@ -566,14 +566,14 @@ function waitForRttCondition(
  * 만든 뒤, `connection.getRttMs()`가 0(초기값)에서 양수로 바뀌는지 확인한다.
  *
  * **REV(RQ-64/F3, `_workspace/RQ-64/06_evaluator_delta.md` F3 — blocker)**:
- * F1을 닫으려고 채택한 "기존 move/seq 왕복 재사용" 방식은 표본에 서버
+ * F1을 닫으려고 초기에 채택했다 폐기된 "move/seq 왕복 재사용" 방식은 표본에 서버
  * 지연(다음 틱까지 0~33.3ms + 다음 패치까지 0~50ms, Colyseus 기본
  * `patchRate`=20Hz)이 구조적으로 섞여 실측 편향 **+62.28ms**를 냈다(평가
  * §F3 — 순수 소켓 왕복 0.48ms vs 추정값 62.76ms). 이 편향은 RQ-64 원문의
  * 두 수치 보장(사수 RTT만큼 되감기·150ms 이내 정상 보장)을 실제로 깬다.
  *
  * 아래 기존 케이스에 **정밀 상한 단언**을 순증했다 — 표본 출처가 무엇이든
- * (현재의 move/seq 왕복이든, 이 결함을 고치기 위한 전용 ping/pong이든)
+ * (폐기된 move/seq 왕복이든, 최종 채택된 전용 ping/pong이든)
  * `connection.getRttMs()`라는 **관측 가능한 계약**만 검사하므로, 표본
  * 출처 교체(coder 몫)가 일어나도 이 테스트 자체는 손댈 필요가 없다 —
  * "표본이 실제로 흐르는가"(기존 `>0` 대기)와 "그 표본이 틱·패치 지연으로
@@ -599,7 +599,7 @@ function waitForRttCondition(
  * 별개로, **테스트 자체**가 실행되는 이 프로세스 내 루프백 조건 위에서만
  * 성립한다는 뜻).
  */
-describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSocket)으로 측정된다', () => {
+describe('20b/RQ-64/F1: connection.getRttMs()가 실 ping↔pong 왕복(실 WebSocket)으로 측정된다', () => {
   let server: RunningServer
 
   beforeAll(async () => {

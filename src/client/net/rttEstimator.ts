@@ -7,10 +7,17 @@
  * 그린필드 계약은 `tests/unit/rq-64-rtt-estimator.test.ts` 상단 docblock
  * (test-writer 지정)이 정본이다 — 이 파일은 그 계약을 그대로 구현한다.
  *
- * **설계**: 새 ping/pong 프로토콜을 두지 않는다 — 클라이언트가 이미 `move`
- * 메시지에 싣는 시퀀스 번호(`seq`, `@client/net/prediction`의 `applyInput`)와
- * 서버가 그 처리 결과로 돌려주는 `lastProcessedInputSeq`(스키마 필드) 왕복을
- * 그대로 RTT 표본으로 재사용한다(`connection.ts`가 배선한다).
+ * **설계**: 표본 출처는 **전용 `ping`/`pong` 왕복**이다 — 클라가 주기적으로
+ * `ping`을 보내면 서버가 **틱 루프 밖에서 즉시** `pong`을 돌려준다(`connection.ts` 배선).
+ *
+ * 초기엔 기존 `move`↔`lastProcessedInputSeq` 왕복을 재사용하려 했으나 **폐기했다**
+ * (평가 F3): 그 ack는 Colyseus **상태 패치**에 실려 오므로 모든 표본에 틱 대기(0~33.3ms)와
+ * 패치 대기(0~50ms)가 섮여 **측정값이 RTT가 아니게 된다** — 루프백 실측 편향
+ * +62.28ms(순수 소켓 왕복 0.48ms 대비)로 RQ-64의 "RTT 150ms 보장"을 실제로 깨뜨렸다.
+ * 전용 ping/pong 교체 후 편향은 −0.08ms다. 경위: ADR-0005 §결과, 원장 25a.
+ *
+ * **이 모듈은 표본 출처에 무관하다** — `recordSend`/`onAck`에 무엇을 물리든 계약이
+ * 같으며, 실제로 F3 수정은 이 파일을 한 줄도 바꾸지 않고 출처만 교체했다.
  *
  * **결정론(ADR-0008)**: 이 모듈은 `Date.now()`·`performance.now()`를 직접
  * 호출하지 않는다 — 모든 시각은 호출자가 값으로 주입한다(`connection.ts`가
