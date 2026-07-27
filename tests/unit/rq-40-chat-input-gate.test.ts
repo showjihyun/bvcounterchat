@@ -93,6 +93,19 @@ describe('RQ-40 채팅 입력 차단 — gateFireIntent', () => {
  * 검사한다 — 배선이 이 함수를 호출하는 한(그 자체는 코드 정독·브라우저
  * 스모크가 게이트), choke point 내부가 계약을 지키는지는 여기서 실 회귀로
  * 잡힌다.
+ *
+ * **REV(RQ-64/F1, `_workspace/RQ-64/03_evaluator_report.md`) — `fire()`
+ * 시그니처 확장**: 평가가 "클라이언트가 `rttMs`를 전혀 보내지 않는다"는
+ * blocker를 지적했다 — 유일한 발사 송신 경로(`PlayerControls.tsx` →
+ * `gatedActions.fire`)가 방향 3필드만 보냈기 때문이다. `fire(direction:
+ * AimDirection): void`를 `fire(direction: AimDirection, rttMs: number):
+ * void`로 확장하고, `connection.room.send('fire', { ...direction, rttMs
+ * })`로 병합해 보낸다 — 아래 각 `it()`의 `gated.fire(...)` 호출과
+ * `send` 단언을 이 새 시그니처에 맞춰 갱신했다(기존 단언의 검증 대상 —
+ * "포커스 시 차단"·"비포커스 시 원본 그대로 전달"·"choke point 단일화"
+ * — 는 그대로 유지하며, 페이로드에 `rttMs` 필드가 추가된 형태만 반영했다.
+ * 단언을 약화한 곳은 없다 — `not.toHaveBeenCalled()`·`toHaveBeenCalledTimes`
+ * 류의 호출 여부/횟수 단언은 페이로드 shape과 무관해 그대로다).
  */
 function createConnectionStub(): { connection: ChatGatedConnection; send: ReturnType<typeof vi.fn> } {
   const send = vi.fn()
@@ -105,6 +118,12 @@ function createConnectionStub(): { connection: ChatGatedConnection; send: Return
 
 const RAW_INPUT: MoveInput = { dirX: 1, dirZ: -1, mode: 'crouch', jump: true }
 const RAW_DIRECTION: AimDirection = { dirX: 0.6, dirY: 0, dirZ: 0.8 }
+/** RQ-64/F1(`_workspace/RQ-64/03_evaluator_report.md`) — `fire()`가 RTT를
+ * 함께 실어 보내도록 시그니처가 확장됐다(`fire(direction, rttMs)`). 이
+ * 값 자체(RTT 추정)는 `@client/net/rttEstimator`의 책임이고, 이 파일은
+ * 그 결과값을 그대로 전달하기만 하는지만 검사한다 — 임의의 리터럴로
+ * 충분하다(가터가 값을 변형하지 않는지가 관심사). */
+const RAW_RTT_MS = 42
 
 describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 자체)', () => {
   it('채팅 포커스 중이면 sendMoveInput이 게이트된(무입력) 값으로 스텁에 전달된다', () => {
@@ -124,20 +143,20 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     const { connection, send } = createConnectionStub()
     const gated = createChatGatedActions(() => true, connection)
 
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
 
     expect(send).not.toHaveBeenCalled()
   })
 
-  it('양성 대조군 — 채팅 포커스가 아니면 sendMoveInput·fire 둘 다 원본 인자 그대로 스텁에 전달된다', () => {
+  it('양성 대조군 — 채팅 포커스가 아니면 sendMoveInput·fire 둘 다 원본 인자 그대로 스텁에 전달된다(RQ-64/F1: rttMs가 payload에 함께 실린다)', () => {
     const { connection, send } = createConnectionStub()
     const gated = createChatGatedActions(() => false, connection)
 
     gated.sendMoveInput(RAW_INPUT)
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
 
     expect(connection.sendMoveInput).toHaveBeenCalledWith(RAW_INPUT)
-    expect(send).toHaveBeenCalledWith('fire', RAW_DIRECTION)
+    expect(send).toHaveBeenCalledWith('fire', { ...RAW_DIRECTION, rttMs: RAW_RTT_MS })
   })
 
   it('포커스 상태는 생성 시점이 아니라 호출 시점마다 평가된다 — 토글이 다음 호출에 즉시 반영된다', () => {
@@ -150,13 +169,13 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     const gated = createChatGatedActions(() => focused, connection)
 
     gated.sendMoveInput(RAW_INPUT)
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
     expect(connection.sendMoveInput).toHaveBeenNthCalledWith(1, RAW_INPUT)
-    expect(send).toHaveBeenCalledWith('fire', RAW_DIRECTION)
+    expect(send).toHaveBeenCalledWith('fire', { ...RAW_DIRECTION, rttMs: RAW_RTT_MS })
 
     focused = true
     gated.sendMoveInput(RAW_INPUT)
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
     const secondSent = (connection.sendMoveInput as ReturnType<typeof vi.fn>).mock.calls[1]![0] as MoveInput
     expect(secondSent.dirX).toBe(0)
     expect(secondSent.dirZ).toBe(0)
@@ -164,7 +183,7 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     expect(send).toHaveBeenCalledTimes(1) // 두 번째 fire()는 게이트돼 추가 호출 없음
 
     focused = false
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
     expect(send).toHaveBeenCalledTimes(2) // 다시 풀리면 즉시 통과
   })
 
@@ -173,10 +192,19 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     const gated = createChatGatedActions(() => true, connection)
 
     gated.sendMoveInput(RAW_INPUT)
-    gated.fire(RAW_DIRECTION)
+    gated.fire(RAW_DIRECTION, RAW_RTT_MS)
 
     const sent = (connection.sendMoveInput as ReturnType<typeof vi.fn>).mock.calls[0]![0] as MoveInput
     expect(sent).not.toEqual(RAW_INPUT) // 이동도 게이트됨
     expect(send).not.toHaveBeenCalled() // 사격도 게이트됨
+  })
+
+  it('RQ-64/F1 회귀 가드 — rttMs 값 자체가 그대로 전달된다(가터가 값을 변형·고정하지 않는다)', () => {
+    const { connection, send } = createConnectionStub()
+    const gated = createChatGatedActions(() => false, connection)
+
+    gated.fire(RAW_DIRECTION, 137)
+
+    expect(send).toHaveBeenCalledWith('fire', { ...RAW_DIRECTION, rttMs: 137 })
   })
 })

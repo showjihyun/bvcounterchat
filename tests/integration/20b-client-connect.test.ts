@@ -4,6 +4,7 @@ import type { StoreApi } from 'zustand/vanilla'
 import { buildServer } from '@server/index'
 import { createGameStore, type GameStoreState } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
+import { NET } from '@shared/constants'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — netcode 레이어
@@ -49,6 +50,19 @@ import { connectToGame } from '@client/net/connection'
  *     nickname: string,
  *     store: StoreApi<GameStoreState>,
  *   ): Promise<GameConnection>
+ *
+ * **REV(RQ-64/F1, `_workspace/RQ-64/03_evaluator_report.md`) — `getRttMs()`
+ * 추가**: 평가 blocker(클라이언트가 `rttMs`를 전혀 보내지 않아 RQ-64 랙보상이
+ * 제품에서 발화하지 않음) 대응 — `GameConnection`에 `getRttMs(): number`가
+ * 추가된다. 내부적으로 `sendMoveInput`이 `predictor.applyInput`이 반환하는
+ * `seq`를 `@client/net/rttEstimator`의 `RttEstimator.recordSend(seq,
+ * now())`에 기록하고, `handleStateChange`가 `readSelfAuthoritativeState`로
+ * 확인한 `lastProcessedInputSeq`를 `RttEstimator.onAck(...)`에 전달한다
+ * (그린필드 계약은 `tests/unit/rq-64-rtt-estimator.test.ts` 상단 참고). 이
+ * 파일 맨 끝의 새 `describe`가 이 왕복이 실 WebSocket으로 실제로 표본을
+ * 만드는지 검증한다 — `rq-64-rtt-estimator.test.ts`(순수 로직)와의 A/B
+ * 레벨 분리: 그 파일이 "표본·평활 계산이 정확한가", 이 파일이 "그 계산이
+ * 실 연결에 배선됐는가".
  *
  * 룸 이름은 기존 통합 테스트들과 동일하게 `'game'` 하나로 고정된다고
  * 가정한다(이 파일 안에 상수로 노출하지 않는다 — connectToGame 내부
@@ -498,5 +512,108 @@ describe("20b/RQ-40 M1: connectToGame이 'chat-history' 이력 복원을 store.c
       ])
     },
     25_000,
+  )
+})
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** `connection.getRttMs()`는 store가 아니라 net 모듈이 직접 들고 있는
+ * 동기 getter다(`readSelfAuthoritativeState`처럼 room.state를 즉시
+ * 읽는 값과 동일한 위상 — store 구독이 아니라 짧은 간격 폴링으로
+ * 기다린다). 단일 틱(≈33ms)을 노리는 폴링이 아니라 "여러 왕복이 누적돼
+ * 0에서 양수로 바뀌는" 훨씬 넓은 창을 노리므로(`rq-18` REV3 "정확히 그
+ * 틱을 잡아야 하는" 폴링과는 성격이 다르다) 지터에 안전하다. */
+function waitForRttCondition(
+  connection: Connection,
+  predicate: (rttMs: number) => boolean,
+  timeoutMs: number,
+  label: string,
+): Promise<number> {
+  return withTimeout(
+    new Promise<number>((resolve) => {
+      const tryResolve = (): boolean => {
+        const rtt = connection.getRttMs()
+        if (predicate(rtt)) {
+          resolve(rtt)
+          return true
+        }
+        return false
+      }
+      if (tryResolve()) return
+      const interval = setInterval(() => {
+        if (tryResolve()) clearInterval(interval)
+      }, 15)
+    }),
+    timeoutMs,
+    label,
+  )
+}
+
+/**
+ * RQ-64/F1(`_workspace/RQ-64/03_evaluator_report.md`) — 경계면 교차 검증.
+ * 서버(`GameRoom.handleFire`)가 `rttMs`를 신뢰하지 않고 절단하는 로직은
+ * `rq-64-lag-compensation-bound.test.ts`가 이미 고정했고, 그 값을 계산하는
+ * 순수 로직은 `rq-64-rtt-estimator.test.ts`가 고정한다. 이 테스트는 그
+ * 둘 사이 — **"클라이언트가 실 네트워크 왕복으로 실제로 rttMs를 만들어
+ * 내는가"**를 확인한다. 평가가 실증했듯 이 배선이 없으면 RQ-64는 제품에서
+ * 전혀 발화하지 않는다(원장 22g의 RQ-43 선례와 동일한 결함 계열).
+ *
+ * 실 이동 입력을 `sendMoveInput`(client-side seq 부여 경로, `room.send`
+ * 직접 호출이 아니다 — 그러면 seq가 실리지 않아 RTT를 측정할 경로 자체가
+ * 없다)로 반복 전송해 서버 확인(`lastProcessedInputSeq`) 왕복을 여러 번
+ * 만든 뒤, `connection.getRttMs()`가 0(초기값)에서 양수로 바뀌는지 확인한다.
+ */
+describe('20b/RQ-64/F1: connection.getRttMs()가 실 move↔seq 왕복(실 WebSocket)으로 측정된다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    '반복된 이동 입력·서버 확인 왕복 후 connection.getRttMs()가 0에서 양수로 바뀐다',
+    async () => {
+      const store = createGameStore()
+      const connection: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'pinger', store),
+        CONNECT_TIMEOUT_MS,
+        "connectToGame(nickname: 'pinger')",
+      )
+      await waitForSelfNickname(store, connection.sessionId)
+
+      // 공허화 방지 — 배선 전이라면 이 값이 처음부터 계속 0이어야 한다는
+      // 것 자체를 먼저 확인한다(아래 "양수로 바뀐다" 단언이 우연히 항상
+      // 참인 상수 때문이 아님을 대조).
+      expect(connection.getRttMs()).toBe(0)
+
+      // 실 30Hz 전송 주기(NET.TICK_MS)로 여러 차례 이동 입력을 보내
+      // seq↔lastProcessedInputSeq 왕복을 다수 발생시킨다.
+      const SEND_COUNT = 20
+      for (let i = 0; i < SEND_COUNT; i += 1) {
+        connection.sendMoveInput({ dirX: 1, dirZ: 0, mode: 'run', jump: false })
+        await sleep(NET.TICK_MS)
+      }
+
+      const rtt = await waitForRttCondition(
+        connection,
+        (value) => value > 0,
+        STORE_TIMEOUT_MS,
+        'connection.getRttMs()가 실 왕복으로 양수가 되길 대기 — 계속 0이면 클라이언트가 rttMs를 측정·전송하지 않는다는 뜻이다(평가 F1)',
+      )
+      // 로컬 루프백 + Colyseus 패치 배치(기본 20Hz) 지연을 감안해도 이
+      // 자릿수를 넘으면 명백히 잘못된 값이다(터무니없이 큰 값만 배제하는
+      // 관대한 상한 — 정밀한 상한 자체는 `rq-64-rtt-estimator.test.ts`의
+      // 몫이 아니다, 그 파일은 순수 계산만 다룬다).
+      expect(rtt).toBeLessThan(2_000)
+
+      await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
+    },
+    20_000,
   )
 })

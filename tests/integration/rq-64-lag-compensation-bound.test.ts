@@ -134,6 +134,25 @@ const HISTORY_ACCUMULATE_MOVE_MS = 2_000
  * 월드 밖으로 나가지 않는다. */
 const AIM_DISTANCE_M = 10
 
+/** F2(평가 blocker, `_workspace/RQ-64/03_evaluator_report.md`) 재현 —
+ * 재사격 사이 간격(rate-limit 150ms 초과, `rq-12`의 `RATE_LIMIT_CLEAR_MS`와
+ * 동일 근거·동일 값). */
+const RATE_LIMIT_CLEAR_MS = 400
+/** 리스폰(`PLAYER.RESPAWN_MS`=3000ms) 관측 상한 — `rq-15-respawn-timer
+ * .test.ts`/`rq-18-fall-damage.test.ts`와 동일한 여유(8000ms) 원칙. */
+const RESPAWN_OBSERVE_TIMEOUT_MS = 8_000
+/** 리스폰 직후 자기 사격(스폰 보호 해제) 확인 상한 — 서버 화이트박스를
+ * 타이트하게(SERVER_POLL_INTERVAL_MS) 폴링하므로 짧아도 충분하다. F2의
+ * "오염 창"(평가 §"도달 가능성" — 약 5~6틱 ≈167~200ms)을 최대한 보존하려면
+ * 이 확인에 시간을 낭비하지 않아야 한다 — `SELF_FIRE_SETTLE_MS`(300ms)
+ * 고정 대기 대신 실제 반영을 확인하는 즉시 다음 단계로 넘어간다. */
+const RESPAWN_PROTECTION_CONFIRM_TIMEOUT_MS = 2_000
+/** F2 재현 사격의 명중 관측 상한 — 버그가 있으면(사망 이전 위치가 선택돼
+ * 기하학적으로 빗나감) 이 시간 안에 hp가 절대 줄지 않으므로 결정론적으로
+ * 타임아웃된다(`rq-18` REV3 "안정 신호" 원칙과 동일 — 폴링 지터가 아니라
+ * 명중 여부 자체가 신호다). */
+const F2_HIT_OBSERVE_TIMEOUT_MS = 3_000
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -254,10 +273,10 @@ async function travelAndSettle(mover: Room, dir: { dirX: number; dirZ: number })
 
 /** 화이트박스 접근 대상 계약 — `tests/unit/sim-rewind.test.ts` 상단
  * "가정(coder에게)" 절 참고. `positionHistory`는 아직 존재하지 않는 신규
- * private map이다(Red 전제). `moveStates`는 RQ-20 때부터 있던 기존
- * private map을 읽기 전용으로 노출할 뿐이다(`rq-18-fall-damage.test.ts`
- * `FallDamageTestSeam`과 동일한 결합 방식). `state`는 `Room.state`(public)
- * 그대로다. */
+ * private map이다(Red 전제). `moveStates`·`firedSinceSpawn`은 RQ-20·RQ-16
+ * 때부터 있던 기존 private map을 읽기 전용으로 노출할 뿐이다
+ * (`rq-18-fall-damage.test.ts` `FallDamageTestSeam`과 동일한 결합 방식).
+ * `state`는 `Room.state`(public) 그대로다. */
 interface RewindTestSeam {
   state: {
     tick: number
@@ -265,6 +284,9 @@ interface RewindTestSeam {
   }
   moveStates: Map<string, Foot>
   positionHistory: Map<string, PositionSnapshot[]>
+  /** RQ-16 — 리스폰 직후 자기 사격으로 새 스폰 보호를 해제했는지 확인하는
+   * 용도(F2 재현, 아래 `waitForServerFiredSinceSpawn` 참고). */
+  firedSinceSpawn: Map<string, boolean>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`·
@@ -359,6 +381,34 @@ function waitForHistoryCleanup(seam: RewindTestSeam, sessionId: string, timeoutM
     const timeout = setTimeout(() => {
       clearInterval(interval)
       reject(new Error(`[timeout ${timeoutMs}ms] RQ-64: onLeave 이후 positionHistory 정리 확인 대기`))
+    }, timeoutMs)
+  })
+}
+
+/** F2 재현 전용 — 리스폰 직후 자기 사격으로 새 스폰 보호(RQ-16)가 실제로
+ * 해제됐는지 서버 화이트박스로 타이트하게 폴링한다. `SELF_FIRE_SETTLE_MS`
+ * (300ms) 고정 대기 대신 이 확인을 쓰는 이유: F2의 오염 창(약 167~200ms)
+ * 을 확인 대기 자체가 다 써버리면 재현이 성립하지 않는다(파일 상단 상수
+ * 주석 참고). */
+function waitForServerFiredSinceSpawn(seam: RewindTestSeam, sessionId: string, timeoutMs: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const tryResolve = (): boolean => {
+      if (seam.firedSinceSpawn.get(sessionId) === true) {
+        resolve()
+        return true
+      }
+      return false
+    }
+    if (tryResolve()) return
+    const interval = setInterval(() => {
+      if (tryResolve()) {
+        clearInterval(interval)
+        clearTimeout(timeout)
+      }
+    }, SERVER_POLL_INTERVAL_MS)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`[timeout ${timeoutMs}ms] RQ-64/F2: 리스폰 직후 자기 사격의 스폰 보호 해제(firedSinceSpawn) 확인 대기`))
     }, timeoutMs)
   })
 }
@@ -923,5 +973,120 @@ describe('RQ-64: 세션 퇴장 시 위치 이력이 정리된다(누수 방지, 
       await leaveRoom(roomA)
     },
     15_000,
+  )
+})
+
+/**
+ * RQ-64/F2(평가 blocker, `_workspace/RQ-64/03_evaluator_report.md` F2) —
+ * 리스폰 후에도 사망 전(이전 생)의 위치 이력이 `positionHistory`에 남아
+ * 되감기가 시신 지점을 반환한다. `respawnPlayer`(`GameRoom.ts`)가
+ * `diedAtTick`·`pendingInputs`는 정리하면서 `positionHistory`는 정리하지
+ * 않기 때문 — `onLeave`가 이미 하는 정리(`positionHistory.delete`)와
+ * 같은 종류의 누락이다.
+ *
+ * **재현 원리**: B는 이 시나리오 내내 이동하지 않는다(사망 전 위치 =
+ * 항상 자신의 최초 스폰 지점) — 그래서 사망 지점을 별도로 관측할 필요
+ * 없이 시작 시점에 한 번 읽어 두면 충분하다. 사망→리스폰까지 서버가
+ * 채우는 `positionHistory` 항목은 전부 사망 전(=이 고정 지점) 값으로
+ * 얼어붙어 있다가(`stepPlayerMovement`의 `canAct` 조기 반환), 리스폰
+ * 틱부터만 새 값(리스폰 지점)이 쌓인다. 리스폰 직후(새 항목이 몇 개
+ * 쌓이기 전) 6틱 되감기를 요구하면, 그 목표 틱은 아직 사망 전 구간에
+ * 있어 **버그가 있으면** 사망 지점 스냅샷이 선택된다.
+ *
+ * **정확한 틱을 잡으려 하지 않는다**(설계 원칙은 `rq-64-lag-
+ * compensation-bound.test.ts` 상단 "절단됐다를 관측 가능하게 만드는
+ * 방법" 절과 동일 정신) — 리스폰을 서버 화이트박스로 타이트하게
+ * (`SERVER_POLL_INTERVAL_MS`=15ms) 폴링해 감지 직후 곧바로 사격하고,
+ * 스폰 보호 해제도 고정 300ms 대기 대신 실제 반영을 타이트하게 확인한다
+ * (`waitForServerFiredSinceSpawn`) — 오염 창(약 5~6틱 ≈167~200ms, 평가
+ * §"도달 가능성")을 확인 대기가 다 써버리지 않게 한다.
+ *
+ * **양성 대조군**: 리스폰 지점이 사망 지점과 실제로 다르다는 것을 먼저
+ * 단언한다(공허화 방지 — 우연히 같은 스폰 지점이면 이 테스트는 아무것도
+ * 증명하지 못한다). 스폰 지점 15개 순환 로테이션(`@shared/sim/spawn`)에서
+ * 이 시나리오까지 이뤄지는 스폰 할당 횟수(A 입장·B 입장·B 리스폰, 3회)로는
+ * 커서가 한 바퀴(15칸) 돌아 우연히 같은 지점에 도달할 수 없다.
+ */
+describe('RQ-64/F2: 리스폰 직후 되감기 사격은 사망 이전 위치가 아니라 현재(리스폰) 위치를 기준으로 판정된다', () => {
+  let server: RunningServer
+
+  beforeEach(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterEach(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-64/F2 재현: B를 사망시키고 리스폰 직후 6틱 되감기(rttMs=300)로 리스폰 지점을 조준하면 명중한다 — 사망 이전 이력이 남아 있으면 빗나가 타임아웃된다',
+    async () => {
+      const roomA = await joinGame(newClient(server)) // 사수
+      const roomB = await joinGame(newClient(server)) // 사망 → 리스폰할 대상 — 이동하지 않는다
+
+      await clearSpawnProtection(roomB) // 최초 입장 스폰 보호(RQ-16) 해제
+
+      const seam = getServerRoom(roomA)
+      const shooterFoot = seam.moveStates.get(roomA.sessionId)
+      const deathFoot = seam.moveStates.get(roomB.sessionId) // B는 이동하지 않으므로 사망 시점까지 이 위치 그대로다
+      if (!shooterFoot || !deathFoot) throw new Error('RQ-64/F2: moveStates 스냅샷을 찾지 못했다')
+
+      const killAim = aimAt(shooterFoot, deathFoot, bodyCenterM())
+
+      // B를 실제로 처치한다(WEAPON.DAMAGE_BODY=25 × 4발 = 100 = PLAYER.MAX_HP).
+      const shotsToKill = Math.ceil(PLAYER.MAX_HP / WEAPON.DAMAGE_BODY)
+      for (let shot = 0; shot < shotsToKill; shot += 1) {
+        roomA.send('fire', { dirX: killAim.dirX, dirY: killAim.dirY, dirZ: killAim.dirZ })
+        if (shot < shotsToKill - 1) await sleep(RATE_LIMIT_CLEAR_MS) // 다음 발이 150ms rate-limit에 걸리지 않도록
+      }
+      await waitForServerHp(seam, roomB.sessionId, (hp) => hp === 0, 'RQ-64/F2: B 사망(hp=0) 대기', HP_TIMEOUT_MS)
+
+      // 리스폰(최대 3000ms)까지 서버 화이트박스로 타이트하게 폴링한다 —
+      // 클라 패치(20Hz)보다 빠르게 반응해 리스폰 직후의 짧은 오염 창을
+      // 놓치지 않는다.
+      await waitForServerHp(
+        seam,
+        roomB.sessionId,
+        (hp) => hp === PLAYER.MAX_HP,
+        'RQ-64/F2: 리스폰(HP 복귀) 대기',
+        RESPAWN_OBSERVE_TIMEOUT_MS,
+      )
+
+      const respawnFoot = seam.moveStates.get(roomB.sessionId)
+      if (!respawnFoot) throw new Error('RQ-64/F2: 리스폰 직후 moveStates 스냅샷을 찾지 못했다')
+
+      // 양성 대조군 — 리스폰 지점이 사망 지점과 실제로 다르다(공허화 방지,
+      // 파일 상단 docblock 참고). 스폰 지점 간 최소 간격(15개 원형 배치,
+      // `@shared/sim/spawn`)보다 한참 작은 여유(히트박스 반지름의 10배)로
+      // "명백히 다른 지점"만 확인한다.
+      const respawnDeathDistance = Math.hypot(respawnFoot.x - deathFoot.x, respawnFoot.z - deathFoot.z)
+      expect(respawnDeathDistance).toBeGreaterThan(DEFAULT_HITBOX.bodyRadiusM * 10)
+
+      // 리스폰 직후 B 자신이 사격해 새 스폰 보호를 즉시 해제한다(RQ-16) —
+      // 평가가 지목한 실제 도달 경로("리스폰하자마자 쏜다") 그대로다.
+      roomB.send('fire', UP_MISS_AIM)
+      await waitForServerFiredSinceSpawn(seam, roomB.sessionId, RESPAWN_PROTECTION_CONFIRM_TIMEOUT_MS)
+
+      const baselineHp = seam.state.players.get(roomB.sessionId)?.hp
+      expect(baselineHp).toBe(PLAYER.MAX_HP)
+
+      // 리스폰 지점을 정확히 조준해 rttMs=300(6틱 되감기 요구)으로
+      // 사격한다 — 사망 이전 이력이 아직 정리되지 않았다면(F2) 사망
+      // 지점(deathFoot)이 선택돼 기하학적으로 빗나간다.
+      const respawnAim = aimAt(shooterFoot, respawnFoot, bodyCenterM())
+      roomA.send('fire', { dirX: respawnAim.dirX, dirY: respawnAim.dirY, dirZ: respawnAim.dirZ, rttMs: 300 })
+
+      const afterShot = await waitForServerHp(
+        seam,
+        roomB.sessionId,
+        (hp) => hp < PLAYER.MAX_HP,
+        'RQ-64/F2: 리스폰 직후 되감기 사격이 현재(리스폰) 위치 기준으로 판정되는지 대기 — 타임아웃되면 positionHistory에 사망 이전 스냅샷이 남아 있다는 뜻이다',
+        F2_HIT_OBSERVE_TIMEOUT_MS,
+      )
+      expect(afterShot).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    RESPAWN_OBSERVE_TIMEOUT_MS + 15_000,
   )
 })
