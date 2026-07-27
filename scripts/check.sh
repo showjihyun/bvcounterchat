@@ -7,25 +7,6 @@
 # 파일 단위로 쪼갤 수 없다 (ADR-0008, tsconfig.json 주석 참조).
 set -euo pipefail
 
-# --- 런타임 가드 (원장 28a) -------------------------------------------------
-# npm의 `engines`는 경고일 뿐 강제가 아니고, 이 라운드가 세 번 겪은 통증은
-# 설치 시점이 아니라 **테스트 시점**에 났다(Node v24에서 통합 워커가 네이티브
-# abort로 죽는다 — 0xC0000409). 그래서 검증 진입점인 여기서 직접 막는다.
-# `.nvmrc`가 권장 버전을, `package.json`의 engines가 허용 범위를 정의한다.
-node_major=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)
-if [ "$node_major" -ge 24 ]; then
-  echo "" >&2
-  echo "  ✗ Node v$(node -v | sed 's/^v//') 는 이 저장소의 검증에 쓸 수 없다." >&2
-  echo "" >&2
-  echo "    통합 테스트 워커가 네이티브 abort(0xC0000409)로 죽는다 — 테스트" >&2
-  echo "    로직이 아니라 런타임 문제이며, 실 통합 스위트 8런 중 2런이 실패한다" >&2
-  echo "    (v22.23.1은 같은 머신에서 8/8 통과). 근거: harness/progress.md 28a." >&2
-  echo "" >&2
-  echo "    조치: .nvmrc 버전을 쓰라 — nvm/fnm 사용 시 \`nvm use\` 또는 \`fnm use\`." >&2
-  echo "" >&2
-  exit 1
-fi
-# ---------------------------------------------------------------------------
 
 if [ "${1:-}" = "--fast" ]; then
   # 클론 직후 등 node_modules 부재 시 조용히 통과 — 환경 문제는 전체 검증이 잡는다
@@ -39,6 +20,30 @@ if [ "${1:-}" = "--fast" ]; then
   npx eslint --cache $FILES
   exit 0
 fi
+
+# --- 런타임 가드 (원장 28a) -------------------------------------------------
+# npm의 `engines`는 경고일 뿐 강제가 아니고, 이 라운드가 세 번 겪은 통증은
+# 설치 시점이 아니라 **테스트 시점**에 났다(Node v24에서 통합 워커가 네이티브
+# abort로 죽는다 — 0xC0000409). 그래서 검증 진입점인 여기서 직접 막는다.
+# `.nvmrc`가 권장 버전을, `package.json`의 engines가 허용 범위를 정의한다.
+#
+# **위치**: `--fast` 분기 **뒤**다. `--fast`는 파일 저장마다 hook에서 도는
+# 5초 예산 경로이고 통합 테스트를 돌리지 않으므로 이 위험에 노출되지 않는다
+# — 거기서 막으면 편집 흐름만 끊는 과차단이다(독립 평가 판정).
+node_major=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)
+if [ "$node_major" -ge 24 ]; then
+  echo "" >&2
+  echo "  ✗ Node v$(node -v | sed 's/^v//') 는 이 저장소의 검증에 쓸 수 없다." >&2
+  echo "" >&2
+  echo "    통합 테스트 워커가 네이티브 abort(0xC0000409)로 죽는다 — 테스트" >&2
+  echo "    로직이 아니라 런타임 문제이며, 실 통합 스위트 8런 중 2런이 실패한다" >&2
+  echo "    (v22.23.1은 같은 머신에서 여러 라운드 무결). 근거: harness/progress.md 28a." >&2
+  echo "" >&2
+  echo "    조치: .nvmrc 버전을 쓰라 — nvm/fnm 사용 시 \`nvm use\` 또는 \`fnm use\`." >&2
+  echo "" >&2
+  exit 1
+fi
+# ---------------------------------------------------------------------------
 
 # 스펙 동결 게이트를 가장 먼저 — 스펙이 미결이면 나머지 검증은 의미가 없다.
 python .claude/hooks/gate_spec_freeze.py --check
