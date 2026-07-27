@@ -80,6 +80,58 @@ import { AFK_TICKS } from '@shared/sim/afk'
  * 확인한 직후, **같은 세션**에 이번엔 확실히 임계를 넘긴 값을 주입해 실제로
  * 킥되는 것까지 반증한다(`assertInputResetsAfkTimer` 헬퍼).
  *
+ * **F2 수정(평가 보고서 `_workspace/RQ-43/04_evaluator_report.md` §5-2,
+ * major — `_workspace/RQ-43/05_test-writer_f1f2.md` 대응)**: 위 설계 당시
+ * "생존 확인"을 `expect(isPlayer(room, sessionId)).toBe(true)`로 **자기
+ * 자신의** 시야로 읽었으나, 이는 원천적으로 무효였다 — 서버가 그 세션을
+ * 실제로 끊으면 자기 제거 패치는 그 소켓으로 도달하지 못해 자기 시야가
+ * 영구히 낡은 채 `true`에 머문다. 평가자 실측: 킥 1800ms 후에도 피해자
+ * 자기 시야는 `isPlayer=true`인 반면, 제3자 시야는 `isPlayer=false`·서버
+ * `players`도 실제로 줄어 있었다 — 즉 **리셋이 실패해 실제로 킥된 뒤에도
+ * 이 단언은 통과했다**(당시 M3 4종이 검출된 것은 이 단언이 아니라 양성
+ * 대조군의 타임아웃이라는 부수효과였다). **원칙**: 자기 자신의 소속을
+ * 자기 시야로 읽는 단언은 연결이 끊길 수 있는 세션에 대해서는 원천적으로
+ * 무효다. 수정: `assertInputResetsAfkTimer`가 방관자(bystander) 연결을
+ * 추가로 받아 그 시야로 생존을 확인한다 — GA-13 케이스가 이미 쓰는
+ * `bystanderSeesFinalStatePromise` 패턴과 동일하다.
+ *
+ * ## 설계 쟁점 4 — F1 회귀 가드: AFK 킥의 멱등성
+ *
+ * 평가(`04_evaluator_report.md` §7, FAIL 사유)가 실증한 결함: `kickAfkPlayer`는
+ * `promoteWaitingSpectator()`(정원 검사 없음) 뒤 `client.leave()`를 부르는데,
+ * 세션이 `state.players`에서 실제로 빠지는 시점은 **소켓 close 핸드셰이크가
+ * 끝난 뒤의 `onLeave`**다. close가 1틱(33ms)보다 오래 걸리면 다음 틱이 같은
+ * 세션을 다시 AFK로 판정해 승격이 반복된다 — 로컬호스트에서는 close가 보통
+ * 1틱 안에 끝나 이 결함이 가려지지만(평가자의 "대조군" 실측), RTT가 있는 모든
+ * 실 네트워크·특히 AFK의 대표적 원인인 무응답 연결에서는 최악 경로가 곧 흔한
+ * 경로다(평가자 실측: RTT 60ms→2명 승격, 무응답 연결이면 `ws`의
+ * `closeTimeout` 30초까지 최대 900틱 동안 매 틱 승격).
+ *
+ * **재현 기법**: 실 소켓 close 지연은 재현하기 어렵고, 억지로 재현해도
+ * 그 자체가 실 타이머 의존이라 비결정론적이다(ADR-0008 위반 소지). 그래서
+ * "onLeave가 아직 처리되기 전에 같은 세션이 다시 AFK로 판정됐다"는 **결과**를,
+ * 화이트박스로 `kickAfkPlayer`(private 메서드 — `lastInputAtTick`과 동일한
+ * `as unknown as` 캐스팅 결합, 신규 계약 아님)를 **연속 2회** 직접 호출해
+ * 결정론적으로 만든다(평가 보고서 §7 "회귀 테스트 제안" ②를 그대로 따른다).
+ * 이는 실제 결함의 그럴듯한 발현이기도 하다 — `startTickLoop`의 캐치업 for문이
+ * 완전히 동기라 여러 틱이 한 콜백 안에서 몰아 처리될 수 있고(`rq-18-fall-
+ * damage.test.ts` REV3가 실측한 것과 동일한 메커니즘), 그 경우 두 번째(또는
+ * 그 이상의) `kickAfkPlayer` 호출이 `onLeave`(비동기 close 완료 후에만
+ * 발화)가 개입할 여지조차 없이 같은 동기 구간 안에서 연달아 일어난다.
+ *
+ * **두 시나리오(팀리드가 명시한 두 불변식을 각각 고정)**: (a) 정원
+ * 시나리오 — 플레이어 정원(10)을 채운 상태에서 재현해 RQ-03 정원 불변식
+ * (`players.size <= CAPACITY.PLAYERS`)이 실제로 깨지는 것을 직접 보인다
+ * (평가자의 실측 시나리오와 동일). (b) 정원 무관 시나리오 — 정원을 채워
+ * 관전자를 확보한 뒤 필러 플레이어 대부분을 자발적으로 퇴장시켜(승격을
+ * 유발하지 않는다 — 스코프 밖, §"스코프 밖" 참고) 인위적으로 "정원보다
+ * 훨씬 적은" 상태를 만들고 나서 재현한다 — "승격은 최대 1명"이 정원
+ * 클램프의 **부수효과**가 아니라 `kickAfkPlayer` 자체의 독립적인 멱등성
+ * 불변식임을 고정한다. 정원 가드만 넣고 킥 자체를 멱등하게 만들지 않는
+ * 부분 수정(평가 보고서 §7 "수정 방법"이 "어느 하나만으로는 부족하다"고
+ * 명시적으로 경고한 그 절반)은 정원 미만 상태에서는 여전히 이중 승격을
+ * 허용한 채 (a)만 통과시킬 수 있다 — (b)가 그 틈을 막는다.
+ *
  * ## 대기 술어 컨벤션(팀리드 지시 — 반드시 준수, 근거는 각 호출부에 명시)
  *
  * ① 대기 조건은 단조·안정 신호만 쓴다 — 이 파일의 모든 `waitForCondition`/
@@ -146,6 +198,16 @@ const SURVIVE_AFTER_RESET_MS = 1_800
  * AFK_TICKS만큼만 빼면 경계 정밀도에 좌우될 수 있으므로(그 정밀도는
  * `sim-afk.test.ts`의 책임) 넉넉히 더 뺀다. */
 const OVERDUE_SAFETY_MARGIN_TICKS = 1_000
+
+/** F1 회귀 가드(a) 정원 시나리오 — 대기 관전자 수. 이중 승격(결함)이면
+ * 2명이 소진되므로 그보다 크게 잡아 "소진 후에도 여유가 있었다"를 함께
+ * 보인다(설계 쟁점 4). */
+const F1_CAPACITY_SPECTATOR_COUNT = 3
+/** F1 회귀 가드(b) 정원 무관 시나리오 — 필러 퇴장 후 남는 플레이어 수
+ * (AFK 대상 + 방관자 둘뿐). `CAPACITY.PLAYERS`(10)보다 훨씬 작다. */
+const F1_UNDER_CAPACITY_REMAINING_PLAYERS = 2
+/** F1 회귀 가드(b) — 같은 시나리오의 대기 관전자 수. */
+const F1_UNDER_CAPACITY_SPECTATOR_COUNT = 3
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -221,6 +283,12 @@ function playersCount(room: Room): number {
   return state?.players?.size ?? -1
 }
 
+/** F1 회귀 가드 전용(설계 쟁점 4) — `playersCount`와 대칭. */
+function spectatorsCount(room: Room): number {
+  const state = room.state as StateLike | null
+  return state?.spectators?.size ?? -1
+}
+
 /** RQ-18의 `waitForPlayerCondition`과 동일한 정신을 일반화한 버전 — 특정
  * 플레이어 스냅샷이 아니라 임의의 상태 술어를 기다린다(위 "대기 술어
  * 컨벤션" ①②를 만족하도록 호출부가 구성한다). */
@@ -290,10 +358,13 @@ function waitForLeave(room: Room, timeoutMs: number, label: string): Promise<num
 /** 화이트박스 접근 대상 계약 — 파일 상단 "설계 쟁점 2" 참고.
  * `lastInputAtTick`은 아직 존재하지 않는 신규 필드다(Red 전제, `sim-afk
  * .test.ts` 상단 "가정" 절이 정본). `state`는 신규 계약이 아니다 —
- * `@colyseus/core`의 `Room.state`가 이미 public이다. */
+ * `@colyseus/core`의 `Room.state`가 이미 public이다. `kickAfkPlayer`도
+ * 신규 계약이 아니다 — F1 회귀 가드(설계 쟁점 4)를 위한 접근이며,
+ * coder 구현이 이미 이 이름으로 존재한다(`GameRoom.ts` 확인 완료). */
 interface AfkTestSeam {
   lastInputAtTick: Map<string, number>
   state: { tick: number }
+  kickAfkPlayer(sessionId: string): void
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 이미 확립한
@@ -330,14 +401,22 @@ function forceAfkRemaining(room: Room, sessionId: string, remainingTicks: number
  * 뒤에도 여전히 접속 중임을 확인한다. 그 직후 양성 대조군(설계 쟁점 3)으로
  * 같은 세션에 확실히 임계를 넘긴 값을 주입해 실제로 킥되는 것까지
  * 반증한다 — 4종(move/fire/chat/reload) 공통 절차.
+ *
+ * **F2 수정(설계 쟁점 3 "F2 수정" 절 참고)**: 생존 확인은 `room` 자신이
+ * 아니라 `bystander`(독립 연결)의 시야로 한다 — `room`(킥 대상이 될 수
+ * 있는 세션) 자신의 시야는 실제로 킥되면 자기 제거 패치를 받지 못해
+ * 영구히 낡은 채 남으므로, 그 시야로 "생존"을 읽는 단언은 연결이 끊길 수
+ * 있는 세션에 대해서는 원천적으로 무효하다. 호출자는 `bystander`가
+ * `room`의 최초 상태를 이미 관측했다는 전제(`waitForCondition`으로 확인)
+ * 위에서 이 함수를 호출해야 한다.
  */
-async function assertInputResetsAfkTimer(room: Room, sendInput: () => void): Promise<void> {
+async function assertInputResetsAfkTimer(room: Room, bystander: Room, sendInput: () => void): Promise<void> {
   const sessionId = room.sessionId
 
   forceAfkRemaining(room, sessionId, REMAINING_TICKS_BEFORE_DUE)
   sendInput()
   await sleep(SURVIVE_AFTER_RESET_MS)
-  expect(isPlayer(room, sessionId)).toBe(true)
+  expect(isPlayer(bystander, sessionId)).toBe(true)
 
   // 양성 대조군: 리스너를 먼저 등록한(대기 술어 ②) 다음에만 트리거한다.
   const kicked = waitForLeave(room, KICK_OBSERVE_TIMEOUT_MS, 'RQ-43 양성 대조군: 리셋 없이 재주입하면 실제로 AFK 킥이 발생하는지(onLeave) 대기')
@@ -481,13 +560,18 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
   it(
     "RQ-43: 'move' 입력은 AFK 타이머를 리셋한다",
     async () => {
+      const bystander = await joinGame(newClient(server))
       const room = await joinGame(newClient(server))
       try {
-        await assertInputResetsAfkTimer(room, () => {
+        // F2 수정 — 생존 확인을 bystander 시야로 하므로, 그 시야가 room의
+        // 최초 상태를 이미 관측했는지 먼저 확인한다(`assertInputResetsAfkTimer`
+        // 전제).
+        await waitForCondition(bystander, () => isPlayer(bystander, room.sessionId), '입력 리셋 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await assertInputResetsAfkTimer(room, bystander, () => {
           room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
         })
       } finally {
-        await leaveRoom(room).catch(() => undefined)
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
       }
     },
     15_000,
@@ -496,13 +580,15 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
   it(
     "RQ-43: 'fire' 입력은 AFK 타이머를 리셋한다",
     async () => {
+      const bystander = await joinGame(newClient(server))
       const room = await joinGame(newClient(server))
       try {
-        await assertInputResetsAfkTimer(room, () => {
+        await waitForCondition(bystander, () => isPlayer(bystander, room.sessionId), '입력 리셋 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await assertInputResetsAfkTimer(room, bystander, () => {
           room.send('fire', { dirX: 0, dirY: 1, dirZ: 0 }) // 항상 빗나가는 방향(수직 위) — 명중 여부는 이 테스트의 관심사가 아니다
         })
       } finally {
-        await leaveRoom(room).catch(() => undefined)
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
       }
     },
     15_000,
@@ -511,13 +597,15 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
   it(
     "RQ-43: 'chat' 입력은 AFK 타이머를 리셋한다",
     async () => {
+      const bystander = await joinGame(newClient(server))
       const room = await joinGame(newClient(server))
       try {
-        await assertInputResetsAfkTimer(room, () => {
+        await waitForCondition(bystander, () => isPlayer(bystander, room.sessionId), '입력 리셋 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await assertInputResetsAfkTimer(room, bystander, () => {
           room.send('chat', { text: 'still here' })
         })
       } finally {
-        await leaveRoom(room).catch(() => undefined)
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
       }
     },
     15_000,
@@ -526,15 +614,165 @@ describe('RQ-43 AFK 자동 퇴장 + 관전자 승격', () => {
   it(
     "RQ-43: 'reload' 입력은 AFK 타이머를 리셋한다",
     async () => {
+      const bystander = await joinGame(newClient(server))
       const room = await joinGame(newClient(server))
       try {
-        await assertInputResetsAfkTimer(room, () => {
+        await waitForCondition(bystander, () => isPlayer(bystander, room.sessionId), '입력 리셋 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await assertInputResetsAfkTimer(room, bystander, () => {
           room.send('reload', {})
         })
       } finally {
-        await leaveRoom(room).catch(() => undefined)
+        await Promise.all([leaveRoom(room).catch(() => undefined), leaveRoom(bystander).catch(() => undefined)])
       }
     },
     15_000,
+  )
+
+  // ---------------------------------------------------------------------
+  // F1 회귀 가드(평가 보고서 §7, 설계 쟁점 4) — AFK 킥의 멱등성.
+  // `src/`는 이 세션이 건드리지 않는다(팀리드 지시) — coder가 별도로
+  // 수정한다. 아래 두 케이스는 현재 코드에서 **반드시 Red**여야 한다.
+  // ---------------------------------------------------------------------
+
+  it(
+    'RQ-43 F1 회귀 가드(정원 시나리오): 같은 세션에 AFK 킥이 onLeave 처리 전 다시 판정돼도 정원(CAPACITY.PLAYERS)을 넘지 않고 슬롯당 승격은 최대 1명이다',
+    async () => {
+      const players: Room[] = []
+      for (let i = 0; i < CAPACITY.PLAYERS; i += 1) {
+        players.push(await joinGame(newClient(server)))
+      }
+      const afkTarget = players[0]
+      const bystander = players[1]
+      if (!afkTarget || !bystander) throw new Error('플레이어 정원 채우기 실패 — players가 비어 있다')
+
+      const spectators: Room[] = []
+      for (let i = 0; i < F1_CAPACITY_SPECTATOR_COUNT; i += 1) {
+        spectators.push(await joinGame(newClient(server)))
+      }
+
+      try {
+        const afkTargetId = afkTarget.sessionId
+
+        await waitForCondition(bystander, () => isPlayer(bystander, afkTargetId), 'AFK 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await waitForCondition(
+          bystander,
+          () => spectatorsCount(bystander) === F1_CAPACITY_SPECTATOR_COUNT,
+          '관전자 최초 상태(spectators 전원 반영) 확인',
+          STATE_TIMEOUT_MS,
+        )
+        const initialSpectatorCount = spectatorsCount(bystander)
+
+        const leftPromise = waitForLeave(afkTarget, KICK_OBSERVE_TIMEOUT_MS, 'RQ-43 F1: AFK 대상의 서버측 강제 퇴장(onLeave) 대기')
+
+        // 화이트박스 — 실 소켓 close 타이밍(비결정론)에 기대지 않고, "onLeave가
+        // 아직 처리되기 전에 같은 세션이 다시 AFK로 판정됐다"는 상황을
+        // 결정론적으로 직접 재현한다(설계 쟁점 4). 두 호출 사이에 `await`가
+        // 없으므로 첫 번째 `.leave()`가 촉발한 비동기 close가 개입할 여지가
+        // 없다.
+        const seam = getServerRoom(afkTarget)
+        seam.kickAfkPlayer(afkTargetId)
+        seam.kickAfkPlayer(afkTargetId)
+
+        await leftPromise
+        await waitForCondition(bystander, () => !isPlayer(bystander, afkTargetId), 'RQ-43 F1: AFK 대상 제거 반영 대기', KICK_OBSERVE_TIMEOUT_MS)
+
+        const finalPlayerCount = playersCount(bystander)
+        const finalSpectatorCount = spectatorsCount(bystander)
+
+        // 핵심 불변식(팀리드 지시, 평가 보고서 §7) — 현재 코드에서는 반드시
+        // Red다: 2회 호출이 승격을 2회 유발해 players.size가
+        // CAPACITY.PLAYERS+1이 되고, spectators는 2명 소진된다.
+        expect(finalPlayerCount).toBeLessThanOrEqual(CAPACITY.PLAYERS)
+        expect(initialSpectatorCount - finalSpectatorCount).toBeLessThanOrEqual(1)
+      } finally {
+        await Promise.all([
+          ...players.slice(1).map((room) => leaveRoom(room).catch(() => undefined)),
+          ...spectators.map((room) => leaveRoom(room).catch(() => undefined)),
+        ])
+      }
+    },
+    20_000,
+  )
+
+  it(
+    'RQ-43 F1 회귀 가드(정원 무관): 정원보다 훨씬 적은 인원에서도 같은 세션의 이중 AFK 판정은 승격을 최대 1명으로 제한해야 한다(정원 클램프의 부수효과가 아니라 킥 자체의 멱등성)',
+    async () => {
+      // 관전자는 RQ-03에 따라 플레이어 정원이 찬 상태에서만 생긴다 —
+      // 그래서 먼저 정원(10)을 채워 관전자를 확보한 뒤, 필러 플레이어
+      // 대부분을 자발적으로 퇴장시켜 인위적으로 "정원보다 훨씬 적은" 상태를
+      // 만든다. 자발적 퇴장은 승격을 유발하지 않는다(스코프 밖, 원장 22g —
+      // `promoteWaitingSpectator`는 `kickAfkPlayer`에서만 호출된다) — 그래서
+      // 이 절차로도 관전자 수는 그대로 유지된다.
+      const players: Room[] = []
+      for (let i = 0; i < CAPACITY.PLAYERS; i += 1) {
+        players.push(await joinGame(newClient(server)))
+      }
+      const afkTarget = players[0]
+      const bystander = players[1]
+      if (!afkTarget || !bystander) throw new Error('플레이어 정원 채우기 실패 — players가 비어 있다')
+
+      const spectators: Room[] = []
+      for (let i = 0; i < F1_UNDER_CAPACITY_SPECTATOR_COUNT; i += 1) {
+        spectators.push(await joinGame(newClient(server)))
+      }
+
+      try {
+        const afkTargetId = afkTarget.sessionId
+
+        await waitForCondition(bystander, () => isPlayer(bystander, afkTargetId), 'AFK 대상 최초 상태(players) 확인', STATE_TIMEOUT_MS)
+        await waitForCondition(
+          bystander,
+          () => spectatorsCount(bystander) === F1_UNDER_CAPACITY_SPECTATOR_COUNT,
+          '관전자 최초 상태(spectators 전원 반영) 확인',
+          STATE_TIMEOUT_MS,
+        )
+
+        // 필러(players[2..]) 전원을 자발적으로 퇴장시켜 정원보다 훨씬 적은
+        // 상태를 만든다 — 남는 것은 afkTarget·bystander 둘뿐이다.
+        const fillers = players.slice(2)
+        await Promise.all(fillers.map((room) => leaveRoom(room)))
+        await waitForCondition(
+          bystander,
+          () => playersCount(bystander) === F1_UNDER_CAPACITY_REMAINING_PLAYERS,
+          '필러 퇴장 반영(정원보다 훨씬 적은 상태) 확인',
+          STATE_TIMEOUT_MS,
+        )
+
+        const initialPlayerCount = playersCount(bystander)
+        const initialSpectatorCount = spectatorsCount(bystander)
+        expect(initialPlayerCount).toBe(F1_UNDER_CAPACITY_REMAINING_PLAYERS)
+        expect(initialSpectatorCount).toBe(F1_UNDER_CAPACITY_SPECTATOR_COUNT)
+
+        const leftPromise = waitForLeave(afkTarget, KICK_OBSERVE_TIMEOUT_MS, 'RQ-43 F1(정원 무관): AFK 대상의 서버측 강제 퇴장(onLeave) 대기')
+
+        const seam = getServerRoom(afkTarget)
+        seam.kickAfkPlayer(afkTargetId)
+        seam.kickAfkPlayer(afkTargetId)
+
+        await leftPromise
+        await waitForCondition(
+          bystander,
+          () => !isPlayer(bystander, afkTargetId),
+          'RQ-43 F1(정원 무관): AFK 대상 제거 반영 대기',
+          KICK_OBSERVE_TIMEOUT_MS,
+        )
+
+        const finalPlayerCount = playersCount(bystander)
+        const finalSpectatorCount = spectatorsCount(bystander)
+
+        // 핵심 불변식(일반형) — players.size는 CAPACITY.PLAYERS 근처에도
+        // 가지 않으므로(initialPlayerCount=2 ≪ CAPACITY.PLAYERS=10), 정원
+        // 클램프만으로는 이 단언을 통과시킬 수 없다 — 킥 자체가 멱등해야만
+        // 통과한다. 현재 코드에서는 반드시 Red다.
+        expect(finalPlayerCount).toBe(initialPlayerCount)
+        expect(finalSpectatorCount).toBe(initialSpectatorCount - 1)
+      } finally {
+        await Promise.all([
+          leaveRoom(bystander).catch(() => undefined),
+          ...spectators.map((room) => leaveRoom(room).catch(() => undefined)),
+        ])
+      }
+    },
+    25_000,
   )
 })
