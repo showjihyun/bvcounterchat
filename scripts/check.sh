@@ -7,6 +7,26 @@
 # 파일 단위로 쪼갤 수 없다 (ADR-0008, tsconfig.json 주석 참조).
 set -euo pipefail
 
+# --- 런타임 가드 (원장 28a) -------------------------------------------------
+# npm의 `engines`는 경고일 뿐 강제가 아니고, 이 라운드가 세 번 겪은 통증은
+# 설치 시점이 아니라 **테스트 시점**에 났다(Node v24에서 통합 워커가 네이티브
+# abort로 죽는다 — 0xC0000409). 그래서 검증 진입점인 여기서 직접 막는다.
+# `.nvmrc`가 권장 버전을, `package.json`의 engines가 허용 범위를 정의한다.
+node_major=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)
+if [ "$node_major" -ge 24 ]; then
+  echo "" >&2
+  echo "  ✗ Node v$(node -v | sed 's/^v//') 는 이 저장소의 검증에 쓸 수 없다." >&2
+  echo "" >&2
+  echo "    통합 테스트 워커가 네이티브 abort(0xC0000409)로 죽는다 — 테스트" >&2
+  echo "    로직이 아니라 런타임 문제이며, 실 통합 스위트 8런 중 2런이 실패한다" >&2
+  echo "    (v22.23.1은 같은 머신에서 8/8 통과). 근거: harness/progress.md 28a." >&2
+  echo "" >&2
+  echo "    조치: .nvmrc 버전을 쓰라 — nvm/fnm 사용 시 \`nvm use\` 또는 \`fnm use\`." >&2
+  echo "" >&2
+  exit 1
+fi
+# ---------------------------------------------------------------------------
+
 if [ "${1:-}" = "--fast" ]; then
   # 클론 직후 등 node_modules 부재 시 조용히 통과 — 환경 문제는 전체 검증이 잡는다
   [ -d node_modules ] || exit 0
@@ -51,7 +71,12 @@ npx vitest run tests/unit
 #     8런 중 2런 실패, Node v22.23.1은 **8런 전부 통과(111/111)**.
 #     최소 재현자에서도 v24는 8중 2, v22는 8중 0.
 #   - CI가 거의 항상 통과한 이유도 이것이다 — CI는 Node 20을 쓴다.
-# 대응: engines를 ">=20 <24"로 좁히고 .nvmrc를 둔다. 아래 재시도는 그럼에도
+# 대응: engines를 "^20.19.0 || ^22.13.0"으로 좁히고 .nvmrc(22.23.1)를 둔다.
+# (범위 하한은 의존성이 정한다 — rolldown/vite는 ^20.19.0 || >=22.12.0,
+#  @eslint/*는 ^20.19.0 || ^22.13.0 || >=24. 20.0~20.18과 21.x는 어느 절도
+#  만족하지 않아 rolldown 네이티브 바인딩이 설치되지 않는다. 24 배제는
+#  아래 abort가 정한다. npm engines는 경고일 뿐 강제가 아니다 — 실효는
+#  문서·메타데이터 가치이며 .nvmrc가 권장 버전을 고정한다.) 아래 재시도는 그럼에도
 # v24로 실행하는 경우를 위한 잔여 방어선이다.
 # 경위: harness/progress.md 17k·28a, _workspace/infra/worker-crash-rca.md.
 #

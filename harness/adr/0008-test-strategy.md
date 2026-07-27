@@ -53,7 +53,7 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
      조정(`threads`·`maxWorkers:1`·`no-file-parallelism`·`no-isolate`)은
      전부 무효이거나 악화였다 — 위험이 프로세스 토폴로지가 아니라 한
      프로세스가 수행한 Colyseus 작업량에 비례하기 때문이다.
-     대응은 `engines: ">=20 <24"` + `.nvmrc`이고, `scripts/check.sh`의
+     대응은 `engines: "^20.19.0 || ^22.13.0"` + `.nvmrc`(22.23.1)이고, `scripts/check.sh`의
      크래시 시그니처 재시도(최대 3회)는 v24로 실행하는 경우의 잔여
      방어선으로 남긴다. 근거: `_workspace/infra/worker-crash-rca.md`. 단언 실패는 재시도 대상이
      아니라 즉시 하드 실패다(검증은 약화하지 않는다). 경위: RQ-04,
