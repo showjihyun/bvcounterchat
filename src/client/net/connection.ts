@@ -280,17 +280,51 @@ export async function connectToGame(
     rttEstimator.recordSend(seq, now())
     room.send('ping', { seq })
   }
-  // 접속 직후 즉시 보내지 않는다 — 첫 주기(`NET.RTT_PING_INTERVAL_MS`)가
-  // 지나기 전까지 `getRttMs()`는 0(안전한 기본값, 되감기 미적용)이다. 이
-  // 창은 `sampleRewoundPosition`의 "버퍼 미충전 시 절단"과 같은 성격의
-  // 정상적인 웜업 구간이라 별도 처리가 필요 없다(20b `getRttMs()===0`
-  // 초기값 확인이 이 창에 의존한다 — 즉시 전송하면 그 공허화 방지 단언이
-  // 우연히 깨진다).
+  // 접속 직후 즉시 보내지 않는다 — 소켓이 막 열린 시점의 첫 왕복은 TLS/TCP
+  // 핸드셰이크 잔여 지연·OS 소켓 버퍼 워밍업 등으로 이후 왕복보다 이상치가
+  // 되기 쉽고, `rttEstimator`의 부트스트랩 규칙(첫 표본은 평활 없이 그대로
+  // 기준값이 됨)상 그 이상치가 그대로 초기 추정값이 되어 EMA(alpha=0.2, 즉
+  // 느린 회복)로 정상화되기까지 여러 표본이 걸린다. 첫 주기
+  // (`NET.RTT_PING_INTERVAL_MS`)만큼 늦춰 연결이 안정된 뒤 첫 표본을
+  // 만든다 — 그동안 `getRttMs()`는 0(안전한 기본값, 되감기 미적용)이고,
+  // 이는 `sampleRewoundPosition`의 "버퍼 미충전 시 절단"과 같은 성격의
+  // 정상적인 웜업 구간이다.
   // `window.setInterval`이 아니라 전역 `setInterval`을 쓴다 — 이 모듈은
   // 통합 테스트(Node 환경, `window` 없음)에서 직접 실행되므로
   // `PlayerControls.tsx`(브라우저 전용, 렌더 계층 면제 대상)와 달리
   // `window` 참조가 있으면 그 자체로 테스트가 깨진다.
   const pingIntervalId = setInterval(sendPing, NET.RTT_PING_INTERVAL_MS)
+
+  /**
+   * RQ-64 평가 O-2 수정(`_workspace/RQ-64/09_evaluator_delta2.md`) — ping
+   * 타이머·`pong` 구독 정리를 공용 함수로 뽑아, 명시적 `disconnect()`
+   * 경로와 침묵 disconnect(네트워크 단절·서버 강제 종료 — AFK 킥 포함,
+   * 아래 `room.onLeave` 구독) 경로가 **모두 이 함수 하나만** 거치게
+   * 한다 — 한쪽에만 정리를 두면(이전 버전의 결함) 다른 경로로 끊긴
+   * 연결이 죽은 룸에 계속 ping을 쏘고(오류 없이 조용히), 재접속 시 이전
+   * 세션의 타이머가 새 타이머와 함께 누적된다(서버 쪽 `onLeave` 부기
+   * 정리 관례 — 22k·이 RQ 자신의 F2 — 의 클라이언트 대응물).
+   *
+   * **멱등(idempotent)**: `clearInterval`은 이미 정리된 id에 다시 호출해도
+   * 안전한 no-op이고(표준 동작), `unbindPong`(nanoevents 기반 구독 해제 —
+   * `createNanoEvents().on(...)`이 반환하는 함수)도 이미 제거된 핸들러를
+   * 다시 제거하려 해도 배열에서 찾지 못해 조용히 no-op이다(`nanoevents.js`
+   * `filter(i => cb !== i)` — 이미 없는 항목을 걸러내는 필터는 그대로
+   * 반환한다). 그래서 이 함수는 몇 번을 호출해도(`disconnect()`를 두 번
+   * 부르는 경우, 또는 `disconnect()` 호출 자체가 `room.leave(true)`를 거쳐
+   * 아래 `room.onLeave` 구독도 함께 발화시키는 경우 포함) 안전하다.
+   */
+  function cleanupPingTimer(): void {
+    clearInterval(pingIntervalId)
+    unbindPong()
+  }
+  // `room.onLeave`는 정상 종료·침묵 disconnect 원인과 무관하게 항상
+  // 발화한다(이 파일의 `onDisconnect`가 이미 같은 신호로 `App.tsx`의
+  // 침묵 disconnect 처리를 배선한다) — `App.tsx`의 `onDisconnect` 콜백은
+  // React 상태만 비울 뿐 이 net 모듈 내부 타이머는 모르므로, 여기서 직접
+  // 구독해야 `disconnect()`를 거치지 않는 경로(네트워크 단절·AFK 강제
+  // 퇴장 등)에서도 정리된다.
+  room.onLeave(cleanupPingTimer)
 
   // 이름 붙인 핸들러로 보관 — `disconnect()`가 `room.onStateChange.remove(...)`
   // 로 해제할 수 있어야 한다(20b 리뷰 minor 3: 이전엔 익명 함수라 구독을
@@ -337,8 +371,7 @@ export async function connectToGame(
       room.onStateChange.remove(handleStateChange)
       unbindChat()
       unbindChatHistory()
-      clearInterval(pingIntervalId) // RQ-64: ping 타이머 정리
-      unbindPong()
+      cleanupPingTimer() // RQ-64 평가 O-2: room.onLeave 구독과 공유하는 멱등 정리(위 정의 참고)
       await room.leave(true)
     },
   }
