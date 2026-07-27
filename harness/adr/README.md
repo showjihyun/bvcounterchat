@@ -18,7 +18,6 @@
 | [ADR-0008](0008-test-strategy.md) | 테스트 전략 | TDD, Vitest, 순수 tick 함수 결정론, 렌더링 비단위테스트 | 승인 |
 | [ADR-0009](0009-deployment.md) | 배포 | Docker(서버 이미지) + Nginx(HTTP/WS, TLS 불요) + Redis, 멀티 컨테이너 단일 호스트 | 승인 |
 | [ADR-0010](0010-project-layout.md) | 프로젝트 레이아웃 | 단일 package.json + `src/{client,server,shared}`, `@shared/*` 별칭 | 승인 |
-
 | [ADR-0011](0011-selective-red.md) | Red-first 적용 범위 | `src/shared`·서버 판정 로직·결함 재현만 Red-first, 그 외는 test-after(coder 테스트는 순증만) | 승인 |
 | [ADR-0012](0012-review-tail-slim.md) | 검증 꼬리 길이 | CI 선행 · minor 기본 이월(분류 주체 = reviewer) · 델타 재검증은 blocker·major·계약위반·CI대응에만 | 승인 |
 

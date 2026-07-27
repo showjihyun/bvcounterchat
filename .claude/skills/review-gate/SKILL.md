@@ -17,12 +17,17 @@ CI(`.github/workflows/ci.yml`)와 함께 이중 게이트를 구성한다 — CI
 
 ## Phase 0: 대상·전제 확인
 
-1. **리뷰 대상 결정**: 현재 브랜치 vs `main`. 사용자가 PR 번호를 지정하면
-   그 PR의 head 브랜치.
+1. **리뷰 대상 결정**: 현재 브랜치 vs `origin/main`. 사용자가 PR 번호를
+   지정하면 그 PR의 head 브랜치.
 2. **전제 확인**:
+   - **CI 통과 확인**(ADR-0012 — CI 선행): `gh pr checks <PR번호>`.
+     실패나 진행 중이면 **리뷰를 시작하지 않고 중단한다** — CI가 넣는
+     반례를 사람 게이트가 먼저 보면 그 리뷰는 버려진다(RQ-18 실측 2회)
    - 미커밋 변경이 있으면 먼저 커밋을 요청한다 (리뷰 대상이 흔들리면 안 된다)
-   - `git diff main...HEAD`가 비어 있으면 "리뷰 대상 없음"으로 중단.
-     **게이트 통과가 아니다.**
+   - `git fetch origin` 후 `git diff origin/main...HEAD`가 비어 있으면
+     "리뷰 대상 없음"으로 중단. **게이트 통과가 아니다.**
+     로컬 `main`을 기준으로 쓰지 않는다 — 뒤처져 있으면 **이미 머지된 코드가
+     리뷰 범위에 섞여** 범위가 조용히 부푼다(PR #25에서 실제 발생).
 3. **보고서 경로 산출**: `_workspace/review/{브랜치명의 `/`를 `-`로 치환}.md`.
    브랜치 컨벤션 `feat/<RQ-ID>-<설명>`은 항상 슬래시를 포함하므로 치환이 필수다 —
    치환하지 않으면 중첩 디렉토리 경로가 되어 아래 존재 확인이 빗나가고,
@@ -34,9 +39,10 @@ CI(`.github/workflows/ci.yml`)와 함께 이중 게이트를 구성한다 — CI
 ## Phase 1: 리뷰 패키지 수집 (오케스트레이터가 직접)
 
 ```bash
-git diff main...HEAD --stat      # 변경 파일 목록
-git diff main...HEAD             # diff 전문
-git log main..HEAD --format=%s%n%b   # 커밋 메시지에서 RQ-ID/ADR 추출
+git fetch origin
+git diff origin/main...HEAD --stat      # 변경 파일 목록
+git diff origin/main...HEAD      # diff 전문
+git log origin/main..HEAD --format=%s%n%b   # 커밋 메시지에서 RQ-ID/ADR 추출
 ```
 
 - 커밋 메시지·PR 설명에서 관련 **RQ-ID·ADR 번호**를 추출한다.
@@ -133,8 +139,8 @@ CI 실패 상태에서 reviewer가 APPROVE했다면 그건 reviewer가 결정론
 
 ## 테스트 시나리오
 
-1. **정상**: `tdd-workflow`가 RQ-16 PASS 후 이 스킬 호출 → reviewer APPROVE →
-   CI 통과 확인 → 사용자 확인 → 머지.
+1. **정상**: `tdd-workflow`가 RQ-16 PASS → PR 생성 → **CI 통과 확인** →
+   이 스킬 호출 → reviewer APPROVE → 사용자 확인 → 머지 (ADR-0012 CI 선행).
 2. **에러**: 클라이언트가 명중 판정을 로컬에서 계산하고 서버엔 결과만 통보하는
    코드가 diff에 포함 → reviewer가 서버 권위 위반(RQ-61)으로 blocker 판정 →
    머지 차단 → 재구현 후 재리뷰.
