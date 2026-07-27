@@ -36,8 +36,9 @@ if [ "$node_major" -ge 24 ]; then
   echo "  ✗ Node v$(node -v | sed 's/^v//') 는 이 저장소의 검증에 쓸 수 없다." >&2
   echo "" >&2
   echo "    통합 테스트 워커가 네이티브 abort(0xC0000409)로 죽는다 — 테스트" >&2
-  echo "    로직이 아니라 런타임 문제이며, 실 통합 스위트 8런 중 2런이 실패한다" >&2
-  echo "    (v22.23.1은 같은 머신에서 여러 라운드 무결). 근거: harness/progress.md 28a." >&2
+  echo "    로직이 아니라 런타임 문제이며, 누적 12런 중 6런이 실패한다" >&2
+  echo "    (v22.23.1은 같은 머신 12런 전부 통과). 근거: harness/progress.md 28a," >&2
+  echo "    harness/infra/worker-crash-rca.md" >&2
   echo "" >&2
   echo "    조치: .nvmrc 버전을 쓰라 — nvm/fnm 사용 시 \`nvm use\` 또는 \`fnm use\`." >&2
   echo "" >&2
@@ -64,7 +65,10 @@ npx vitest run tests/unit
 # ADR-0008이 허용한 실 WebSocket 통합 테스트에서 워커 fork가 무성으로 죽는
 # flaky("Worker exited unexpectedly")가 있다.
 #
-# **근본 원인은 2026-07-28에 규명됐다: Node v24다.**
+# **근본 원인은 2026-07-28에 규명됐다: Node v24다(Windows 실측 기준).**
+#   ⚠ 범위: 같은 Windows 머신에서 런타임만 바꾼 A/B로 확정했다. **Linux+v24는
+#   미검증**이고(CI는 v20→v22만 써 왔다) abort를 호출하는 네이티브 프레임도
+#   미특정이다 — 남은 후보는 Windows 전용 `__fastfail` 계열이다.
 #   - 죽는 워커의 종료 코드는 예외 없이 3221226505 = 0xC0000409
 #     (STATUS_STACK_BUFFER_OVERRUN — Windows의 abort(), Linux SIGABRT 상당).
 #     signal은 null이고 stderr는 비어 있다. uncaught exception·unhandled
@@ -73,9 +77,11 @@ npx vitest run tests/unit
 #     3초간 30Hz 패치 수신 → leave/close. **살아 있는 Colyseus 클라 세션이
 #     필요조건**이다(클라 없는 워크로드 1,204워커·2,126워커-초에서 abort 0).
 #   - **런타임 A/B(같은 머신·같은 코드)**: Node v24.15.0은 실 통합 스위트
-#     8런 중 2런 실패, Node v22.23.1은 **8런 전부 통과(111/111)**.
+#     **누적 12런 중 6런 실패**(워커당 2.2%), Node v22.23.1은 **12런 전부 통과**
+#     (Fisher 런 p=0.0137, 워커 p=0.0075, 단언 실패 0).
 #     최소 재현자에서도 v24는 8중 2, v22는 8중 0.
-#   - CI가 거의 항상 통과한 이유도 이것이다 — CI는 Node 20을 쓴다.
+#   - CI가 거의 항상 통과해 온 이유도 이것이다 — CI는 **이 PR 전까지** Node 20을
+#     썼다(지금은 `.nvmrc`를 따라 22.23.1).
 # 대응: engines를 "^20.19.0 || ^22.13.0"으로 좁히고 .nvmrc(22.23.1)를 둔다.
 # (범위 하한은 의존성이 정한다 — rolldown/vite는 ^20.19.0 || >=22.12.0,
 #  @eslint/*는 ^20.19.0 || ^22.13.0 || >=24. 20.0~20.18과 21.x는 어느 절도
@@ -83,7 +89,7 @@ npx vitest run tests/unit
 #  아래 abort가 정한다. npm engines는 경고일 뿐 강제가 아니다 — 실효는
 #  문서·메타데이터 가치이며 .nvmrc가 권장 버전을 고정한다.) 아래 재시도는 그럼에도
 # v24로 실행하는 경우를 위한 잔여 방어선이다.
-# 경위: harness/progress.md 17k·28a, _workspace/infra/worker-crash-rca.md.
+# 경위: harness/progress.md 17k·28a, harness/infra/worker-crash-rca.md.
 #
 # **이 재시도는 테스트 약화가 아니다** — 재시도 대상을 크래시 시그니처로
 # 게이팅하기 때문이다. 실패 출력을 분류한다:

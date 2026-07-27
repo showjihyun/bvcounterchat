@@ -46,8 +46,9 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
      SDK가 실제 WebSocket 연결을 요구하기 때문에 완전한 목은 어렵다.
      포트는 임의(0) 바인딩, 모든 대기에 타임아웃 상한을 명시해 flaky를
      억제한다). 그럼에도 실 WebSocket 통합은 워커 fork가
-     무성으로 죽는 flaky가 남는다. **근본 원인은 2026-07-28 규명됐다 —
-     Node v24다**(종료 코드 `0xC0000409` 네이티브 abort, 예외·`process.exit`
+     무성으로 죽는 flaky가 남는다. **근본 원인은 2026-07-28 규명됐다 — Windows 실측 기준
+     Node v24다**(`Linux + v24`는 미검증이고 abort를 호출하는 네이티브
+     프레임도 미특정 — 남은 후보는 Windows 전용 `__fastfail` 계열이다)(종료 코드 `0xC0000409` 네이티브 abort, 예외·`process.exit`
      전부 배제. 같은 머신 A/B에서 v24는 8런 중 2런 실패, v22는 8런 전부
      통과). 살아 있는 Colyseus 클라이언트 세션이 필요조건이며, 풀 계층
      조정(`threads`·`maxWorkers:1`·`no-file-parallelism`·`no-isolate`)은
@@ -55,7 +56,7 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
      프로세스가 수행한 Colyseus 작업량에 비례하기 때문이다.
      대응은 `engines: "^20.19.0 || ^22.13.0"` + `.nvmrc`(22.23.1)이고, `scripts/check.sh`의
      크래시 시그니처 재시도(최대 3회)는 v24로 실행하는 경우의 잔여
-     방어선으로 남긴다. 근거: `_workspace/infra/worker-crash-rca.md`. 단언 실패는 재시도 대상이
+     방어선으로 남긴다. 근거: `harness/infra/worker-crash-rca.md`. 단언 실패는 재시도 대상이
      아니라 즉시 하드 실패다(검증은 약화하지 않는다). 경위: RQ-04,
      `harness/progress.md` 19a.
    - 물리(Rapier)는 실제 라이브러리를 그대로 사용한다(대역 금지) — 물리
