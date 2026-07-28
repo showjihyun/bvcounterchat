@@ -157,6 +157,38 @@ function waitForHpCondition(room: Room, sessionId: string, predicate: (hp: numbe
   )
 }
 
+/**
+ * fix(평가 major 6, `_workspace/RQ-81/04_evaluator_report.md` §5.6) — 세션의
+ * 닉네임이 room.state에 반영될 때까지 기다린다. `joinGame()`(내부적으로
+ * `client.joinOrCreate(...)`)이 resolve됐다고 해서 그 시점에 `room.state
+ * .players`가 이미 채워져 있다는 보장은 없다 — colyseus.js SDK 실측
+ * (`node_modules/colyseus.js/build/cjs/Client.js:150`)으로 확인한 바,
+ * `joinOrCreate`는 JOIN_ROOM 핸드셰이크(직렬화기 handshake) 완료 시점에
+ * resolve하고, 최초 상태 패치는 **그 뒤 별도 메시지**로 도착한다. 이전
+ * 버전은 `joinGame()` 직후 `room.state`를 동기로 읽었는데, 그 시점에
+ * `players` 맵에 해당 세션이 아직 없을 수 있어(패치 미도착) 잠복 레이스였다
+ * (RQ-62 잠복 레이스와 같은 계열 — 원장 22e 대기 컨벤션 ② "구독 시점 거짓이
+ * 시간 하한으로 보장돼야 한다"의 반대 방향 위반). 닉네임은 서버가 onJoin에서
+ * 한 번 확정하면 그 세션이 살아있는 동안 바뀌지 않는 단조·안정 신호라
+ * (컨벤션 ①), `waitForDefinedPlayer`와 동일한 폴링 방식으로 안전하게 기다릴
+ * 수 있다.
+ */
+function waitForNickname(room: Room, sessionId: string): Promise<string> {
+  return withTimeout(
+    new Promise<string>((resolve) => {
+      const tryResolve = (): void => {
+        const state = room.state as { players?: { get?: (key: string) => { nickname?: unknown } | undefined } } | null
+        const nickname = state?.players?.get?.(sessionId)?.nickname
+        if (typeof nickname === 'string') resolve(nickname)
+      }
+      tryResolve()
+      room.onStateChange(() => tryResolve())
+    }),
+    STATE_TIMEOUT_MS,
+    `sessionId=${sessionId}의 닉네임이 room.state에 반영되길 대기`,
+  )
+}
+
 async function travelAndSettle(mover: Room): Promise<PlayerFields> {
   mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
   await sleep(TRAVEL_MS)
@@ -238,8 +270,10 @@ describe('RQ-81/GA-23: 다른 UUID가 같은 닉네임을 써도 통계 행은 �
 
       // 서버가 실제로 같은 표시 닉네임(자동 접미사 없이, 이전 'bob'은 이미
       // 나갔으므로 충돌이 없다)을 재사용했는지 확인 — GA-23 given/when 전제.
-      const bobBState = bobB.state as { players?: { get?: (key: string) => { nickname?: unknown } | undefined } } | null
-      expect(bobBState?.players?.get?.(bobB.sessionId)?.nickname).toBe('bob')
+      // fix(평가 major 6): join 직후 동기 읽기 대신 조건 대기 — 근거는
+      // 위 waitForNickname docblock 참고.
+      const bobBNickname = await waitForNickname(bobB, bobB.sessionId)
+      expect(bobBNickname).toBe('bob')
 
       // 핵심 단언(GA-23 then) — UUID-B는 UUID-A의 통계를 물려받지 않는다.
       // 아직 아무 판도 치르지 않았으므로 행 자체가 없거나(신규 UUID는 최초

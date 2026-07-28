@@ -206,6 +206,38 @@ function waitForHpCondition(room: Room, sessionId: string, predicate: (hp: numbe
   )
 }
 
+/**
+ * fix(평가 major 6, `_workspace/RQ-81/04_evaluator_report.md` §5.6) — 세션의
+ * 닉네임이 room.state에 반영될 때까지 기다린다. `joinGame()`(내부적으로
+ * `client.joinOrCreate(...)`)이 resolve됐다고 해서 그 시점에 `room.state
+ * .players`가 이미 채워져 있다는 보장은 없다 — colyseus.js SDK 실측
+ * (`node_modules/colyseus.js/build/cjs/Client.js:150`)으로 확인한 바,
+ * `joinOrCreate`는 JOIN_ROOM 핸드셰이크(직렬화기 handshake) 완료 시점에
+ * resolve하고, 최초 상태 패치는 **그 뒤 별도 메시지**로 도착한다. 이전
+ * 버전은 `joinGame()` 직후 `room.state`를 동기로 읽었는데, 그 시점에
+ * `players` 맵에 해당 세션이 아직 없을 수 있어(패치 미도착) 잠복 레이스였다
+ * (RQ-62 잠복 레이스와 같은 계열 — 원장 22e 대기 컨벤션 ② "구독 시점 거짓이
+ * 시간 하한으로 보장돼야 한다"의 반대 방향 위반). 닉네임은 서버가 onJoin에서
+ * 한 번 확정하면 그 세션이 살아있는 동안 바뀌지 않는 단조·안정 신호라
+ * (컨벤션 ①), `waitForDefinedPlayer`와 동일한 폴링 방식으로 안전하게 기다릴
+ * 수 있다.
+ */
+function waitForNickname(room: Room, sessionId: string): Promise<string> {
+  return withTimeout(
+    new Promise<string>((resolve) => {
+      const tryResolve = (): void => {
+        const state = room.state as { players?: { get?: (key: string) => { nickname?: unknown } | undefined } } | null
+        const nickname = state?.players?.get?.(sessionId)?.nickname
+        if (typeof nickname === 'string') resolve(nickname)
+      }
+      tryResolve()
+      room.onStateChange(() => tryResolve())
+    }),
+    STATE_TIMEOUT_MS,
+    `sessionId=${sessionId}의 닉네임이 room.state에 반영되길 대기`,
+  )
+}
+
 async function travelAndSettle(mover: Room): Promise<PlayerFields> {
   mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
   await sleep(TRAVEL_MS)
@@ -295,8 +327,10 @@ describe('RQ-81/GA-22: 재접속(UUID 동일·닉네임 변경)에도 킬·데�
       const y2 = await joinGame(newClient(server), { nickname: 'killer2', uuid: randomUUID() })
 
       // 재접속이 실제로 다른 닉네임으로 확정됐는지 확인(전제 조건 — GA-22 when 절).
-      const a2State = a2.state as { players?: { get?: (key: string) => { nickname?: unknown } | undefined } } | null
-      expect(a2State?.players?.get?.(a2.sessionId)?.nickname).toBe('alice2')
+      // fix(평가 major 6): join 직후 동기 읽기 대신 조건 대기 — 근거는
+      // 위 waitForNickname docblock 참고.
+      const a2Nickname = await waitForNickname(a2, a2.sessionId)
+      expect(a2Nickname).toBe('alice2')
 
       const a2Pos = await unlockProtectionAndSettle(a2)
       const x2Pos = await unlockProtectionAndSettle(x2)

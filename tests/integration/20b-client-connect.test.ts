@@ -1,10 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import type { StoreApi } from 'zustand/vanilla'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { buildServer } from '@server/index'
 import { createGameStore, type GameStoreState } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
 import { NET } from '@shared/constants'
+import { getStats, openStatsDb, type StatsDb, type StatsRow } from '@server/persistence/statsDb'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — netcode 레이어
@@ -913,5 +918,169 @@ describe('20b/RQ-64/O-2: 침묵 disconnect 시 ping 타이머가 정리되고, �
     // 기준)이라 다른 RQ-64 케이스보다 오래 걸린다(팀리드 지시 — 소요 시간
     // 보고 대상, `_workspace/RQ-64/11_test-writer_o2-guard.md` 참고).
     30_000,
+  )
+})
+
+const STATS_TIMEOUT_MS = 5_000
+
+/** RQ-81 통계 검증 전용 서버 기동 — 이 파일의 다른 describe들이 쓰는
+ * `startServer()`(RQ-81 이전부터 존재, 인자 없음)는 건드리지 않는다. 이
+ * 헬퍼만 `statsDbPath`를 받아 격리된 SQLite 파일로 서버를 띄운다
+ * (`rq-81-uuid-stat-persistence.test.ts`와 동일한 패턴). */
+async function startServerWithStats(statsDbPath: string): Promise<RunningServer> {
+  const app = buildServer({ logger: false, statsDbPath })
+  const address = await withTimeout(
+    app.listen({ port: 0, host: '127.0.0.1' }),
+    LISTEN_TIMEOUT_MS,
+    'app.listen({ port: 0 }, statsDbPath)',
+  )
+  const { port } = new URL(address)
+  return { app, endpoint: `ws://127.0.0.1:${port}` }
+}
+
+function createTempStatsDbPath(prefix: string): { path: string; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  return { path: join(dir, 'stats.db'), dir }
+}
+
+/**
+ * SQLite 통계 행이 predicate를 만족할 때까지 폴링한다 — 서버가 실제로 쓴
+ * 파일을 테스트가 직접 읽으므로(관측 지점 근거는 `rq-81-uuid-stat-persistence
+ * .test.ts` 상단 "관측 지점" 절과 동일 — 어느 클라이언트의 `room.state`도
+ * 거치지 않는다) 이 파일의 다른 store 기반 대기와는 다른 종류의 신호를
+ * 본다. `waitForFireCountAtLeast`(이 파일 §RQ-64/O-2)와 같은 폴링 정신이되,
+ * **인터벌 생성을 첫 동기 `tryResolve()` 호출보다 먼저 둔다** — 그 반대
+ * 순서(이 파일의 기존 `waitForFireCountAtLeast`가 쓰는 순서)는 술어가 구독
+ * *즉시* 참이 될 수 있는 경우(이 함수가 그렇다 — `disconnect()` 이후에
+ * 호출되므로 그 시점에 이미 행이 존재할 수 있다) `clearInterval(interval)`
+ * 이 아직 초기화되지 않은 `const interval`을 참조해 TDZ `ReferenceError`가
+ * 날 수 있다(기존 헬퍼들은 첫 호출에서 술어가 항상 거짓이라 이 경로를
+ * 타지 않아 드러나지 않았을 뿐이다 — 기존 헬퍼는 이번 라운드 범위 밖이라
+ * 건드리지 않는다). */
+function waitForStatsCondition(
+  db: StatsDb,
+  uuid: string,
+  predicate: (row: StatsRow | undefined) => boolean,
+  timeoutMs: number,
+  label: string,
+): Promise<StatsRow | undefined> {
+  return withTimeout(
+    new Promise<StatsRow | undefined>((resolve, reject) => {
+      const interval = setInterval(tryResolve, 15)
+      function tryResolve(): void {
+        const row = getStats(db, uuid)
+        if (predicate(row)) {
+          clearInterval(interval)
+          resolve(row)
+        }
+      }
+      tryResolve()
+      setTimeout(() => {
+        clearInterval(interval)
+        reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+      }, timeoutMs)
+    }),
+    timeoutMs,
+    label,
+  )
+}
+
+/**
+ * RQ-81(평가 major 3, `_workspace/RQ-81/04_evaluator_report.md` §5.1) —
+ * `connectToGame`이 uuid를 실제로 join 옵션에 실어 보내는지 덮는 테스트가
+ * 없었다: 평가가 변이 M6(`connection.ts`에서 uuid를 아예 안 보내도록
+ * 바꿈)를 심었을 때 기존 통합 스위트(RQ-81 5파일 포함) 364건이 **전부
+ * 그대로 통과**했다 — 두 검증(서버측 UUID 키잉 계약, 클라 저장소 읽기·생성
+ * 로직) 사이에 **배선 구간 자체가 비어 있었다**(RQ-43·RQ-64 선례, 원장
+ * 22m와 동일한 결함 계열 — `02_coder_green.md` §6의 "이 둘을 합치면 함께
+ * 증명된다"는 주장은 실제로는 성립하지 않았다).
+ *
+ * 이 describe는 그 구간의 **`connectToGame` 이후 절반**
+ * (`connection.ts`→`joinOrCreate`→`GameRoom.onJoin`→SQLite)을 덮는다.
+ * `App.tsx`(로컬스토리지 읽기·생성)까지 포함하려면 jsdom 도입이 필요해
+ * 비용이 크다 — 평가 보고서 §5.1이 권고한 그대로 `connection.ts` 구간만
+ * 덮어도 M6는 잡히고 위험의 대부분이 사라진다. `App.tsx`가 넘기는 값 자체
+ * (로컬스토리지에서 읽거나 없으면 생성)의 정확성은
+ * `tests/unit/rq-81-client-stats-uuid.test.ts`가 이미 담당한다 — 이
+ * describe는 "connectToGame에 넘겨진 uuid가 실제로 서버까지 도달해 SQLite
+ * 키가 되는가"만 검증해, 두 검증 사이의 빈 구간을 정확히 메운다.
+ *
+ * **양성 대조군(팀리드 지시)**: "uuid가 전송된다"만 확인하면 값이 빈
+ * 문자열이어도 통과할 수 있다 — 그래서 `connectToGame`에 넘긴 uuid
+ * 문자열과 SQLite 행의 `uuid` 컬럼이 **정확히 일치**하는지까지 단언한다.
+ * 임의의 다른 문자열(빈 문자열·별개 uuid)로는 행이 없다는 것도 함께
+ * 확인해 "아무 값이나 키가 됐다"가 아니라는 것을 못박는다.
+ *
+ * **관측 트리거로 킬 대신 플레이타임을 쓰는 이유**: 이 파일은 조준·발사
+ * 헬퍼를 갖고 있지 않고, 새로 들이면 이 파일의 스코프(netcode 배선)를
+ * 벗어난다. `GameRoom.onLeave`가 세션의 uuid가 있을 때만 `addPlaytimeMs`를
+ * 호출하는 경로(RQ-81)는 접속 → (짧은 대기) → 퇴장만으로 관측 가능한 가장
+ * 단순한 통계 쓰기 이벤트다 — M6를 죽이는 데는 "SQLite에 이 uuid로 아무
+ * 행이나 쓰이는가"만 있으면 충분하다.
+ *
+ * **관측 지점**: `openStatsDb`/`getStats`로 서버가 쓴 SQLite 파일을 직접
+ * 읽는다 — RQ-81 통합 5파일과 동일한 근거(어느 클라이언트의 `room.state`도
+ * 거치지 않는다).
+ */
+describe('20b/RQ-81(평가 major 3): connectToGame이 uuid를 실제로 서버에 실어 보내 SQLite 통계 행의 키가 된다(M6 가드)', () => {
+  let server: RunningServer
+  let statsDb: StatsDb
+  let tempDir: string
+
+  beforeAll(async () => {
+    const temp = createTempStatsDbPath('20b-rq81-uuid-')
+    tempDir = temp.dir
+    server = await startServerWithStats(temp.path)
+    statsDb = openStatsDb(temp.path)
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    statsDb.close()
+    await stopServer(server)
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it(
+    '20b/RQ-81: connectToGame(endpoint, nickname, store, uuid)로 접속·퇴장하면, 그 uuid와 정확히 일치하는 SQLite 통계 행이 생기고 플레이타임이 기록된다',
+    async () => {
+      // 실제 App.tsx가 localStorage에서 읽거나 새로 생성해 넘기는 값의
+      // 대역(형식은 동일 — crypto.randomUUID() 산출물). 이 테스트의 관심사는
+      // "이 값이 connectToGame 이후 어디로도 새지 않고 정확히 SQLite 키가
+      // 되는가"다 — 로컬스토리지 자체의 읽기·생성 로직은 위 docblock이
+      // 가리키는 별도 파일의 몫이다.
+      const statsUuid = randomUUID()
+      const store = createGameStore()
+      const connection: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'stats-wiring', store, statsUuid),
+        CONNECT_TIMEOUT_MS,
+        `connectToGame(nickname: 'stats-wiring', uuid: ${statsUuid})`,
+      )
+      await waitForSelfNickname(store, connection.sessionId)
+
+      // 측정 가능한 플레이타임을 만들기 위한 짧은 대기 — Date.now() 차분이
+      // 0보다 커야 한다는 것뿐이라 값 자체에 의미를 두지 않는다.
+      await sleep(100)
+
+      await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
+
+      const stats = await waitForStatsCondition(
+        statsDb,
+        statsUuid,
+        (row) => row !== undefined && row.playtimeMs > 0,
+        STATS_TIMEOUT_MS,
+        'SQLite 통계 행에 플레이타임이 적재되길 대기 — M6(uuid 미전송) 변이라면 이 행 자체가 영원히 생기지 않아 타임아웃난다',
+      )
+
+      // 핵심 단언(팀리드 지시 — 양성 대조군): 값이 존재하기만 하는 게
+      // 아니라 connectToGame에 넘긴 그 uuid 문자열과 정확히 일치한다.
+      expect(stats?.uuid).toBe(statsUuid)
+      expect(stats?.playtimeMs).toBeGreaterThan(0)
+
+      // 임의의 다른 문자열로는 행이 생기지 않았다 — "아무 값이나 키가
+      // 됐다"가 아니라 정확히 그 uuid라는 것을 한 번 더 못박는다.
+      expect(getStats(statsDb, '')).toBeUndefined()
+      expect(getStats(statsDb, randomUUID())).toBeUndefined()
+    },
+    20_000,
   )
 })
