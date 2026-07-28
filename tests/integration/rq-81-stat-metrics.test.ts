@@ -49,6 +49,25 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * **결정론 메모**: 실 WebSocket 의존(ADR-0008 허용 예외). 플레이타임
  * 단언은 실시간 `sleep` 경과에 묶이므로(서버가 실제 벽시계로 기록하는
  * 값이라 다른 방법이 없다) 관대한 하한만 확인한다(CI 지터 허용).
+ *
+ * **REV(fix-02, 타이밍 결함 수정)**: 최초 버전은 "K가 V1을 헤드샷킬 →
+ * V2가 K를 바디샷킬(K 사망) → K가 V3를 바디샷킬"순이었다. `handleFire`는
+ * `canAct(player.hp)`가 거짓이면(RQ-15 시신 규칙, 이번 라운드가 건드리지
+ * 않은 기존 로직) 사격 요청을 조용히 무시하고 `PLAYER.RESPAWN_MS`
+ * (3000ms)가 지나야 다시 사격할 수 있는데, 2·3번 사이 간격은
+ * `BETWEEN_SHOTS_MS`(300ms)뿐이라 3번의 K 사격이 매번 버려져 V3의 HP가
+ * 영원히 바뀌지 않고 타임아웃났다(coder가 독립 스크립트로 재현·확인,
+ * `_workspace/RQ-81/03_test-writer_metrics-fix.md` 근거 전문). **수정**:
+ * K가 죽는 사건(V2의 킬)을 시퀀스 맨 끝으로 재배치했다 — K는 자신이 죽기
+ * 전까지만 사격하므로 이 게이트와 부딪힐 여지가 시퀀스 구조상 없어진다.
+ * 리스폰 대기(고정 sleep이든 조건 대기든)를 추가하는 대안도 검토했으나
+ * 채택하지 않았다 — 근거는 `03_test-writer_metrics-fix.md` §1(요지: 이
+ * 파일이 검증하는 것은 "세 카운터가 서로 독립적으로 자기 사건에만
+ * 반응하는가"이지 "죽었다 살아난 뒤에도 사격할 수 있는가"(RQ-15의
+ * 관심사)가 아니다 — 재배치가 대기 없이 동일한 계약을 검증한다). 세
+ * `expect` 묶음(헤드샷 킬·바디샷 킬·데스 각각의 카운터 독립성)은 순서만
+ * 바뀌었을 뿐 전부 그대로 유지했다 — 약화가 아니다(값은 최종적으로
+ * `kills=2·headshots=1·deaths=1`로 이전과 동일).
  */
 
 const ROOM_NAME = 'game'
@@ -233,7 +252,7 @@ describe('RQ-81: 킬·데스·헤드샷·플레이타임 네 지표가 각각 �
   })
 
   it(
-    'RQ-81: K가 V1을 헤드샷으로 죽이면 kills=1·headshots=1, V2가 K를 바디샷으로 죽이면 K의 deaths=1, K가 V3을 바디샷으로 죽이면 kills=2인데 headshots는 1로 불변이다',
+    'RQ-81: K가 V1을 헤드샷으로 죽이면 kills=1·headshots=1, K가 V3을 바디샷으로 죽이면 kills=2인데 headshots는 1로 불변, 마지막으로 V2가 K를 바디샷으로 죽이면 K의 deaths=1이고 kills·headshots는 그대로다',
     async () => {
       const uuidK = randomUUID()
 
@@ -250,6 +269,15 @@ describe('RQ-81: 킬·데스·헤드샷·플레이타임 네 지표가 각각 �
       await waitForDefinedPlayer(v2, v2.sessionId)
       await waitForDefinedPlayer(v3, v3.sessionId)
 
+      // 순서 — K가 죽는 사건(3번)을 시퀀스 맨 끝에 둔다(fix-02 재배치,
+      // `_workspace/RQ-81/03_test-writer_metrics-fix.md` 근거 전문 참고).
+      // K가 살아있는 동안(1·2번)에만 K 자신이 사격하므로, `handleFire`의
+      // `canAct` 사망자 게이트(RQ-15, `GameRoom.ts` — 이번 라운드가 건드리지
+      // 않은 기존 로직)와 부딪힐 여지가 시퀀스 구조상 없다. 세 사건(헤드샷
+      // 킬·바디샷 킬·데스) 각각이 자신의 카운터만 올리고 다른 카운터를
+      // 건드리지 않는다는 계약은 이전 순서와 동일하게 전부 검증된다 —
+      // 순서만 바뀌었을 뿐 검증 대상(세 카운터의 독립성)은 그대로다.
+
       // 1) K가 V1을 헤드샷으로 죽인다 — kills=1, headshots=1.
       await killWithHeadshots(k, v1, kPos, v1Pos)
       const afterHeadshotKill = getStats(statsDb, uuidK)
@@ -257,20 +285,24 @@ describe('RQ-81: 킬·데스·헤드샷·플레이타임 네 지표가 각각 �
       expect(afterHeadshotKill?.headshots).toBe(1)
       expect(afterHeadshotKill?.deaths).toBe(0)
 
-      // 2) V2가 K를 바디샷으로 죽인다 — K의 deaths=1(kills·headshots는 불변).
-      await killWithBodyshots(v2, k, v2Pos, kPos)
-      const afterDeath = getStats(statsDb, uuidK)
-      expect(afterDeath?.deaths).toBe(1)
-      expect(afterDeath?.kills).toBe(1)
-      expect(afterDeath?.headshots).toBe(1)
-
-      // 3) K가 V3을 바디샷으로 죽인다 — kills=2이지만 headshots는 여전히 1
+      // 2) K가 V3을 바디샷으로 죽인다 — kills=2이지만 headshots는 여전히 1
       //    (바디킬은 헤드샷 카운터를 올리지 않는다 — 설계 결정의 핵심 단언).
+      //    K는 아직 한 번도 죽지 않았으므로(이 시점까지 deaths=0) 이 사격은
+      //    canAct 게이트에 막히지 않는다.
       await killWithBodyshots(k, v3, kPos, v3Pos)
       const afterSecondKill = getStats(statsDb, uuidK)
       expect(afterSecondKill?.kills).toBe(2)
       expect(afterSecondKill?.headshots).toBe(1)
-      expect(afterSecondKill?.deaths).toBe(1)
+      expect(afterSecondKill?.deaths).toBe(0)
+
+      // 3) V2가 K를 바디샷으로 죽인다(시퀀스의 마지막 사건) — K의 deaths=1
+      //    (kills·headshots는 불변). K는 이 사건 이후 더 이상 사격하지
+      //    않으므로 리스폰(PLAYER.RESPAWN_MS=3000ms) 대기가 필요 없다.
+      await killWithBodyshots(v2, k, v2Pos, kPos)
+      const afterDeath = getStats(statsDb, uuidK)
+      expect(afterDeath?.deaths).toBe(1)
+      expect(afterDeath?.kills).toBe(2)
+      expect(afterDeath?.headshots).toBe(1)
 
       await Promise.all([leaveRoom(k), leaveRoom(v1), leaveRoom(v2), leaveRoom(v3)])
     },
