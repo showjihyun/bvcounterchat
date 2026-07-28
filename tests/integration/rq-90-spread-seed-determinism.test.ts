@@ -5,6 +5,7 @@ import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { applySpread, eyeOrigin, raycastHitbox, type Vec3 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
+import { type PositionSnapshot } from '@shared/sim/rewind'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
 
@@ -414,21 +415,25 @@ function findSeedWithBucket(
 /** RQ-90 화이트박스 접근 대상 계약 — 파일 상단 "테스트 시드 주입 인터페이스"
  * 절 참고. `spreadTuningOverride`·`forcedSpreadSeed`는 그린필드 계약이다
  * (Red 전제 — `GameRoom`이 `applySpread`를 전혀 호출하지 않는 오늘 상태에서
- * 이 필드들도 당연히 없었다). `magazines`·`moveStates`는 그린필드가 아니다
- * — `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이 `magazines`를, `FallDamageTestSeam`
- * (`rq-18-fall-damage.test.ts`)·`rq-92-fall-damage-curve.test.ts`가
- * `moveStates`를 이미 이 정확한 이름으로 화이트박스 접근하는 기존 private
- * 필드다. `magazines`는 F1 수정(§"오라클 일치 열" 참고)이 한 세션에서
- * 26발을 쏘아야 해서 RQ-10/11의 재장전(2초) 대기를 이 파일의 관심사로
- * 끌어들이지 않기 위해 미리 채운다. `moveStates`는 리뷰 blocker 재현
- * (§"REV(리뷰 blocker 재현)" 참고)이 자연 스폰 좌표로는 우연히 만들 수
- * 없는 정확한 퇴화 기하(사수·피격자가 같은 z, 같은 높이)를 직접 배치하는
- * 데 쓴다. */
+ * 이 필드들도 당연히 없었다). `magazines`·`moveStates`·`positionHistory`는
+ * 그린필드가 아니다 — `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이
+ * `magazines`를, `FallDamageTestSeam`(`rq-18-fall-damage.test.ts`)·
+ * `rq-92-fall-damage-curve.test.ts`가 `moveStates`를, `RewindTestSeam`
+ * (`rq-64-lag-compensation-bound.test.ts`)이 `positionHistory`를 이미
+ * 이 정확한 이름으로 화이트박스 접근하는 기존 private 필드다. `magazines`는
+ * F1 수정(§"오라클 일치 열" 참고)이 한 세션에서 26발을 쏘아야 해서
+ * RQ-10/11의 재장전(2초) 대기를 이 파일의 관심사로 끌어들이지 않기 위해
+ * 미리 채운다. `moveStates`·`positionHistory`는 리뷰 blocker 재현 (2차,
+ * §"REV(텔레포트-되감기 버퍼 충돌 수정)" 참고)이 자연 스폰 좌표로는
+ * 우연히 만들 수 없는 정확한 퇴화 기하(사수·피격자가 같은 z, 같은 높이)를
+ * 직접 배치하는 데 함께 쓴다 — 둘 다 갱신해야 하는 이유는 아래
+ * `teleportPlayer` 코멘트 참고. */
 interface SpreadTestSeam {
   spreadTuningOverride?: { coneRadiusRad: number }
   forcedSpreadSeed?: number
   magazines: Map<string, number>
   moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
+  positionHistory: Map<string, PositionSnapshot[]>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -441,6 +446,45 @@ function getServerRoom(room: Room): SpreadTestSeam {
     throw new Error(`RQ-90 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
   }
   return serverRoom
+}
+
+/**
+ * **REV(텔레포트-되감기 버퍼 충돌 수정, coder 보고
+ * `_workspace/RQ-90/08_coder_...`)**: 화이트박스로 `sessionId`의 위치를
+ * 순간이동시킬 때는 `moveStates`(현재 위치)와 `positionHistory`(RQ-64
+ * 되감기 링버퍼)를 **함께** 갱신해야 한다 — 이 둘을 따로 부르면 반드시
+ * 하나를 잊는다(`tests/support/harness.ts`의 `advanceTicks`가 시계
+ * 전진과 스케줄러 만료를 한 호출로 묶은 것과 같은 이유).
+ *
+ * **왜 `positionHistory`를 비우는가**: `handleFire`의 대상 포즈 조회는
+ * `sampleRewoundPosition(positionHistory.get(id) ?? [], tick,
+ * rewindTicksFor(rttMs))`이고(`GameRoom.ts:641`), `rewindTicksFor(0)===0`
+ * 이어도 그 함수는 **버퍼가 완전히 비어 있을 때만** `moveStates`로
+ * 폴백한다(`sampleRewoundPosition` 계약, `@shared/sim/rewind`) — 버퍼에
+ * 텔레포트 **이전**의 stale 스냅샷이 남아 있으면 그 값을 그대로 반환해
+ * 방금 세팅한 `moveStates`가 무시된다. 이건 프로덕션 버그가 아니다 —
+ * 실제 플레이에서는 `moveStates`와 `positionHistory`가 항상
+ * `stepPlayerMovement`(매 틱) 한 곳에서 함께 갱신되므로 어긋나는 경로가
+ * 없다. 이 간극은 **테스트 전용 텔레포트가 만드는 것**이고, 정확히 같은
+ * 결함 계열이 이미 한 번 나왔다 — 리스폰 텔레포트도 같은 오염을 만들어서
+ * `respawnPlayer`가 `positionHistory.delete(sessionId)`로 정리한다
+ * (`GameRoom.ts:1081`, "평가 F2 수정" 코멘트). 여기서는 대칭적으로
+ * `positionHistory`를 비워 "버퍼가 비어 있으면 즉시 `moveStates`로
+ * 폴백"하는 기존 계약을 그대로 이용한다 — **타이밍(틱 대기)이 아니라
+ * 제어 흐름으로 해결한다**(이 저장소가 RQ-18·RQ-62에서 타이밍 기반
+ * 해결로 CI flaky를 겪은 전례가 있어 피한다).
+ */
+function teleportPlayer(seam: SpreadTestSeam, sessionId: string, position: { x: number; y: number; z: number }): void {
+  seam.moveStates.set(sessionId, {
+    x: position.x,
+    y: position.y,
+    z: position.z,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    grounded: true,
+  })
+  seam.positionHistory.delete(sessionId)
 }
 
 /**
@@ -659,18 +703,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
 
       // --- (1) NaN 회귀 — 화이트박스로 B를 A와 정확히 같은 z·같은 높이,
       // +X로 `DEGENERATE_DISTANCE`만큼 떨어진 지점에 배치한다(자연 스폰
-      // 좌표는 이 정확한 퇴화 조건을 우연히 만족하지 않는다). `handleFire`
-      // 의 대상 후보 위치는 `moveStates`를 동기적으로 읽으므로(되감기
-      // 버퍼가 비어 있으면 즉시 반영) 틱 경과를 기다릴 필요가 없다.
-      seam.moveStates.set(roomB.sessionId, {
-        x: baselineA.x + DEGENERATE_DISTANCE,
-        y: baselineA.y,
-        z: baselineA.z,
-        vx: 0,
-        vy: 0,
-        vz: 0,
-        grounded: true,
-      })
+      // 좌표는 이 정확한 퇴화 조건을 우연히 만족하지 않는다). `teleportPlayer`
+      // 가 `moveStates`와 `positionHistory`(RQ-64 되감기 버퍼)를 함께
+      // 갱신하므로(코멘트 참고) `handleFire`의 대상 포즈 조회가 텔레포트
+      // 이전의 stale 스냅샷이 아니라 방금 세팅한 위치를 즉시 쓴다 — 틱
+      // 경과를 기다릴 필요가 없다.
+      teleportPlayer(seam, roomB.sessionId, { x: baselineA.x + DEGENERATE_DISTANCE, y: baselineA.y, z: baselineA.z })
 
       // 사전 확인(오프라인, 네트워크 없음) — 이 기하에서 "정규화된" 방향은
       // 실제로 헤드에 명중해야 한다(그렇지 않다면 아래 실패가 이 blocker가
