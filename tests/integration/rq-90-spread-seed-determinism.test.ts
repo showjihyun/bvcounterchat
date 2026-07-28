@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
-import { applySpread, eyeOrigin, raycastHitbox, type Vec3 } from '@shared/sim/combat'
+import { applySpread, DEGENERATE_RADIAL_EPS, eyeOrigin, raycastHitbox, type Vec3 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
 import { type PositionSnapshot } from '@shared/sim/rewind'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
@@ -222,6 +222,15 @@ const DEGENERATE_DISTANCE = 6
  * `|direction|`이 되므로(계약 위반), 벡터를 부풀리면 편차 분포가 왜곡된다
  * — 리뷰가 실측한 배율(1000)과 동일하게 맞췄다. */
 const OVERSIZED_AIM_SCALE = 1000
+
+/** N7 그물(2차 델타 재평가 지적) — `GameRoom.ts`의 정규화 가드
+ * (`dirMagnitude < DEGENERATE_RADIAL_EPS`이면 조기 return)가 실제로
+ * load-bearing인지 확인하는 크기. `DEGENERATE_RADIAL_EPS`(`combat.ts`
+ * export, 1e-12)보다 한 자릿수 작게 잡아(1e-13) 그 가드가 반드시
+ * 걸려야 하는 구간 안에 확실히 들어가게 한다 — 하드코딩된 매직넘버가
+ * 아니라 실제 임계 상수에서 유도한다(그 상수가 바뀌어도 이 값이 항상
+ * 그 절반의 자릿수를 유지한다). */
+const SUB_DEGENERATE_MAGNITUDE = DEGENERATE_RADIAL_EPS / 10
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -462,17 +471,43 @@ function getServerRoom(room: Room): SpreadTestSeam {
  * 이어도 그 함수는 **버퍼가 완전히 비어 있을 때만** `moveStates`로
  * 폴백한다(`sampleRewoundPosition` 계약, `@shared/sim/rewind`) — 버퍼에
  * 텔레포트 **이전**의 stale 스냅샷이 남아 있으면 그 값을 그대로 반환해
- * 방금 세팅한 `moveStates`가 무시된다. 이건 프로덕션 버그가 아니다 —
- * 실제 플레이에서는 `moveStates`와 `positionHistory`가 항상
- * `stepPlayerMovement`(매 틱) 한 곳에서 함께 갱신되므로 어긋나는 경로가
- * 없다. 이 간극은 **테스트 전용 텔레포트가 만드는 것**이고, 정확히 같은
- * 결함 계열이 이미 한 번 나왔다 — 리스폰 텔레포트도 같은 오염을 만들어서
- * `respawnPlayer`가 `positionHistory.delete(sessionId)`로 정리한다
- * (`GameRoom.ts:1081`, "평가 F2 수정" 코멘트). 여기서는 대칭적으로
- * `positionHistory`를 비워 "버퍼가 비어 있으면 즉시 `moveStates`로
- * 폴백"하는 기존 계약을 그대로 이용한다 — **타이밍(틱 대기)이 아니라
- * 제어 흐름으로 해결한다**(이 저장소가 RQ-18·RQ-62에서 타이밍 기반
- * 해결로 CI flaky를 겪은 전례가 있어 피한다).
+ * 방금 세팅한 `moveStates`가 무시된다. 정확히 같은 결함 계열이 이미 한
+ * 번 나왔다 — 리스폰 텔레포트도 같은 오염을 만들어서 `respawnPlayer`가
+ * `positionHistory.delete(sessionId)`로 정리한다(`GameRoom.ts:1081`,
+ * "평가 F2 수정" 코멘트). 여기서는 대칭적으로 `positionHistory`를 비워
+ * "버퍼가 비어 있으면 즉시 `moveStates`로 폴백"하는 기존 계약을 그대로
+ * 이용한다 — **타이밍(틱 대기)이 아니라 제어 흐름으로 해결한다**(이
+ * 저장소가 RQ-18·RQ-62에서 타이밍 기반 해결로 CI flaky를 겪은 전례가
+ * 있어 피한다).
+ *
+ * **REV(N8 정정, 2차 델타 재평가)**: 이전 버전은 "`moveStates`와
+ * `positionHistory`가 항상 `stepPlayerMovement` 한 곳에서 함께 갱신되므로
+ * 프로덕션에는 어긋나는 경로가 없다"고 적었는데, 이는 **사실이 아니다**
+ * — `moveStates.set`은 이 저장소에 **세 곳**에 있다:
+ *   1. `stepPlayerMovement:950` — 매 틱, `positionHistory`도 같은 반복에서
+ *      append한다(`:952` 부근).
+ *   2. `respawnPlayer:1080` — `positionHistory.delete`를 명시적으로
+ *      동반한다(`:1081`, "평가 F2 수정").
+ *   3. `initializePlayer:1269` — **`positionHistory`를 전혀 건드리지
+ *      않는다.**
+ * 그런데도 프로덕션에 stale 그림자가 생기지 않는 진짜 이유는 "한 곳뿐"이
+ * 아니라 **`initializePlayer`의 호출 경로 자체가 `positionHistory`에
+ * 항목이 있을 수 없는 세션만 대상으로 하기 때문**이다 —
+ * `initializePlayer`는 `onJoin`(신규 세션, `:1145`)과
+ * `promoteWaitingSpectator`(관전자 승격, `:1365`) 두 곳에서만 불린다.
+ * 이 저장소에는 **플레이어 → 관전자 강등 경로가 없다**(`state.spectators
+ * .set`은 `onJoin`의 "정원 초과 시 관전자로 참여" 분기 한 곳뿐이다 —
+ * 실측 확인, `grep -n "state.spectators.set(" src`). 즉
+ * `initializePlayer`에 도달하는 세션은 그 시점까지 `state.players`에
+ * 들어간 적이 **한 번도 없다** — `positionHistory`는 `stepPlayerMovement`
+ * (= `state.players` 순회)만 채우므로, 그 세션의 버퍼 항목 자체가
+ * 존재할 수 없다. 그래서 `sampleRewoundPosition([], ...)`이 `undefined`를
+ * 반환해 `?? moveStates` 폴백이 방금 `initializePlayer`가 세팅한 스폰
+ * 좌표를 그대로 준다 — "한 곳에서 함께 갱신"이 아니라 "그 세션에 애초에
+ * 버퍼가 없다"가 안전의 근거다. 이 화이트박스 텔레포트(`teleportPlayer`)
+ * 는 **이미 `state.players`에 있는 세션**(A·B 둘 다 join 이후)을
+ * 대상으로 하므로 이 안전판이 적용되지 않는다 — 그래서 이 헬퍼가 직접
+ * `positionHistory`를 정리해야 한다.
  */
 function teleportPlayer(seam: SpreadTestSeam, sessionId: string, position: { x: number; y: number; z: number }): void {
   seam.moveStates.set(sessionId, {
@@ -735,14 +770,37 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
 
       await sleep(SHOT_GAP_MS)
 
+      // --- N7 방어 확인(2차 델타 재평가 지적) — `GameRoom.ts`의 정규화
+      // 가드(`dirMagnitude < DEGENERATE_RADIAL_EPS`면 조기 return)는
+      // `raycastHitbox`가 이미 갖고 있던 것과 **동일한 임계**를 재사용한다
+      // (`combat.ts:170`) — 즉 크기가 `(0, DEGENERATE_RADIAL_EPS)` 구간인
+      // 조준 벡터는 이 PR **이전**(`main`, `raycastHitbox` 자신의 가드)과
+      // 오늘(`HEAD`, `GameRoom`의 가드) 둘 다 **빗나감**으로 처리해야
+      // 한다는 뜻이다. 평가자가 그 가드를 통째로 삭제한 변이(MG1)를
+      // 심었더니 전체 스위트(단위 353 + 통합 27)가 그대로 통과했다 —
+      // 어떤 기존 테스트도 이 구간을 고정하지 않는다. MG1에서는 이
+      // 구간의 벡터(예: `dirX: 1e-13`)가 정규화 후 정확히 `(1,0,0)`이
+      // 되어(자기 자신으로 나누므로) 헤드에 명중한다 — 그래서 이 발이
+      // 공허하지 않다. B는 (1)에서 배치한 위치를 그대로 유지한다(아직
+      // hp=`hpBeforeDegenerate - HEADSHOT`, 생존 — 이 발이 명중하면
+      // 정확히 사망 문턱에 닿으므로 "빗나감" 단언이 사망 여부와 무관하게
+      // 명확하다).
+      const hpBeforeSubDegenerate = afterDegenerate?.hp ?? hpBeforeDegenerate
+      roomA.send('fire', { dirX: SUB_DEGENERATE_MAGNITUDE, dirY: 0, dirZ: 0 })
+      await sleep(SHOT_GAP_MS)
+      const afterSubDegenerate = readPlayer(roomB, roomB.sessionId)
+      expect(afterSubDegenerate?.hp).toBe(hpBeforeSubDegenerate) // 변화 없음 — 가드가 이 구간을 거부해야 한다(MG1이 가드를 지우면 명중해 hp가 줄어든다)
+
+      await sleep(SHOT_GAP_MS)
+
       // 대조군(양성) — 같은 방향의 단위 벡터(|dirX|=1>=0.9 → helper=
       // {0,1,0} → 퇴화 아님)는 이 리뷰 blocker와 무관하게 이전에도 정상
       // 동작했다. 이 단언이 실패하면 기하 자체가 잘못된 것이지 blocker와
       // 무관하다 — (1)의 실패가 "빗나가는 기하" 때문이 아니라 진짜
-      // NaN 회귀 때문임을 보증한다. hp는 (1)의 실제 결과와 무관하게
-      // "직전 관측값에서 정확히 헤드 데미지만큼" 줄어야 하므로 절대값이
-      // 아니라 직전 관측값 기준으로 단언한다.
-      const hpBeforeUnitControl = afterDegenerate?.hp ?? hpBeforeDegenerate
+      // NaN 회귀 때문임을 보증한다. hp는 (1)·N7 확인의 실제 결과와
+      // 무관하게 "직전 관측값에서 정확히 헤드 데미지만큼" 줄어야 하므로
+      // 절대값이 아니라 직전 관측값 기준으로 단언한다.
+      const hpBeforeUnitControl = afterSubDegenerate?.hp ?? hpBeforeDegenerate
       roomA.send('fire', { dirX: 1, dirY: 0, dirZ: 0 })
       await sleep(SHOT_GAP_MS)
       const afterUnitControl = readPlayer(roomB, roomB.sessionId)
