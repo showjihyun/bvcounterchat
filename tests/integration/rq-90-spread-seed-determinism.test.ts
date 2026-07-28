@@ -172,6 +172,47 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * coder의 몫이다. (A)/(B)/(C)/`F1_SEED_SEQUENCE` 오라클 열은 이 REV가
  * 한 줄도 건드리지 않았다.
  *
+ * **REV(원장 22z7/22aa — 골든 GA-49 그물 + (2) 블록 회수)**: 재리뷰
+ * (`_workspace/review/feat-RQ-90-spread-seed-determinism-r2.md` [major N-1])가
+ * 바로 위 "(2) 벡터 크기가 콘 형태를 왜곡" 블록이 **구조적으로 공허함**을
+ * 실증했다 — 그 블록에 도달할 때 B는 이미 (1)의 퇴화 발과 단위 대조군
+ * 발의 헤드 데미지(각 50)로 hp 0(시신)이고, `handleFire`의 `!canAct`
+ * 피격 대상 필터(`GameRoom.ts:645`)가 시신을 후보에서 제외해 탄퍼짐이
+ * 무엇을 하든 관측값이 변할 수 없었다(재리뷰 E6: 오라클이 '바디 명중'으로
+ * 분류한 시드로 바꿔도 그대로 통과 — 명중/빗나감을 원리적으로 구분하지
+ * 못했다). 그 블록을 **들어냈고**, 아래 `describe('RQ-90/GA-49: ...')`로
+ * 대체했다 — 사용자가 승인한 골든 GA-49("조준 벡터의 크기는 명중
+ * 여부에도, 탄퍼짐 콘의 모양·크기에도 영향을 주지 않는다")의 `verify`가
+ * 가리키는 대상이 이 신규 describe다.
+ *
+ * **재배치 대신 신규 describe를 고른 이유**: 재리뷰의 최소 변경안은
+ * "(2)를 대조군 사격 앞(B가 hp 50일 때)으로 옮기는" 순서 재배치였다 —
+ * 그러면 F1 오라클 열(24발)·(B) 음성 대조군·(C) 콘 반경 0 복귀·N7 퇴화
+ * 발·(1)의 두 발까지 이어지는 **한 `it()` 안의 누적 hp 산술 전체**가 옮긴
+ * 지점을 기준으로 다시 성립해야 해서 회귀 위험이 실재했다(팀리드 지적).
+ * 신규 `describe`는 **자기 서버·자기 룸 인스턴스**를 새로 띄우므로(아래
+ * `beforeAll`) 기존 두 `it()`의 hp·seam 상태를 원천적으로 물려받지 않는다
+ * — "물려받지 않는다"를 주석으로 선언하는 대신 구조로 강제한다. 대가는
+ * 서버 기동 1회 추가(수 초, 기존 타임아웃 예산 안)뿐이다. 새 describe
+ * 안에서는 데미지 총합을 의도적으로 `WEAPON.DAMAGE_BODY * 3 = 75 <
+ * PLAYER.MAX_HP`로 설계해(바디 버킷 3발만 쏜다) 피격자가 시퀀스 내내
+ * 살아있게 했다 — (2)를 공허하게 만든 원인(대상이 시신이 되는 것) 자체를
+ * 설계로 없앤 것이지, 우연히 죽지 않기를 바란 것이 아니다.
+ *
+ * **22z4 회수**: 위 두 번째 `it()`(리뷰 blocker 재현)의 "자기 완결적으로
+ * 명시한다" 주석은 실제로는 `forcedSpreadSeed`를 재설정하지 않아 사실과
+ * 어긋났다(평가자 N10, 재리뷰 minor N-3) — `seam.forcedSpreadSeed =
+ * undefined`를 그 `it()` 서두에 추가해 주석을 사실로 만들었다.
+ *
+ * **검증(변이, 격리 워크트리 — 전문은 `_workspace/GA-49/01_test-writer.md`)**:
+ * MA(3발째부터 RNG 1드로 전진) → F1 오라클 열이 죽는지, MUT-A(정규화
+ * 가드 되돌림) → (1)과 신규 GA-49 단언이 **함께** 죽는지(같은 가드가 두
+ * 성질 — NaN 방지·크기 무관성 — 을 함께 보장하므로 둘 다 죽는 것이 기대
+ * 결과다, 그물이 겹친 것이 아니다), MG1(정규화 가드 줄 삭제) → N7 발이
+ * 죽는지, 그리고 (2)가 실패했던 바로 그 시험(오라클이 '바디 명중'으로
+ * 분류한 시드로 miss 버킷 시드를 교체)을 신규 GA-49 단언에 다시 적용해
+ * 죽는지 — 전부 실측했다.
+ *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다(ADR-0008
  * 허용 예외, `rq-12`와 동일). 모든 대기에 `withTimeout()` 상한을 건다.
  * hp 변화 관측은 `onStateChange` 이벤트 기반 폴링(고정 슬립 아님)이고,
@@ -217,11 +258,20 @@ const AMPLE_MAGAZINE = 999
  * 정확히 같은 z·같은 높이여야 하는데, 자연 스폰 좌표(원 위의 15개 점)는
  * 이 조건을 우연히 만족하지 않는다 — 화이트박스로 직접 배치한다. */
 const DEGENERATE_DISTANCE = 6
-/** 리뷰 blocker(2) 재현 — 조준 벡터를 이 배율만큼 부풀려 보낸다. 콘 반경이
- * 0이 아닐 때 `v = cross(direction, u)`가 정규화되지 않아 크기가
- * `|direction|`이 되므로(계약 위반), 벡터를 부풀리면 편차 분포가 왜곡된다
- * — 리뷰가 실측한 배율(1000)과 동일하게 맞췄다. */
+/** GA-49(조준 벡터 크기 무관성) — 조준 벡터를 이 배율만큼 부풀려 보낸다.
+ * 정규화 가드(`GameRoom.handleFire`가 `applySpread` 호출 전에 세운다)가
+ * 없다면 `v = cross(direction, u)`가 정규화되지 않아 크기가 `|direction|`
+ * 이 되므로(계약 위반), 벡터를 부풀리면 편차 분포가 왜곡된다 — 리뷰가
+ * 실측한 배율(1000)과 동일하게 맞췄다. 정규화 가드가 있는 오늘은 이
+ * 배율에서도 단위 벡터와 동일한 결과가 나와야 한다 — 그것이 GA-49 then. */
 const OVERSIZED_AIM_SCALE = 1000
+/** GA-49 — 조준 벡터를 이 배율만큼 줄여 보낸다(골든 given의 예시 "1e-6으로
+ * 줄인 벡터"와 동일). `DEGENERATE_RADIAL_EPS`(1e-12)보다 한참 위 자릿수라
+ * `GameRoom`의 정규화 퇴화 가드(`dirMagnitude < DEGENERATE_RADIAL_EPS`)에
+ * 걸리지 않는다 — 걸리면 그건 크기 무관성이 아니라 가드 자체를 관측하는
+ * 것이 되어 GA-49의 대상에서 벗어난다. `OVERSIZED_AIM_SCALE`(부풀리기)과
+ * 대칭인 축소 방향을 덮는다. */
+const UNDERSIZED_AIM_SCALE = 1e-6
 
 /** N7 그물(2차 델타 재평가 지적) — `GameRoom.ts`의 정규화 가드
  * (`dirMagnitude < DEGENERATE_RADIAL_EPS`이면 조기 return)가 실제로
@@ -439,7 +489,12 @@ function findSeedWithBucket(
  * `teleportPlayer` 코멘트 참고. */
 interface SpreadTestSeam {
   spreadTuningOverride?: { coneRadiusRad: number }
-  forcedSpreadSeed?: number
+  // `| undefined`를 명시한다(단순 `?:`가 아니라) — `exactOptionalPropertyTypes`
+  // 아래서는 `seam.forcedSpreadSeed = undefined`(22z4 회수, 명시 초기화)가
+  // 그냥 `?:`로는 타입 에러(TS2412)가 난다. 실제 프로덕션 필드
+  // (`GameRoom.ts` `private forcedSpreadSeed: number | undefined`)도 애초에
+  // 옵셔널이 아니라 이 유니언 형태다.
+  forcedSpreadSeed?: number | undefined
   magazines: Map<string, number>
   moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
   positionHistory: Map<string, PositionSnapshot[]>
@@ -717,7 +772,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
   )
 
   it(
-    'RQ-90 리뷰 blocker 재현: handleFire가 정규화되지 않은 클라 조준 벡터를 applySpread에 그대로 넘겨, (1) 콘 반경 0에서도 특정 방향에서 NaN으로 확정 미스가 나고 (2·**현재 공허 — 리뷰 major N-1**, 원장 22z3) 콘 반경이 0이 아니면 벡터 크기가 편차 분포를 왜곡한다',
+    'RQ-90 리뷰 blocker 재현: handleFire가 정규화되지 않은 클라 조준 벡터를 applySpread에 그대로 넘기면, 콘 반경 0에서도 특정 방향에서 NaN으로 확정 미스가 난다(정규화 가드로 수정됨 — 이 발이 그 수정을 고정한다) + N7 서브임계 가드 확인(GA-49 그물은 별도 describe로 이동, 원장 22aa)',
     async () => {
       const roomA = await joinGame(newClient(server)) // 사수
       const roomB = await joinGame(newClient(server)) // 피격자
@@ -732,8 +787,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
 
       const seam = getServerRoom(roomA)
       // 이 `it()`은 이전 `it()`이 룸에 남긴 상태(`spreadTuningOverride`·
-      // `forcedSpreadSeed`)에 기대지 않는다 — 자기 완결적으로 명시한다.
+      // `forcedSpreadSeed`)에 기대지 않는다 — 자기 완결적으로 명시한다
+      // (22z4 회수, 재리뷰 minor N-3: 이전 버전은 `forcedSpreadSeed`를
+      // 재설정하지 않아 이 주석이 사실과 어긋났다 — 아래 줄로 명시
+      // 재설정해 주석을 사실로 만든다).
       seam.spreadTuningOverride = { coneRadiusRad: 0 } // (1)은 출하 기본값(반경 0)에서도 재현된다.
+      seam.forcedSpreadSeed = undefined // 22z4 — 이전 `it()`의 값을 물려받지 않도록 명시 초기화(이후 각 발 앞에서 다시 확정한다)
 
       // --- (1) NaN 회귀 — 화이트박스로 B를 A와 정확히 같은 z·같은 높이,
       // +X로 `DEGENERATE_DISTANCE`만큼 떨어진 지점에 배치한다(자연 스폰
@@ -759,8 +818,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
 
       // 퇴화 벡터(단위가 아님, |dirX|=0.5<0.9 → helper={1,0,0} → cross=0
       // → NaN) — 정규화됐다면(위 사전 확인) 헤드에 명중해 데미지가
-      // 줄어야 한다. **이 단언이 오늘 Red다**: 실제로는 NaN이 전파돼
-      // `raycastHitbox`가 걸러 무조건 빗나가고, hp가 그대로다.
+      // 줄어야 한다. **이 단언은 작성 당시 Red였다**(정규화 가드가 없던
+      // 시점 — 실제로는 NaN이 전파돼 `raycastHitbox`가 걸러 무조건
+      // 빗나가고, hp가 그대로였다). `GameRoom.ts:618`의 정규화 가드가
+      // 그 이후 이 경로를 고쳤고, 이 발은 그 수정을 오늘도 회귀 없이
+      // 고정하는 그물이다(위 22z3 REV 참고 — MUT-A가 이 가드를 되돌리면
+      // 이 단언이 다시 죽는 것을 실측했다).
       const hpBeforeDegenerate = baselineB.hp
       roomA.send('fire', { dirX: 0.5, dirY: 0, dirZ: 0 })
       const afterDegenerate = await waitForHpChange(
@@ -813,58 +876,182 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       )
       expect(afterUnitControl?.hp).toBe(hpBeforeUnitControl - WEAPON.DAMAGE_BODY * WEAPON.HEADSHOT_MULTIPLIER)
 
-      await sleep(SHOT_GAP_MS)
-
-      // --- (2) 벡터 크기가 콘 형태를 왜곡 — 콘 반경을 0이 아닌 값으로
-      // 주입한다(반경 0에서는 이 결함이 관측 불가, 리뷰 minor 2와 동일
-      // 트리거). B는 (1)에서 배치한 위치(A + DEGENERATE_DISTANCE·X)를
-      // 그대로 유지한다 — 좌표는 실측값을 그대로 재사용하므로 하드코딩이
-      // 아니다.
-      const currentB = readPlayer(roomB, roomB.sessionId)
-      if (!currentB) throw new Error('RQ-90 리뷰 blocker 재현 — (2) 시작 전 B 상태 관측 실패')
-      const origin2 = origin1 // A는 이동하지 않았다.
-      const targetFoot2: Vec3 = { x: currentB.x, y: currentB.y, z: currentB.z }
-      const { aim: aim2, distance: distance2 } = aimAtBodyWithDistance(baselineA, currentB)
-      const coneRadiusRad2 = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance2) * SPREAD_CONE_MULTIPLIER
-      // 오프라인 오라클 — "정규화된(단위) 벡터라면 반드시 빗나간다"로
-      // 분류한 시드를 찾는다. 실제로 보낼 때는 이 벡터를
-      // `OVERSIZED_AIM_SCALE`배로 부풀린다 — 정규화됐다면(계약대로) 결과가
-      // 같아야 하므로, 부풀린 벡터도 여전히 빗나가야 한다.
-      const seedForScaleTest = findSeedWithBucket(origin2, aim2, targetFoot2, coneRadiusRad2, 'miss', SEARCH_LIMIT)
-
-      seam.spreadTuningOverride = { coneRadiusRad: coneRadiusRad2 }
-      seam.forcedSpreadSeed = seedForScaleTest // 위 (1)·N7 구간에서 물려받은 값을 여기서 확정한다
-      // (리뷰 minor N-3) 이 `it()`은 반경 0 구간에서 `forcedSpreadSeed`를
-      // 재설정하지 않는다 — 이전 `it()`의 값을 물려받되 `applySpread`가
-      // 항등이라 무해하다. "자기 완결적"이라는 서술은 그 범위로만 참이다.
-
-      const hpBeforeOversized = currentB.hp
-      roomA.send('fire', {
-        dirX: aim2.x * OVERSIZED_AIM_SCALE,
-        dirY: aim2.y * OVERSIZED_AIM_SCALE,
-        dirZ: aim2.z * OVERSIZED_AIM_SCALE,
-      })
-      await sleep(SHOT_GAP_MS)
-      const afterOversized = readPlayer(roomB, roomB.sessionId)
-      // ⚠️ **이 단언은 오늘 아무것도 관측하지 못한다(리뷰 major N-1, 실측).**
-      // 여기 도달할 때 B는 이미 **hp 0**이다 — 위 (1)의 퇴화 발과 단위 대조군
-      // 발이 각각 헤드 데미지(50)를 넣어 100→50→0이 된다. `handleFire`는
-      // `!canAct`로 시신을 명중 후보에서 제외하므로(`GameRoom.ts:645`)
-      // **탄퍼짐이 무엇을 하든 hp가 변할 수 없다**. 리뷰어가 오라클이 '바디
-      // 명중'으로 분류한 시드로 바꾸는 변이(MUT-VAC)를 심었는데 그대로
-      // 통과했다 — 이 단언은 명중과 빗나감을 **원리적으로 구분하지 못한다**.
-      //
-      // 즉 "벡터 크기가 콘을 왜곡하지 못한다"의 실제 커버리지는 **0**이다.
-      // (1)의 정규화 그물이 같은 원인(비정규화 벡터)을 잡으므로 제품 결함은
-      // 아니지만, **이 블록이 그 명제를 지킨다고 믿지 마라**. 실패 가능한
-      // 유일한 경로는 B의 리스폰 경합이며 그건 거짓 실패다.
-      //
-      // 살리려면 (2)를 대조군 사격 **앞**(B가 hp 50일 때)으로 옮겨야 한다 —
-      // 순서 재배치라 회귀 위험이 있어 이월했다(원장 22z3, 트리거: 콘 반경을
-      // 0에서 올리는 밸런싱 PR). 골든 신설도 함께 제안됐다(리뷰 N11).
-      expect(afterOversized?.hp).toBe(hpBeforeOversized)
+      // --- (2) 벡터 크기가 콘 형태를 왜곡 — 이 자리에 있던 블록은
+      // **제거했다**(원장 22z3/22aa, 재리뷰 major N-1). 도달 시점에 B가
+      // 이미 hp 0(시신)이라 `handleFire`의 `!canAct` 피격 대상 필터가
+      // 명중 후보에서 제외해 구조적으로 아무것도 관측할 수 없었다(재리뷰
+      // E6·E7 실측 — MUT-VAC 변이에도 그대로 통과했다). 그 명제("조준
+      // 벡터의 크기는 명중 여부·탄퍼짐 콘 모양에 영향을 주지 않는다")는
+      // 골든 GA-49로 승격돼 아래 `describe('RQ-90/GA-49: ...')`가 대신
+      // 검증한다 — 피격자가 시퀀스 내내 살아있도록 설계해 이 자리의
+      // 공허를 원천적으로 만들지 않는다(파일 상단 REV 참고).
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    30_000,
+  )
+})
+
+/**
+ * RQ-90/GA-49(원장 22z7·22aa) — "악의적 클라이언트가 방향은 정상이지만
+ * 크기가 1이 아닌 조준 벡터(1000배로 부풀리거나 1e-6배로 줄인 벡터)를
+ * 보내며, 서버의 탄퍼짐 콘 반경은 0이 아닌 값으로 설정돼 있을 때, 판정
+ * 결과가 같은 방향의 단위 벡터로 쏜 경우와 동일하다."
+ *
+ * **독립 서버·독립 룸** — 위 describe와 완전히 분리된 `beforeAll`/`afterAll`
+ * 로 새 서버를 띄운다(파일 상단 REV "재배치 대신 신규 describe를 고른
+ * 이유" 참고) — 위 두 `it()`이 남긴 hp·`spreadTuningOverride`·
+ * `forcedSpreadSeed` 상태를 구조적으로 물려받을 수 없다(같은 프로세스
+ * 안이라도 `matchMaker.getLocalRoomById`가 반환하는 룸 인스턴스 자체가
+ * 다른 서버에 속한다).
+ *
+ * **공허함 회피(양성 대조 필수, 22z3 교훈)**: "아무 일도 없었다" 형태의
+ * 단언만으로는 사격 자체가 무시돼도 통과한다. 그래서 매 배율(단위·과대·
+ * 과소)마다 **같은 시드·같은 콘 반경**에서 오프라인 오라클이 예측한 버킷
+ * ('body' 또는 'miss')과 정확히 일치하는지 단언한다 — 단위 벡터 대조가
+ * 먼저 그 시드·반경 구간에서 사격이 실제로 유효함을 증명하고, 그 다음
+ * 크기만 바꾼 발이 **같은 결과**를 내는지 비교한다.
+ *
+ * **바디 버킷이 시신을 만들지 않는 이유**: 이 describe는 바디 버킷에서
+ * 정확히 3발(단위·과대·과소)만 쏜다 — `WEAPON.DAMAGE_BODY * 3 = 75 <
+ * PLAYER.MAX_HP(100)`이라 피격자가 세 발 내내 살아있다(`canAct` 유지).
+ * 위 describe의 (2) 블록이 공허했던 원인(대상이 이미 시신)을 설계로
+ * 없앤 것이다 — 우연이 아니라 데미지 총합을 의도적으로 문턱 밑에 뒀다.
+ *
+ * **두 방향 × 두 버킷**: 골든 given이 명시한 두 방향(1000배 부풀리기·
+ * 1e-6배 축소)을 각각 'body'·'miss' 두 버킷 모두에서 확인한다 — 한쪽
+ * 방향·한쪽 버킷만 확인하면 "우연히 그 조합에서만 무해했다"는 반쪽
+ * 결론을 배제하지 못한다.
+ */
+describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄퍼짐 콘의 모양에 영향을 주지 않는다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-90/GA-49: 콘 반경이 0이 아닐 때 조준 벡터를 1000배로 부풀리거나 1e-6배로 줄여도, 단위 벡터로 쏜 경우와 동일한 판정(바디 명중·빗나감 둘 다)이 나온다',
+    async () => {
+      const roomC = await joinGame(newClient(server)) // 사수 — 이 describe 전용 신규 서버·신규 세션
+      const roomD = await joinGame(newClient(server)) // 피격자
+
+      const baselineC = await waitForDefinedPlayer(roomC, roomC.sessionId)
+      const baselineD = await waitForDefinedPlayer(roomD, roomD.sessionId)
+      expect(baselineD.hp).toBe(PLAYER.MAX_HP)
+
+      // RQ-16: D 자신의 최초 입장 스폰 보호를 즉시 해제(`rq-12`·위 describe와 동일 패턴).
+      roomD.send('fire', UP_MISS_AIM)
+      await sleep(SHOT_GAP_MS)
+
+      const seam = getServerRoom(roomC)
+      // 이 it()이 쏘는 6발(3 바디 + 3 미스)은 기본 탄창(10발)으로도
+      // 충분하지만, 재장전(RQ-11) 타이밍을 이 테스트의 관심사에서 완전히
+      // 배제하기 위해 명시적으로 채운다(위 describe의 F1 수정과 동일 근거).
+      seam.magazines.set(roomC.sessionId, AMPLE_MAGAZINE)
+
+      const origin = eyeOrigin({ x: baselineC.x, y: baselineC.y, z: baselineC.z }, DEFAULT_HITBOX.eyeHeightM)
+      const targetFoot: Vec3 = { x: baselineD.x, y: baselineD.y, z: baselineD.z }
+      const { aim, distance } = aimAtBodyWithDistance(baselineC, baselineD)
+      // GA-49 given: "탄퍼짐 콘 반경은 0이 아닌 값" — 반경 0이면 크기가
+      // 결과에 전혀 드러나지 않아 이 골든이 공허해진다(위 describe와 동일
+      // 근거로 `spreadTuningOverride`를 쓴다. 출하 기본값은 불변).
+      const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
+      seam.spreadTuningOverride = { coneRadiusRad }
+
+      // 오프라인 오라클로 이 정확한 기하·반경에서 '바디 명중'·'빗나감'을
+      // 내는 시드를 각각 하나씩 확정한다 — 두 버킷 모두에서 크기 무관성을
+      // 확인해야 "우연히 한쪽 판정에만 무해했다"는 반쪽 결론을 피한다.
+      const seedBody = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'body', SEARCH_LIMIT)
+      const seedMiss = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', SEARCH_LIMIT)
+
+      // ============================================================
+      // 바디 버킷 3연발(단위 → 과대 → 과소) — 셋 다 정확히 같은 시드·
+      // 같은 콘 반경에서 쏜다. 데미지 총합 75 < 100이라 D가 세 발 내내
+      // 살아있다.
+      // ============================================================
+      seam.forcedSpreadSeed = seedBody // 매 발 앞에서 다시 확정한다(22z4 교훈 — 이전 it()의 값에 기대지 않는다)
+      const hpBeforeBodyUnit = baselineD.hp
+      roomC.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z }) // 단위 벡터(양성 대조 — 22z3가 요구한 "같은 반경·같은 시드 구간의 양성 대조")
+      const afterBodyUnit = await waitForHpChange(
+        roomD,
+        roomD.sessionId,
+        hpBeforeBodyUnit,
+        'RQ-90/GA-49 바디 버킷 단위 벡터 대조 사격 후 hp 변화 대기',
+      )
+      expect(afterBodyUnit.hp).toBe(hpBeforeBodyUnit - WEAPON.DAMAGE_BODY) // 오라클 예측('body')과 일치 — 이 구간에서 사격 자체가 실제로 명중함을 먼저 증명한다
+      await sleep(SHOT_GAP_MS)
+
+      seam.forcedSpreadSeed = seedBody
+      roomC.send('fire', {
+        dirX: aim.x * OVERSIZED_AIM_SCALE,
+        dirY: aim.y * OVERSIZED_AIM_SCALE,
+        dirZ: aim.z * OVERSIZED_AIM_SCALE,
+      }) // 같은 방향, 크기만 1000배
+      const afterBodyOversized = await waitForHpChange(
+        roomD,
+        roomD.sessionId,
+        afterBodyUnit.hp,
+        'RQ-90/GA-49 바디 버킷 과대(x1000) 사격 후 hp 변화 대기',
+      )
+      expect(afterBodyOversized.hp).toBe(afterBodyUnit.hp - WEAPON.DAMAGE_BODY) // 단위 벡터와 정확히 같은 결과 — GA-49 then(부풀리기 방향, body 버킷)
+      await sleep(SHOT_GAP_MS)
+
+      seam.forcedSpreadSeed = seedBody
+      roomC.send('fire', {
+        dirX: aim.x * UNDERSIZED_AIM_SCALE,
+        dirY: aim.y * UNDERSIZED_AIM_SCALE,
+        dirZ: aim.z * UNDERSIZED_AIM_SCALE,
+      }) // 같은 방향, 크기만 1e-6배
+      const afterBodyUndersized = await waitForHpChange(
+        roomD,
+        roomD.sessionId,
+        afterBodyOversized.hp,
+        'RQ-90/GA-49 바디 버킷 과소(x1e-6) 사격 후 hp 변화 대기',
+      )
+      expect(afterBodyUndersized.hp).toBe(afterBodyOversized.hp - WEAPON.DAMAGE_BODY) // 단위 벡터와 정확히 같은 결과 — GA-49 then(축소 방향, body 버킷)
+
+      await sleep(SHOT_GAP_MS)
+
+      // ============================================================
+      // 빗나감 버킷 3연발(단위 → 과대 → 과소) — D는 hp=25(생존)로 시작해
+      // 이 구간 내내 변하지 않아야 한다. "변화 없음"을 확인하는 구간이라
+      // `waitForHpChange`(변화를 기다리는 헬퍼)가 아니라 고정 슬립 뒤 값을
+      // 읽는다 — 파일 상단 "결정론 메모"가 이미 명시한 기존 예외와 동일한
+      // 이유(그 자체가 확인 대상이라 이벤트 기반 대기가 부적합하다).
+      // ============================================================
+      seam.forcedSpreadSeed = seedMiss
+      const hpBeforeMissUnit = afterBodyUndersized.hp
+      roomC.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z }) // 단위 벡터(양성 대조)
+      await sleep(SHOT_GAP_MS)
+      const afterMissUnit = readPlayer(roomD, roomD.sessionId)
+      expect(afterMissUnit?.hp).toBe(hpBeforeMissUnit) // 오라클 예측('miss')과 일치 — 변화 없음(이 구간에서도 사격 판정 자체는 정상 동작함을 먼저 증명)
+
+      seam.forcedSpreadSeed = seedMiss
+      roomC.send('fire', {
+        dirX: aim.x * OVERSIZED_AIM_SCALE,
+        dirY: aim.y * OVERSIZED_AIM_SCALE,
+        dirZ: aim.z * OVERSIZED_AIM_SCALE,
+      })
+      await sleep(SHOT_GAP_MS)
+      const afterMissOversized = readPlayer(roomD, roomD.sessionId)
+      expect(afterMissOversized?.hp).toBe(hpBeforeMissUnit) // 부풀려도 여전히 빗나감 — GA-49 then(부풀리기 방향, miss 버킷)
+
+      seam.forcedSpreadSeed = seedMiss
+      roomC.send('fire', {
+        dirX: aim.x * UNDERSIZED_AIM_SCALE,
+        dirY: aim.y * UNDERSIZED_AIM_SCALE,
+        dirZ: aim.z * UNDERSIZED_AIM_SCALE,
+      })
+      await sleep(SHOT_GAP_MS)
+      const afterMissUndersized = readPlayer(roomD, roomD.sessionId)
+      expect(afterMissUndersized?.hp).toBe(hpBeforeMissUnit) // 줄여도 여전히 빗나감 — GA-49 then(축소 방향, miss 버킷)
+
+      await Promise.all([leaveRoom(roomC), leaveRoom(roomD)])
     },
     30_000,
   )
