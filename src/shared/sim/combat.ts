@@ -78,8 +78,15 @@ export function eyeOrigin(footPosition: Vec3, eyeHeightM: number): Vec3 {
 /** 레이 뒤쪽(t<0) 오탐을 배제하는 여유(가정 B). */
 const FORWARD_EPS = 1e-9
 /** 레이 방향이 y축에 사실상 평행한지 판정하는 임계 — 방향이 정규화된
- * 단위 벡터라 dx²+dz²는 [0,1] 범위다. */
-const DEGENERATE_RADIAL_EPS = 1e-12
+ * 단위 벡터라 dx²+dz²는 [0,1] 범위다(`intersectBodyCylinder`). 이
+ * 함수 자신의 `raycastHitbox`(정규화 가드, 위)도 같은 값을 쓴다.
+ * **export하는 이유(N7, 리뷰 대응)**: `GameRoom.handleFire`가
+ * `applySpread`(정규화된 단위 벡터를 전제)를 `raycastHitbox`보다 먼저
+ * 소비하므로, 자기 나름의 정규화 퇴화 가드를 별도로 둬야 한다 — 그
+ * 임계가 여기 값과 갈리면 "정규화는 통과했는데 raycastHitbox는 거부"
+ * (또는 그 반대)가 생겨 두 층위의 판정이 어긋난다. 리터럴 복제
+ * (ADR-0010) 대신 이 상수를 그대로 재사용하게 한다. */
+export const DEGENERATE_RADIAL_EPS = 1e-12
 
 function magnitude(v: Vec3): number {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
