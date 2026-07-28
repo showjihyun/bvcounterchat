@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
+import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON } from '@shared/constants'
+import { PLAYER, WEAPON, WORLD } from '@shared/constants'
 
 /**
  * RQ-12 서버 hitscan — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus
@@ -100,6 +101,19 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 보장된 안전이 아니다). GA-06·GA-08이 이미 쓰는 검증된 안전 방향(수직 위,
  * `UP_MISS_AIM`)으로 바꿔 좌표와 완전히 무관하게 만들었다 — "명중 불가능한
  * 조준"이라는 given 의도는 그대로이고, HP 불변이라는 단언도 그대로다.
+ *
+ * **REV2(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 두 가지가
+ * 추가로 깨졌다. (1) B의 RQ-16 해제 자기 사격은 B 자신의 Safe Zone(거리
+ * 0)에 막힐 수 있다 — 화이트박스(`firedSinceSpawn`)로 대체한다. (2) A는
+ * 이 파일 전체에서 한 번도 움직이지 않아 A 자신의 스폰 지점(Safe Zone
+ * 내부)에 그대로 있다 — GA-19가 A의 실제 조준 사격 자체를 막는다. **또한
+ * 기존 `travelAndSettle`(고정 +X 방향, 900ms≈5.4m)은 특정 스폰 인덱스에서
+ * 다른 스폰 지점의 Safe Zone에 새로 들어갈 수 있다는 것이 실측됐다**(15개
+ * 지점 중 4개에서 위반, `rq-31-safe-zone.test.ts` §반경-방사 기하 문서
+ * 참고) — 그래서 B의 이동도 `travelAndSettle`(실이동) 대신 반경-방사
+ * 화이트박스 텔레포트로 대체했다. A·B 둘 다 각자의 스폰 지점 기준 방사
+ * 방향으로 Safe Zone 밖으로 옮긴다.
  */
 
 const ROOM_NAME = 'game'
@@ -109,9 +123,8 @@ const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const HP_TIMEOUT_MS = 5_000
 
-/** B를 +X로 이 시간(ms)만큼 실제 이동시킨다 — 6m/s 기준 약 4.8~6m 이동. */
-const TRAVEL_MS = 900
-/** 이동 정지 후 위치가 안정화될 때까지 기다리는 여유(수 틱, 33ms×n). */
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SETTLE_MS = 200
 /** 재사격 시도 사이 아주 짧은 간격(명백히 150ms 미만) — rate-limit 거부 확인용. */
 const RAPID_REFIRE_MS = 40
@@ -239,17 +252,6 @@ function waitForHpCondition(
   )
 }
 
-/** B를 +X로 TRAVEL_MS만큼 이동시킨 뒤 정지시키고, 실제 도달한 최종 위치를
- * 읽는다(가정한 거리에 결합하지 않는다). */
-async function travelAndSettle(mover: Room): Promise<PlayerFields> {
-  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
-  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false }) // 정지
-  await sleep(SETTLE_MS)
-  const settled = readPlayer(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
-  return settled
-}
 
 /** shooter(발 위치)에서 target(발 위치)의 바디 또는 헤드 중심을 정확히
  * 조준하는 방향 벡터(정규화)를 계산한다. REV: A가 더 이상 원점에 고정되지
@@ -269,6 +271,49 @@ function aimAt(
 
 function bodyCenterM(): number {
   return (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+}
+
+/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
+ * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
+ * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
+ * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
+ * 아니다). */
+interface SafeZoneEscapeSeam {
+  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
+  positionHistory: Map<string, unknown[]>
+  firedSinceSpawn: Map<string, boolean>
+}
+
+function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
+  if (!serverRoom) {
+    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
+ * 지점×오프셋 0~20m 전수 확인됨). 고정 방향(예: +X, 이 파일의 기존
+ * `travelAndSettle`) 실이동은 특정 스폰 인덱스에서 다른 스폰 지점의 Safe
+ * Zone에 새로 들어갈 수 있어(실측 4/15 위반) 쓰지 않는다. */
+function escapeSafeZone(
+  seam: SafeZoneEscapeSeam,
+  sessionId: string,
+  base: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  const radialMagnitude = Math.hypot(base.x, base.z)
+  if (radialMagnitude < 1e-6) {
+    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
+  }
+  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
+  const ux = base.x / radialMagnitude
+  const uz = base.z / radialMagnitude
+  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
+  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+  return escaped
 }
 
 describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 그 결과만 HP에 반영된다', () => {
@@ -292,11 +337,17 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
-      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
-      expect(settledB.x).toBeGreaterThan(baselineB.x) // 실제로 +X로 이동했다는 전제 확인(원점 가정 제거)
+      // REV2(RQ-31 회귀 대응, 파일 상단 REV2) — B의 RQ-16 해제는 화이트박스로
+      // 한다. A·B 둘 다 Safe Zone 밖으로 옮긴다(반경-방사 텔레포트,
+      // 고정 +X 실이동보다 안전 — 파일 상단 REV2 근거).
+      const seam = getSafeZoneSeam(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+      await sleep(SETTLE_MS)
+      expect(escapedB.x).not.toBe(baselineB.x) // 실제로 이동했다는 전제 확인(원점 가정 제거)
 
-      const aim = aimAt(baselineA, settledB, bodyCenterM())
+      const aim = aimAt(escapedA, escapedB, bodyCenterM())
       roomA.send('fire', { dirX: aim.dirX, dirY: aim.dirY, dirZ: aim.dirZ })
 
       const afterShot = await waitForHpCondition(
@@ -318,6 +369,7 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))
 
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
 
       // REV2(공허화 해소, evaluator FAIL 대응): B가 먼저 자신의 최초 입장
@@ -328,8 +380,14 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       // 증명해 뒀으므로(양성 대조군 역할), 이 테스트에는 별도 대조군을
       // 추가하지 않았다 — 자세한 판단 근거는 `_workspace/RQ-15-16/
       // 01_test-writer_red.md` §14 참고.
-      roomB.send('fire', UP_MISS_AIM)
-      await travelAndSettle(roomB) // B를 +X로 이동(원래 이동 시나리오 유지) — 1100ms, 위 해제 사격이 반영되기 충분하다
+      // RQ-31 회귀 대응(파일 상단 REV2) — B의 해제는 화이트박스로. A도
+      // Safe Zone 밖으로 옮긴다 — 그러지 않으면 A의 사격 자체가 GA-19에
+      // 막혀 "HP 불변"이 진짜 미스가 아니라 사격 자체가 막혀서일 수 있다.
+      const seam = getSafeZoneSeam(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      escapeSafeZone(seam, roomA.sessionId, baselineA)
+      escapeSafeZone(seam, roomB.sessionId, baselineB)
+      await sleep(SETTLE_MS)
 
       // REV: 수직 위(UP_MISS_AIM)를 조준 — A·B의 실제 XZ 위치와 무관하게
       // 기하학적으로 항상 빗나간다(파일 상단 REV "부가 수정" 근거). 원래의
@@ -367,10 +425,16 @@ describe('RQ-12/ADR-0005: 발사 속도 제한(rate-limit) — 150ms 미만 간�
       const roomB = await joinGame(newClient(server))
 
       const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
-      await waitForDefinedPlayer(roomB, roomB.sessionId)
-      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
-      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
-      const aim = aimAt(baselineA, settledB, bodyCenterM())
+      const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
+
+      // RQ-31 회귀 대응(파일 상단 REV2) — B의 RQ-16 해제는 화이트박스로,
+      // A·B 둘 다 Safe Zone 밖으로 옮긴다.
+      const seam = getSafeZoneSeam(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+      await sleep(SETTLE_MS)
+      const aim = aimAt(escapedA, escapedB, bodyCenterM())
 
       // 1발 — 명중 처리(HP: 100 → 75).
       roomA.send('fire', aim)

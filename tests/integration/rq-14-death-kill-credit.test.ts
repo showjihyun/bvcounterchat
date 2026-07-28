@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
+import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON } from '@shared/constants'
+import { PLAYER, WEAPON, WORLD } from '@shared/constants'
 
 /**
  * RQ-14 HP·사망·킬 기록 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus
@@ -65,6 +66,16 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 최초 입장 보호를 즉시 해제하고, `aimAtBody`가 A의 실제 위치를 읽어
  * 상대 오프셋을 계산하도록 일반화했다. 두 `it()`의 단언(HP 감소량·킬
  * 크레딧·재사격 킬 불변)은 전혀 손대지 않았다.
+ *
+ * **REV3(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 B의 RQ-16
+ * 해제 자기 사격은 B 자신의 Safe Zone(거리 0)에 막힐 수 있어
+ * 화이트박스(`firedSinceSpawn`)로 대체한다. A도 두 `it()` 전체에서 한
+ * 번도 움직이지 않아 A 자신의 스폰 지점(Safe Zone 내부)에 그대로 있다 —
+ * GA-19가 A의 킬 시퀀스 사격 자체를 막는다. 기존 `travelAndSettle`(고정
+ * +X, 900ms≈5.4m)은 15개 스폰 지점 중 4개에서 다른 스폰 지점의 Safe
+ * Zone에 새로 들어가는 것이 실측됐다(`rq-31-safe-zone.test.ts` §반경-방사
+ * 기하 참고) — B의 이동도 반경-방사 화이트박스 텔레포트로 대체한다.
  */
 
 const ROOM_NAME = 'game'
@@ -73,17 +84,14 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const HP_TIMEOUT_MS = 5_000
-const TRAVEL_MS = 900
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SETTLE_MS = 200
 /** 연속 사격 사이의 여유 — ADR-0005 rate-limit(150ms)을 명백히 초과한다. */
 const BETWEEN_SHOTS_MS = 300
 /** "변화 없음"을 확인하기 위한 관찰 구간(여러 상태 갱신을 거치기 충분한 여유). */
 const NO_CHANGE_OBSERVATION_MS = 500
 
-/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
- * 위치와 무관하게 안전하다. REV: B가 이 방향으로 자기 자신을 쏘면 자신의
- * 스폰 보호가 즉시 해제된다(RQ-16). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -246,14 +254,45 @@ function waitForKillsCondition(
   )
 }
 
-async function travelAndSettle(mover: Room): Promise<VictimFields> {
-  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
-  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
-  await sleep(SETTLE_MS)
-  const settled = readVictim(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
-  return settled
+/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
+ * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
+ * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
+ * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
+ * 아니다). */
+interface SafeZoneEscapeSeam {
+  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
+  positionHistory: Map<string, unknown[]>
+  firedSinceSpawn: Map<string, boolean>
+}
+
+function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
+  if (!serverRoom) {
+    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
+ * 지점×오프셋 0~20m 전수 확인됨). */
+function escapeSafeZone(
+  seam: SafeZoneEscapeSeam,
+  sessionId: string,
+  base: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  const radialMagnitude = Math.hypot(base.x, base.z)
+  if (radialMagnitude < 1e-6) {
+    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
+  }
+  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
+  const ux = base.x / radialMagnitude
+  const uz = base.z / radialMagnitude
+  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
+  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+  return escaped
 }
 
 /** REV: A가 더 이상 원점에 고정되지 않으므로(RQ-31 onJoin 로테이션) 두
@@ -293,9 +332,14 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
       expect(baselineA.kills).toBe(0)
 
-      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
-      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
-      const aim = aimAtBody(baselineAPosition, settledB)
+      // RQ-31 회귀 대응(파일 상단 REV3) — B의 RQ-16 해제는 화이트박스로,
+      // A·B 둘 다 Safe Zone 밖으로 옮긴다(모든 스폰 지점은 y=0 평지).
+      const seam = getSafeZoneSeam(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, { ...baselineAPosition, y: 0 })
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, { ...baselineB, y: 0 })
+      await sleep(SETTLE_MS)
+      const aim = aimAtBody(escapedA, escapedB)
 
       let lastHp = baselineB.hp
       for (let shot = 1; shot <= 3; shot += 1) {
@@ -379,12 +423,17 @@ describe('RQ-14/GA-08: 바디샷 4회 누적으로 사망 처리되고 가해자
       const roomB = await joinGame(newClient(server))
 
       const baselineAPosition = await waitForDefinedVictim(roomA, roomA.sessionId) // 위치 재사용(REV)
-      await waitForDefinedVictim(roomB, roomB.sessionId)
+      const baselineB = await waitForDefinedVictim(roomB, roomB.sessionId)
       await waitForDefinedKiller(roomA, roomA.sessionId)
 
-      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
-      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
-      const aim = aimAtBody(baselineAPosition, settledB)
+      // RQ-31 회귀 대응(파일 상단 REV3) — B의 RQ-16 해제는 화이트박스로,
+      // A·B 둘 다 Safe Zone 밖으로 옮긴다.
+      const seam = getSafeZoneSeam(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, { ...baselineAPosition, y: 0 })
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, { ...baselineB, y: 0 })
+      await sleep(SETTLE_MS)
+      const aim = aimAtBody(escapedA, escapedB)
 
       // GA-08과 동일한 절차로 B를 사망시킨다(바디샷 4회, rate-limit 간격 준수).
       for (let shot = 1; shot <= 4; shot += 1) {

@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
+import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER } from '@shared/constants'
+import { PLAYER, WORLD } from '@shared/constants'
 
 /**
  * RQ-16 스폰 보호 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus 룸 경계,
@@ -60,6 +61,35 @@ import { PLAYER } from '@shared/constants'
  * 추가했다 — 기존 단언은 그대로 두고 뒤에 이어붙였다(순증). (b)
  * `LATE_IN_WINDOW_MS`를 2700ms→2000ms로 낮췄다 — 관측 지연(패치 주기)과
  * `sleep` 오버슈트가 겹쳐도 보호 창(3000ms)을 넘기지 않도록 여유를 넓혔다.
+ *
+ * **REV4(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`) — 이 파일은 개별 판단 대상(team-lead 지시)**: 이 파일은 RQ-16
+ * 자체(스폰 보호가 실제로 작동하는지)를 검증하므로, 보호를 화이트박스로
+ * 꺼버리면 테스트가 무의미해진다. 대신 **위치**(Safe Zone)만 화이트박스로
+ * 옮기고 **시간 기반 보호 로직 자체는 손대지 않는다** — 텔레포트는
+ * `moveStates`만 바꿀 뿐 `spawnedAtTick`/`firedSinceSpawn`(RQ-16 상태)에는
+ * 전혀 영향을 주지 않으므로 이 분리가 안전하다.
+ * - **`killAndWaitForRespawn`의 최초 해제 사격**(킬 시퀀스 시작 전, B가
+ *   스스로 쏴서 자신의 최초 입장 보호를 해제하는 것)은 **의도적 관측
+ *   대상이 아니라 순수 셋업**이다(GA-10 자체와 무관 — 리스폰 이후 상태만
+ *   GA-10의 관측 대상이다) — 화이트박스(`firedSinceSpawn`)로 대체한다.
+ *   A·B 둘 다 Safe Zone 밖으로 옮겨야 A의 킬 시퀀스 사격 자체가 나가고
+ *   (GA-19) B가 실제로 피해를 입는다(GA-11).
+ * - **리스폰 후 B는 새 스폰 지점(다시 Safe Zone 내부)에 배치된다** —
+ *   `killAndWaitForRespawn`이 반환하기 직전에 B를 다시 한번 Safe Zone
+ *   밖으로 옮긴다. 이 텔레포트는 위치만 바꿀 뿐 RQ-16 타이머는 그대로라,
+ *   GA-10 (1)(2)(3)의 "3초 이내 무효화·자기 사격 즉시 해제·자연 만료"
+ *   관측은 **오직 RQ-16(시간 기반)만으로 설명된다** — Safe Zone(위치
+ *   기반)이 섞여 어느 쪽 때문인지 불분명해지는 것을 막는다.
+ * - **GA-10 (2)의 자기 사격과 (1)·"최초 입장" 테스트의 양성 대조군 자기
+ *   사격은 그대로 자기 사격으로 남긴다** — RQ-16 "사격하면 즉시 해제"
+ *   자체가 관측 대상이기 때문이다(team-lead 지시 "자기-사격이 의도적
+ *   관측 대상인 it()이 있으면 사수를 Safe Zone 밖으로 옮기는 쪽이
+ *   맞다"). B가 이미 Safe Zone 밖으로 옮겨져 있으므로 이 자기 사격은
+ *   GA-19에 막히지 않고 정상적으로 나가 RQ-16 해제 여부만을 순수하게
+ *   시험한다.
+ * - **"최초 입장" describe**(리스폰 없음)는 `killAndWaitForRespawn`을
+ *   거치지 않으므로 A·B를 별도로 Safe Zone 밖으로 옮긴다.
  */
 
 const ROOM_NAME = 'game'
@@ -213,6 +243,49 @@ function aimAtBody(
  * 행위만으로 보호가 풀린다"를 증명하는 데 정확히 필요한 성질이다. */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
+/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
+ * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
+ * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
+ * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
+ * 아니다). 이 파일은 `moveStates`(위치)만 바꾸고 `spawnedAtTick`은 절대
+ * 건드리지 않는다 — RQ-16 시간 기반 보호 로직 자체는 이 파일의 검증
+ * 대상이라 손대지 않는다(파일 상단 REV4 참고). */
+interface SafeZoneEscapeSeam {
+  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
+  positionHistory: Map<string, unknown[]>
+  firedSinceSpawn: Map<string, boolean>
+}
+
+function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
+  if (!serverRoom) {
+    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
+ * 지점×오프셋 0~20m 전수 확인됨). */
+function escapeSafeZone(
+  seam: SafeZoneEscapeSeam,
+  sessionId: string,
+  base: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  const radialMagnitude = Math.hypot(base.x, base.z)
+  if (radialMagnitude < 1e-6) {
+    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
+  }
+  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
+  const ux = base.x / radialMagnitude
+  const uz = base.z / radialMagnitude
+  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
+  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+  return escaped
+}
+
 /** B를 A의 사격으로 사망시키고, 리스폰(HP 100 복귀)까지 기다린다. GA-10의
  * given("B가 방금 스폰(리스폰)되어 스폰 보호가 시작됨")을 만드는 공통 절차 —
  * (1)(2)(3) 세 케이스가 각각 독립된 방(같은 룸, 새 세션)에서 이 절차를 거쳐
@@ -247,10 +320,17 @@ async function killAndWaitForRespawn(
   const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
   expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-  roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제
+  // RQ-31 회귀 대응(파일 상단 REV4) — 이 해제는 순수 셋업(GA-10의 관측
+  // 대상이 아니다)이므로 화이트박스로 한다. A·B 둘 다 Safe Zone 밖으로
+  // 옮긴다 — A의 킬 시퀀스 사격 자체가 나가려면(GA-19), B가 실제로 피해를
+  // 입으려면(GA-11) 필요하다. `spawnedAtTick`은 건드리지 않는다.
+  const seam = getSafeZoneSeam(roomA)
+  seam.firedSinceSpawn.set(roomB.sessionId, true)
+  const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+  const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
   await sleep(SELF_FIRE_SETTLE_MS)
 
-  const aim = aimAtBody(baselineA, baselineB)
+  const aim = aimAtBody(escapedA, escapedB)
   let previousHp = baselineB.hp
   const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다)
   for (let shot = 1; shot <= MAX_KILL_SHOTS && previousHp > 0; shot += 1) {
@@ -267,7 +347,7 @@ async function killAndWaitForRespawn(
   }
   expect(previousHp).toBe(0)
 
-  const bAfterRespawn = await waitForPlayerCondition(
+  const bAfterRespawnRaw = await waitForPlayerCondition(
     roomB,
     roomB.sessionId,
     (p) => p.hp === PLAYER.MAX_HP,
@@ -275,7 +355,17 @@ async function killAndWaitForRespawn(
     RESPAWN_OBSERVE_TIMEOUT_MS,
   )
 
-  return { a: baselineA, bAfterRespawn }
+  // RQ-31 회귀 대응 — 리스폰으로 B는 새 스폰 지점(다시 Safe Zone 내부)에
+  // 배치된다. GA-10 (1)(2)(3)의 관측이 Safe Zone(위치 기반)과 섞이지 않고
+  // 오직 RQ-16(시간 기반)만으로 설명되도록 다시 한번 Safe Zone 밖으로
+  // 옮긴다 — `spawnedAtTick`/`firedSinceSpawn`(방금 리스폰이 초기화한 값)은
+  // 건드리지 않는다.
+  const escapedBAfterRespawn = escapeSafeZone(seam, roomB.sessionId, bAfterRespawnRaw)
+  await sleep(SELF_FIRE_SETTLE_MS)
+
+  const a: PlayerSnapshot = { ...escapedA, hp: baselineA.hp, kills: baselineA.kills }
+  const bAfterRespawn: PlayerSnapshot = { ...escapedBAfterRespawn, hp: bAfterRespawnRaw.hp, kills: bAfterRespawnRaw.kills }
+  return { a, bAfterRespawn }
 }
 
 describe('RQ-16/GA-10: 스폰 보호 — 피해 무효화·자기 사격 즉시 해제·자연 만료', () => {
@@ -436,9 +526,19 @@ describe('RQ-16(전문 — GA-10 보강): 최초 입장 스폰도 동일하게 �
       const roomB = await joinGame(newClient(server))
 
       try {
-        const a = await waitForPlayerCondition(roomA, roomA.sessionId, () => true, 'A 초기 스냅샷', HP_TIMEOUT_MS)
-        const b = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
-        expect(b.hp).toBe(PLAYER.MAX_HP)
+        const baselineA = await waitForPlayerCondition(roomA, roomA.sessionId, () => true, 'A 초기 스냅샷', HP_TIMEOUT_MS)
+        const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
+        expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+        // RQ-31 회귀 대응(파일 상단 REV4) — A·B 둘 다 Safe Zone 밖으로
+        // 옮긴다(위치만 — `spawnedAtTick`/RQ-16 타이머는 건드리지 않는다).
+        // 그러지 않으면 A의 사격 자체가 GA-19에 막히고, B가 Safe Zone
+        // 안에 있으면 RQ-16과 무관하게 GA-11이 계속 피해를 무효화해
+        // 아래 관측이 RQ-16만으로 설명되지 않는다.
+        const seam = getSafeZoneSeam(roomA)
+        const a = escapeSafeZone(seam, roomA.sessionId, baselineA)
+        const b = escapeSafeZone(seam, roomB.sessionId, baselineB)
+        await sleep(SELF_FIRE_SETTLE_MS)
 
         const aim = aimAtBody(a, b)
         roomA.send('fire', aim)

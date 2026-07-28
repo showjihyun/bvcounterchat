@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
+import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER } from '@shared/constants'
+import { PLAYER, WORLD } from '@shared/constants'
 import { SPAWN_POINTS } from '@shared/sim/spawn'
 
 /**
@@ -77,6 +78,19 @@ import { SPAWN_POINTS } from '@shared/sim/spawn'
  * 단언(HP 100 복귀·SPAWN_POINTS 멤버십·재배치)은 전혀 건드리지 않았다.
  * 단언 무변경 증명은 `_workspace/RQ-15-16/01_test-writer_red.md` "REV —
  * 헬퍼 적응" 절 참고.
+ *
+ * **REV2(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 A(사수)·
+ * B(피격자) 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면
+ * (1) GA-19가 A의 킬 시퀀스 사격 자체를 막고 (2) B가 Safe Zone 안에 있으면
+ * RQ-16과 무관하게 GA-11(위치 기반 피해 무효화)이 계속 피해를 무효화한다.
+ * `killPlayer` 시작 시 A·B 둘 다 화이트박스로 Safe Zone 밖으로 옮기고
+ * (반경-방사 기하, `rq-31-safe-zone.test.ts` 참고), B의 RQ-16 해제도 자기
+ * 사격 대신 화이트박스(`firedSinceSpawn`)로 한다. **순환 로테이션 확인
+ * 단언은 `atDeath`(탈출 후 위치 — 더 이상 스폰 지점이 아니다) 대신
+ * `baselineB`(B의 실제 마지막 스폰 지점)와 비교하도록 고쳤다** — 그러지
+ * 않으면 "재배치 위치 != 탈출 좌표"가 로테이션 로직의 실제 동작과
+ * 무관하게 항상 참이 되어 이 단언이 공허해진다.
  */
 
 const ROOM_NAME = 'game'
@@ -219,10 +233,46 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
-/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
- * 위치와 무관하게 안전하다. REV(item C 대응): B가 이 방향으로 자기 자신을
- * 쏘면 명중 여부와 무관하게 자신의 스폰 보호가 즉시 해제된다(RQ-16). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
+/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
+ * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
+ * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
+ * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
+ * 아니다). */
+interface SafeZoneEscapeSeam {
+  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
+  positionHistory: Map<string, unknown[]>
+  firedSinceSpawn: Map<string, boolean>
+}
+
+function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
+  if (!serverRoom) {
+    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
+ * 지점×오프셋 0~20m 전수 확인됨). */
+function escapeSafeZone(
+  seam: SafeZoneEscapeSeam,
+  sessionId: string,
+  base: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  const radialMagnitude = Math.hypot(base.x, base.z)
+  if (radialMagnitude < 1e-6) {
+    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
+  }
+  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
+  const ux = base.x / radialMagnitude
+  const uz = base.z / radialMagnitude
+  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
+  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+  return escaped
+}
 
 /**
  * A의 사격으로 B를 사망(HP 0)까지 몰아간다. **부위(헤드/바디) 무관 설계**:
@@ -238,18 +288,21 @@ const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
  *
  * **REV(item C 대응)**: B는 최초 입장 시점부터 스폰 보호(RQ-16)가 걸려
  * 있어, 보호 창(3초) 안에서는 A의 사격이 전혀 먹히지 않는다. 킬 시퀀스를
- * 시작하기 전에 B가 스스로(빗나가는 방향으로) 한 발 쏴 **자기 자신의**
- * 보호를 즉시 해제한다 — RQ-16 원문이 이미 제공하는 해제 경로이며,
- * 3초 대기보다 빠르고 스펙에 더 합치한다.
+ * 시작하기 전에 B의 **자기 자신의** 보호를 즉시 해제한다 — RQ-16 원문이
+ * 이미 제공하는 해제 경로이며, 3초 대기보다 빠르고 스펙에 더 합치한다.
+ * **REV2(RQ-31 회귀 대응)**: 화이트박스(`firedSinceSpawn`)로 해제한다 —
+ * 자기 사격은 B 자신의 Safe Zone(거리 0)에 막힐 수 있다. **호출자가 이미
+ * A·B를 Safe Zone 밖으로 옮겨 뒀다는 전제**다(이 함수는 위치를 건드리지
+ * 않는다).
  */
 async function killPlayer(
+  seam: SafeZoneEscapeSeam,
   roomA: Room,
   roomB: Room,
   baselineB: PlayerSnapshot,
   aim: { dirX: number; dirY: number; dirZ: number },
 ): Promise<PlayerSnapshot> {
-  roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제
-  await sleep(RELEASE_PROTECTION_SETTLE_MS)
+  seam.firedSinceSpawn.set(roomB.sessionId, true)
 
   let previousHp = baselineB.hp
   const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다)
@@ -328,8 +381,14 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-        const aim = aimAtBody(baselineA, baselineB)
-        const atDeath = await killPlayer(roomA, roomB, baselineB, aim)
+        // RQ-31 회귀 대응(파일 상단 REV2) — A·B 둘 다 Safe Zone 밖으로 옮긴다.
+        const seam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+        const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+        await sleep(RELEASE_PROTECTION_SETTLE_MS)
+
+        const aim = aimAtBody(escapedA, escapedB)
+        await killPlayer(seam, roomA, roomB, baselineB, aim)
 
         const deathAtMs = Date.now()
 
@@ -368,9 +427,13 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
         expect(isKnownSpawnPoint).toBe(true)
 
         // 순환 로테이션(RQ-31 선택 규칙)이 실제로 작동했다는 최소 확인 —
-        // 사망 시점 위치(=최초 입장 스폰)와 리스폰 위치가 같은 지점이
-        // 아니어야 한다.
-        expect(afterRespawn.x !== atDeath.x || afterRespawn.z !== atDeath.z).toBe(true)
+        // B의 최초 입장 스폰 지점(baselineB)과 리스폰 위치가 같은 지점이
+        // 아니어야 한다. RQ-31 회귀 대응(파일 상단 REV2) — `atDeath`(Safe
+        // Zone 탈출 후 좌표, 더 이상 스폰 지점이 아니다) 대신 `baselineB`
+        // (B가 실제로 배정받은 마지막 스폰 지점)와 비교한다 — 그러지
+        // 않으면 이 단언이 로테이션 로직과 무관하게 항상 참이 되어
+        // 공허해진다.
+        expect(afterRespawn.x !== baselineB.x || afterRespawn.z !== baselineB.z).toBe(true)
       } finally {
         await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
       }
@@ -388,8 +451,14 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
         const baselineA = await waitForPlayerCondition(roomA, roomA.sessionId, () => true, 'A 초기 스냅샷', HP_TIMEOUT_MS)
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
 
-        const aim = aimAtBody(baselineA, baselineB)
-        const atDeath = await killPlayer(roomA, roomB, baselineB, aim)
+        // RQ-31 회귀 대응(파일 상단 REV2) — A·B 둘 다 Safe Zone 밖으로 옮긴다.
+        const seam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+        const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+        await sleep(RELEASE_PROTECTION_SETTLE_MS)
+
+        const aim = aimAtBody(escapedA, escapedB)
+        const atDeath = await killPlayer(seam, roomA, roomB, baselineB, aim)
 
         // 이동 무시 — 죽은 B가 강한 방향 입력을 보내도 위치가 그대로여야
         // 한다. 관찰 창은 RESPAWN_MS(3000ms)보다 충분히 작게 잡아 리스폰과
@@ -403,13 +472,14 @@ describe('RQ-15/GA-09: 사망 후 3초 경과 시 스폰 지점 재배치 + HP 1
         // 사격 무시 — 죽은 B가 A를 정확히 겨눠도 A는 전혀 피해를 입지
         // 않아야 한다. REV3(리뷰 minor-5 대응 — stale 주석 정정): "B의 첫
         // 발사라 rate-limit에 걸리지 않는다"는 헬퍼 적응(§13) 이전의 설명
-        // 이었다 — B의 실제 첫 발사는 `killPlayer` 안의 보호 해제 사격
-        // (:251)이다. 그 사격부터 이 지점까지 실제 간격은 1.5초 이상(킬
-        // 시퀀스 소요 + `MOVE_IGNORE_OBSERVE_MS`)이라 rate-limit(150ms)은
-        // 이미 한참 지났다 — 이 사격이 무시되는 이유는 rate-limit이 아니라
-        // 사망자 갭(`canAct`)이며, 그것이 정확히 이 단언이 확인하려는
-        // 대상이다.
-        const deadShooterAim = aimAtBody(atDeath, baselineA)
+        // 이었다 — B의 실제 첫 발사는 킬 시퀀스의 첫 사격이다. 그 사격부터
+        // 이 지점까지 실제 간격은 1.5초 이상(킬 시퀀스 소요 +
+        // `MOVE_IGNORE_OBSERVE_MS`)이라 rate-limit(150ms)은 이미 한참
+        // 지났다 — 이 사격이 무시되는 이유는 rate-limit이 아니라 사망자
+        // 갭(`canAct`)이며, 그것이 정확히 이 단언이 확인하려는 대상이다.
+        // RQ-31 회귀 대응 — A는 탈출 이후 다시 움직이지 않았으므로
+        // `escapedA`를 그대로 쓴다.
+        const deadShooterAim = aimAtBody(atDeath, escapedA)
         roomB.send('fire', deadShooterAim)
         await sleep(FIRE_IGNORE_OBSERVE_MS)
         const afterFireAttempt = readPlayer(roomA, roomA.sessionId)

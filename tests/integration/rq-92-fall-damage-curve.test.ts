@@ -88,6 +88,13 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다
  * (ADR-0008 허용 예외 — 기존 RQ-15/16/18/61 통합 테스트와 동일). 모든
  * 대기에 상한을 강제한다.
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19, `86fddf1`) 이후 위 "자기 사격
+ * 워밍업"이 자신의 스폰 지점(Safe Zone 내부)에서 나가 GA-19에 막힐 수
+ * 있다 — 화이트박스(`FallDamageTestSeam.firedSinceSpawn`)로 대체했다.
+ * `trackFallDamage`는 Safe Zone에 합류되지 않으므로(coder 결정) 위치는
+ * 건드릴 필요가 없다 — 낙하 데미지 단언은 전혀 변경하지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -96,9 +103,6 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const SNAPSHOT_TIMEOUT_MS = 5_000
-/** 자기 사격(스폰 보호 해제)이 서버에 반영될 시간 — 기존 RQ-15/16/18
- * 파일들과 동일한 값·동일한 근거. */
-const SELF_FIRE_SETTLE_MS = 300
 /** 착지(y가 0으로 복귀) 관측 상한 — `rq-18-fall-damage.test.ts`
  * `LANDING_OBSERVE_TIMEOUT_MS`와 동일 값·동일 근거(실측: g=20에서
  * 약 632ms 소요, 넉넉한 여유). */
@@ -252,15 +256,14 @@ function waitForPlayerCondition(
   )
 }
 
-/** 항상 빗나가는 방향(수직 위) — 자기 자신을 쏘면 최초 입장 스폰 보호가
- * 즉시 해제된다(RQ-16). 기존 RQ-15/16/18 파일들과 동일 상수. */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
-
 /** 화이트박스 접근 대상 계약 — `fallPeakY`·`moveStates` 둘 다
- * `rq-18-fall-damage.test.ts`가 이미 확립한 기존 필드다(신규 계약 아님). */
+ * `rq-18-fall-damage.test.ts`가 이미 확립한 기존 필드다(신규 계약 아님).
+ * `firedSinceSpawn`도 마찬가지(RQ-31 회귀 대응, `rq-18-fall-damage
+ * .test.ts` `FallDamageTestSeam` 참고). */
 interface FallDamageTestSeam {
   fallPeakY: Map<string, number>
   moveStates: Map<string, { grounded: boolean }>
+  firedSinceSpawn: Map<string, boolean>
 }
 
 function getServerRoom(room: Room): FallDamageTestSeam {
@@ -363,8 +366,9 @@ describe('RQ-92/GA-25: 낙하 데미지 곡선 — 안전 높이 경계(3m, 포�
         const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
         expect(baseline.hp).toBe(PLAYER.MAX_HP)
 
-        room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
-        await sleep(SELF_FIRE_SETTLE_MS)
+        // RQ-31 회귀 대응 — 자기 사격 대신 화이트박스로 RQ-16을 해제한다
+        // (자기 사격은 자신의 Safe Zone에 막힐 수 있다).
+        getServerRoom(room).firedSinceSpawn.set(room.sessionId, true)
 
         // `SAFE_BOUNDARY_PEAK_M`은 리터럴 3(위 상수 docblock, 평가 minor 1
         // 수정) — `3 === 3`류 항진 단언은 없다. 검출력은 아래 행위 단언
@@ -389,8 +393,9 @@ describe('RQ-92/GA-25: 낙하 데미지 곡선 — 안전 높이 경계(3m, 포�
         const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
         expect(baseline.hp).toBe(PLAYER.MAX_HP)
 
-        room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
-        await sleep(SELF_FIRE_SETTLE_MS)
+        // RQ-31 회귀 대응 — 자기 사격 대신 화이트박스로 RQ-16을 해제한다
+        // (자기 사격은 자신의 Safe Zone에 막힐 수 있다).
+        getServerRoom(room).firedSinceSpawn.set(room.sessionId, true)
 
         const afterLanding = await jumpAndObserveLanding(room, MID_OVERRIDE_PEAK_M)
 
