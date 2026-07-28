@@ -4,7 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { FALL_DAMAGE, PLAYER } from '@shared/constants'
-import { releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
+import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-18 낙하 데미지 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus 룸
@@ -386,6 +386,27 @@ import { releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../sup
  * 하지 않은 채 최초 입장 스폰 보호(RQ-16, 시간 기반)만으로 낙하 데미지가
  * 무효화되는가"이므로, 여기서 탈출을 넣으면 검증 대상(RQ-16 시간 보호)이
  * Safe Zone(위치 보호)으로 가려진다.
+ *
+ * **REV7(델타 재평가 blocker 대응)**: REV6까지의 수정은 전부 "Safe Zone
+ * **밖**에서는 낙하 피해가 정상 적용된다"만 지킨다 — "Safe Zone **안**에서는
+ * (RQ-16과 무관하게) 낙하 피해가 무효화된다"를 실제로 검사하는 케이스가
+ * 없었다. 평가자가 격리 워크트리에서 `trackFallDamage`의 `|| isSafeZoneProtected`
+ * 두 줄만 정확히 되돌려 확인했다 — **491건 전부 통과**했다. 즉 사용자
+ * 결정으로 바뀐 그 동작이 코드 주석 한 단락으로만 지켜지고 있었다(리뷰
+ * blocker가 지적한 "축소가 스펙이 아니라 소스 주석에만 산다"를 방향만
+ * 바꿔 반복). 아래 "리뷰 보강(major, Safe Zone 그물)" `describe`가 이
+ * 공백을 닫는다 — **위치를 옮기지 않고**(자기 스폰 지점=Safe Zone에
+ * 그대로 둔 채) RQ-16을 화이트박스로 먼저 만료시킨(`firedSinceSpawn
+ * =true`) 뒤 낙하시켜 무피해(`hp===MAX_HP`)를 확인한다 — 이렇게 RQ-16을
+ * 먼저 만료시키지 않으면 "3초 무적 때문에 통과"하는 공허한 테스트가 된다(원장
+ * 25f가 hitscan 축에 대해 이미 경고한 것과 정확히 같은 함정, 이번엔
+ * 낙하 축). 이어서 **같은 세션에서 위치만** `escapeSafeZone`으로
+ * 옮긴 뒤 동일 절차를 반복해 정상 데미지(50)가 드는 것을 양성
+ * 대조군으로 확인한다 — 이게 없으면 첫 단언이 "장치가 꺼져서
+ * 무피해"와 구분되지 않는다. 골든 신설(GA-11 `when` 확장 여부)은
+ * 사용자 결정 대기 중이라 이번 라운드에서 만들지 않는다 — RQ-31
+ * 문면 자체가 이미 피해원을 한정하지 않으므로 이 그물은 그 결정을
+ * 기다릴 필요가 없다.
  */
 
 const ROOM_NAME = 'game'
@@ -957,5 +978,65 @@ describe('RQ-18 리뷰 보강(minor 5) — RQ-16 스폰 보호가 낙하 데미�
       }
     },
     20_000,
+  )
+})
+
+describe('RQ-18 리뷰 보강(major, Safe Zone 그물, 파일 상단 REV7 참고) — Safe Zone 안에서는 RQ-16 만료 후에도 낙하 데미지가 무효화된다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-18 회귀(델타 재평가 blocker): 자기 스폰 지점(Safe Zone)에 그대로 있으면 RQ-16(시간 보호)이 만료된 뒤에도 낙하 데미지가 무효화된다 — 대조군: 같은 절차에서 위치만 탈출하면 정상 데미지(50)가 든다',
+    async () => {
+      const client = newClient(server)
+      const room = await joinGame(client)
+
+      try {
+        const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
+        expect(baseline.hp).toBe(PLAYER.MAX_HP)
+
+        // 핵심 격리 — RQ-16(시간 보호)을 화이트박스로 즉시 만료 처리한다
+        // (`firedSinceSpawn=true`이면 `isSpawnProtected`가 항상 false를
+        // 반환한다, `@shared/sim/lifecycle` 참고). **위치는 절대 건드리지
+        // 않는다** — 자기 스폰 지점(Safe Zone 내부, 거리 0)에 그대로
+        // 남겨 둔다. 이 격리가 없으면 "RQ-16이 아직 안 끝나서 통과"하는
+        // 공허한 테스트가 된다(원장 25f가 hitscan 축에 대해 이미 경고한
+        // 함정과 정확히 같다 — 이 REV7은 그 함정을 낙하 축에 적용한다).
+        getServerRoom(room).firedSinceSpawn.set(room.sessionId, true)
+
+        // 핵심 단언 — RQ-16은 이미 꺼졌는데도(위에서 만료 처리) Safe Zone
+        // 안(위치를 옮기지 않았으므로 착지 위치 `next`가 자기 스폰
+        // 지점 그대로)이라 낙하 데미지가 무효화돼야 한다. `trackFallDamage`
+        // 에서 `|| isSafeZoneProtected`(RQ-31 위치 보호) 두 줄이 없으면
+        // (또는 되돌아가면) 이 단언만 죽는다 — RQ-16 게이트(`isSpawnTimeProtected`)
+        // 는 이미 위에서 꺼졌으므로 그쪽으로는 이 실패를 가릴 수 없다.
+        const inZoneLanding = await jumpAndObserveLanding(room, NON_FATAL_OVERRIDE_PEAK_M)
+        expect(inZoneLanding.hp).toBe(PLAYER.MAX_HP)
+
+        // 양성 대조군(공허화 방지, 팀리드 지시) — 같은 세션에서 위치만
+        // Safe Zone 밖으로 옮긴 뒤(RQ-16은 이미 위에서 꺼진 채로 유지)
+        // 완전히 동일한 절차(같은 낙하 높이)를 반복한다. 위 무피해가
+        // "낙하 데미지 장치 자체가 꺼져 있어서"가 아니라 "Safe Zone
+        // 안이라서"였음을 여기서 정상 데미지(50)로 반증한다 — 이 대조군이
+        // 없으면 위 단언은 자기 자신만으로 두 가설을 구분하지 못한다.
+        escapeSafeZone(getServerRoom(room), room.sessionId, inZoneLanding)
+        const escapedLanding = await jumpAndObserveLanding(room, NON_FATAL_OVERRIDE_PEAK_M)
+
+        const expectedDamage = (NON_FATAL_OVERRIDE_PEAK_M - FALL_DAMAGE.SAFE_HEIGHT_M) * FALL_DAMAGE.DAMAGE_PER_METER
+        expect(expectedDamage).toBe(50) // GA-45와 동일 산술 — 리터럴로도 재확인
+        expect(escapedLanding.hp).toBe(PLAYER.MAX_HP - expectedDamage)
+        expect(escapedLanding.hp).toBe(50)
+      } finally {
+        await leaveRoom(room)
+      }
+    },
+    30_000,
   )
 })

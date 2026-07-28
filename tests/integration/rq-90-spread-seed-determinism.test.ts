@@ -633,6 +633,24 @@ function escapeSafeZone(
  */
 const F1_SEED_SEQUENCE: readonly number[] = [1, 2, 4, 5, 9, 10, 13, 17, 18, 26, 43, 44]
 
+/** **결합 주의(원장 22y, 리뷰 major 5)**: 위 시드 열은 A·B 사이 실제
+ * `distance`(→ `coneRadiusRad = atan(bodyRadiusM/distance)*
+ * SPREAD_CONE_MULTIPLIER`)에 대해 "정확히 1개 body·11개 miss"가 성립하도록
+ * 골랐다. RQ-31 회귀 대응(`escapeSafeZone`, 이 파일 위쪽)이 A·B를 각자의
+ * 스폰 지점 기준 `tests/support/safe-zone.ts`의
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`만큼 방사 방향으로 밀어내므로, 그 값이
+ * 바뀌면 `distance`가 바뀌고 `coneRadiusRad`도 따라 바뀐다 — **이 시드
+ * 열의 전제가 조용히 깨질 수 있다는 뜻**이다(원장 22y가 이미
+ * `SPAWN_POINTS`·스폰 기하 변경을 트리거로 등재해 뒀다 — 이 오프셋도 같은
+ * 트리거에 속한다). 다행히 조용히 통과하지는 않는다 — 아래
+ * `fireOracleSequenceAndAssert` 호출부의 실측 전제 가드(`RQ-90 F1 시퀀스
+ * 전제 위반 ...`, `expectedBuckets` 계산 직후)가 분류 결과가 "정확히 1개
+ * body"가 아니면 즉시 명확한 에러로 던진다. `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`
+ * 를 바꾸는 PR은 이 파일을 반드시 재실행해 그 가드가 던지는지 확인해야
+ * 한다(안 던지면 운 좋게 여전히 성립한다는 뜻이지 검증됐다는 뜻은
+ * 아니다 — 필요하면 시드 열을 재선정한다, `tests/support/safe-zone.ts`의
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M` 코멘트도 참고). */
+
 /**
  * `F1_SEED_SEQUENCE`를 고정 순서로 한 번(pass) 쏘고, 매 발의 관측 버킷이
  * `expectedBuckets[i]`(오프라인 오라클 예측)와 정확히 일치하는지

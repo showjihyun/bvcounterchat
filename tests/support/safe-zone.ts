@@ -101,7 +101,17 @@ export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> 
   return serverRoom
 }
 
-/** 기본 탈출 오프셋 — Safe Zone 반경 + 15m 여유(0~20m 증명 구간 안). */
+/** 기본 탈출 오프셋 — Safe Zone 반경 + 15m 여유(0~20m 증명 구간 안).
+ *
+ * **결합 주의(원장 22y, 리뷰 major 5)**: 이 값은 `rq-90-spread-seed
+ * -determinism.test.ts`의 `F1_SEED_SEQUENCE`(시드 12개 하드코딩 오라클
+ * 열)가 성립하는 전제 중 하나다 — 그 파일이 A·B를 이 오프셋만큼 각자의
+ * 스폰 지점에서 밀어낸 뒤 둘 사이 실제 거리로 `coneRadiusRad`를 계산하기
+ * 때문에, 이 값을 바꾸면 그 거리가 바뀌고 시드 열의 분류 결과("정확히
+ * 1개 body·나머지 miss")가 깨질 수 있다. 이 값(또는 `SPAWN_POINTS`)을
+ * 바꾸는 PR은 `rq-90-spread-seed-determinism.test.ts`를 반드시 재실행해야
+ * 한다 — 깨지면 그 파일의 실측 전제 가드가 조용히 넘어가지 않고 명확한
+ * 에러로 던진다(`F1_SEED_SEQUENCE` 선언부 코멘트도 참고). */
 export const DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 15
 
 /** `base`(자신의 스폰 지점 또는 현재 위치) 기준 방사 방향 단위 벡터. 이
