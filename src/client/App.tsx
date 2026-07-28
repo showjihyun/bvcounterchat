@@ -3,6 +3,7 @@ import { createGameStore } from '@client/store/gameStore'
 import { createUiStore } from '@client/store/uiStore'
 import { connectToGame } from '@client/net/connection'
 import type { GameConnection } from '@client/net/connection'
+import { getOrCreateStatsUuid } from '@client/identity/statsUuid'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
 import { ChatPanel } from '@client/hud/ChatPanel'
@@ -38,10 +39,18 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  * 발생 시 `connection` state를 `null`로 되돌린다 — 그러면 `GameScene`이
  * 언마운트되며 `PlayerControls`의 cleanup이 전송 인터벌·입력 리스너를
  * 정리한다(끊긴 연결에 계속 `sendMoveInput`을 호출하는 것을 막는다).
+ *
+ * RQ-81: 접속 시 익명 통계 UUID(`localStorage`, ADR-0006 결정 4)를 함께
+ * 보낸다. `getOrCreateStatsUuid(window.localStorage)`를 지연 초기화
+ * (`useState` 초기화 함수)로 한 번만 호출한다 — 매 렌더마다 `localStorage`를
+ * 다시 읽지 않고, 이 셸 컴포넌트(브라우저 전용, `App.tsx`는 통합 테스트가
+ * 직접 임포트하지 않는다)가 그 값을 소유해 `connectToGame`(netcode 레이어,
+ * Node 환경에서도 직접 실행되는 모듈)에 값으로 넘긴다.
  */
 export function App() {
   const [store] = useState(() => createGameStore())
   const [uiStore] = useState(() => createUiStore())
+  const [statsUuid] = useState(() => getOrCreateStatsUuid(window.localStorage))
   const [connection, setConnection] = useState<GameConnection | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,7 +59,7 @@ export function App() {
     (nickname: string) => {
       setConnecting(true)
       setError(null)
-      connectToGame(ENDPOINT, nickname, store)
+      connectToGame(ENDPOINT, nickname, store, statsUuid)
         .then((conn) => {
           setConnection(conn)
         })
@@ -61,7 +70,7 @@ export function App() {
           setConnecting(false)
         })
     },
-    [store],
+    [store, statsUuid],
   )
 
   useEffect(() => {

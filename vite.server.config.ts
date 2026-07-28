@@ -19,7 +19,13 @@ export default defineConfig({
     ssr: 'src/server/index.ts',
     outDir: 'dist/server',
     emptyOutDir: true,
-    target: 'node20',
+    // RQ-81(평가 blocker 1): 런타임 이미지가 `node:22-alpine`(Dockerfile)로
+    // 올라갔으므로 이 값도 함께 올린다 — `node:sqlite`(Node 22.5+ 내장)를
+    // 최상위 정적 import로 쓰는 `src/server/persistence/statsDb.ts`가
+    // 이 빌드 산출물에 그대로 실리기 때문에, target이 실제 런타임보다
+    // 낮으면(node20) 배포 이미지가 지원하지 않는 문법으로 컴파일될 위험이
+    // 생긴다. `.nvmrc`(22.23.1)·Dockerfile·package.json engines와 정합.
+    target: 'node22',
     rollupOptions: {
       output: { entryFileNames: 'index.js' },
     },

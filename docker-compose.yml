@@ -1,10 +1,14 @@
 # RQ-80 — 사내망 단일 호스트 배포 (ADR-0009).
 #
 # 2서비스 구성: app(게임 서버) + nginx(리버스 프록시·정적 자산). Redis는
-# 넣지 않는다 — 세션 상태·통계 영속(RQ-81)은 별도 라운드로 유예한다(원장
-# 27a). 무중단 배포는 RQ-80이 비목표로 명시했으므로 재배포/재시작 시 접속
-# 끊김·세션 소실을 그대로 수용한다(GA-43이 검증하는 건 "재시작 후 복구"이지
-# "끊김 없음"이 아니다).
+# 넣지 않는다 — 세션 상태 영속(RQ-81 세션 절반, 원장 26b)은 별도 라운드로
+# 유예한다. **통계 영속(RQ-81 통계 절반, 원장 26a)은 이 파일에 구현돼
+# 있다** — `app` 서비스의 `stats-data` named volume(아래) 참고. 무중단
+# 배포는 RQ-80이 비목표로 명시했으므로 재배포/재시작 시 접속 끊김·세션
+# 소실을 그대로 수용한다(GA-43이 검증하는 건 "재시작 후 복구"이지 "끊김
+# 없음"이 아니다) — **통계는 이 소실 범위 밖이다**(named volume이 컨테이너
+# 재생성과 무관하게 살아남는다, RQ-81 "재시작 시 세션은 소실하되 통계는
+# 보존").
 services:
   app:
     build:
@@ -32,6 +36,19 @@ services:
       - NODE_ENV=production
     expose:
       - '2567'
+    # RQ-81(평가 major 5): 통계 SQLite 파일(`src/server/index.ts`
+    # `PRODUCTION_STATS_DB_PATH` 기본값 `join(process.cwd(), 'data',
+    # 'stats.db')` → 이 컨테이너의 `WORKDIR /app` 기준 `/app/data/stats.db`)이
+    # 컨테이너 생명주기와 분리되도록 named volume에 둔다. 이게 없으면
+    # `restart: unless-stopped`(같은 컨테이너 재시작)까지는 살아남지만
+    # 이미지 재빌드·`up --build`·컨테이너 재생성 시 통계가 통째로
+    # 사라진다 — RQ-81 "재시작 시 세션은 소실해도 통계는 보존"이 프로세스
+    # 수준(테스트가 증명)에서는 성립해도 배포 수준에서는 성립하지 않았다.
+    # 마운트 지점 소유권은 `Dockerfile`의 `RUN mkdir -p /app/data && chown
+    # node:node /app/data`가 미리 맞춰둔다(그 줄 코멘트 참고 — 없으면
+    # 비루트 `node` 유저가 볼륨에 쓰지 못한다).
+    volumes:
+      - stats-data:/app/data
     healthcheck:
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', '--spider', 'http://127.0.0.1:2567/health']
       interval: 10s
@@ -77,3 +94,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+
+# RQ-81(평가 major 5): `app` 서비스의 통계 SQLite 볼륨. 이름 있는(named)
+# 볼륨이라 `docker compose down`(볼륨 미삭제 기본 동작)·이미지 재빌드·
+# 컨테이너 재생성 전부에서 살아남는다 — `docker compose down -v`로
+# 명시적으로 지우기 전까지는 보존된다(ADR-0009가 이미 named volume을
+# 상정).
+volumes:
+  stats-data:
