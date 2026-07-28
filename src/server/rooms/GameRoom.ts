@@ -788,13 +788,16 @@ export class GameRoom extends Room<GameState> {
    *    같은 자리에서 피해가 든다"는 자기모순이 생긴다 — 어떤 스펙 문장도
    *    그 비대칭을 규정하지 않는다. 위치는 `handleFire`의 피격자 판정과
    *    동일 기준(착지 시점의 현재 `moveStates`, 즉 이 함수의 `next`)으로
-   *    판정한다(원장 25h). 이 게이트를 여기 두면 `rq-18-fall-damage
-   *    .test.ts`/`rq-92-fall-damage-curve.test.ts`의 기존 시나리오(스폰
-   *    지점 반경 안에서 착지)가 깨진다 — 그러나 그건 이 두 파일이 아직
-   *    (다른 20개 통합 테스트와 마찬가지로) Safe Zone 밖으로 옮겨지지
-   *    않았기 때문이지 골든이 이 합류를 금지해서가 아니다(리뷰어 반증,
-   *    `_workspace/RQ-31/06_coder_fall-damage.md` §회귀 목록). 사망 시
-   *    가해자가 없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬
+   *    판정한다(원장 25h). 이 게이트가 처음 배선됐을 때는 `rq-18-fall-damage
+   *    .test.ts`/`rq-92-fall-damage-curve.test.ts`가 스폰 지점 반경 안에서
+   *    착지하는 옛 시나리오 그대로라 일시적으로 깨졌었다 — 골든이 이
+   *    합류를 금지해서가 아니라 그 두 파일이 (다른 20개 통합 테스트와
+   *    마찬가지로) 아직 Safe Zone 밖으로 옮겨지지 **않았던** 시점의 상태였다.
+   *    그 뒤 `dfd63e7`이 두 파일에 방사 탈출(escapeSafeZone)을 적용해
+   *    낙하 시나리오를 Safe Zone 밖에서 벌어지도록 옮겼고, 지금은 둘 다
+   *    Green이다(2026-07-29 재확인: `rq-18-fall-damage.test.ts`·
+   *    `rq-92-fall-damage-curve.test.ts` 2 files·7 tests 전부 통과).
+   *    사망 시 가해자가 없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬
    *    카운트 미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든
    *    사망이든) `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
    * 3. 그 외(계속 접지 상태)는 아무 것도 하지 않는다.
