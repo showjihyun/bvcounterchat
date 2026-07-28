@@ -590,13 +590,29 @@ export class GameRoom extends Room<GameState> {
     // `spreadTuningOverride`가 없으면 `DEFAULT_SPREAD`(출하 기본값, 반경
     // 0) 그대로라 `applySpread`가 항등 함수가 되어 기존 정조준 동작과
     // 완전히 동일하다(`applySpread` docblock, 회귀 방지).
+    //
+    // 리뷰 blocker 수정(`_workspace/review/feat-RQ-90-spread-seed-
+    // determinism.md`): `applySpread`의 계약(`combat.ts:255-264`)은
+    // `direction`이 **이미 정규화된 단위 벡터**임을 전제한다 — 이 전제는
+    // 지금까지 `raycastHitbox`(`combat.ts:161-166`) 자신이 자기 안에서
+    // 지켜 왔다(첫 소비자가 그 함수였으므로). `applySpread`를 그 앞에
+    // 끼워 넣으면서 정규화 이전 값이 먼저 소비되게 됐다 — 여기서
+    // `raycastHitbox`와 **동일한 임계(1e-12)**로 먼저 가드를 세워 계약을
+    // 성립시킨다(정규화를 `applySpread` 내부로 옮기지 않는다 — 그건
+    // `combat.ts` 계약 자체를 바꾸는 일이라 이번 라운드 범위 밖이다).
+    // 이 가드는 rate-limit·탄약 소모(위) **뒤**에 있다 — 조준이 퇴화해도
+    // 그 두 게이트는 이미 정상적으로 소모됐고(요청 자체는 유효했다),
+    // 판정만 무효화(빗나감과 동일한 결과)한다. `dirMagnitude === 0`
+    // (또는 비유한)인 입력은 이전에도 `raycastHitbox`가 결국 빗나감으로
+    // 처리했으므로 관측 가능한 동작은 바뀌지 않는다.
+    const rawAim = { x: input.dirX, y: input.dirY, z: input.dirZ }
+    const dirMagnitude = Math.sqrt(rawAim.x ** 2 + rawAim.y ** 2 + rawAim.z ** 2)
+    if (!Number.isFinite(dirMagnitude) || dirMagnitude < 1e-12) return // raycastHitbox와 동일 임계
+    const aimDirection = { x: rawAim.x / dirMagnitude, y: rawAim.y / dirMagnitude, z: rawAim.z / dirMagnitude }
+
     const spreadTuning = this.spreadTuningOverride ?? DEFAULT_SPREAD
     const spreadSeed = this.forcedSpreadSeed ?? this.issueSpreadSeed()
-    const spreadDirection = applySpread(
-      { x: input.dirX, y: input.dirY, z: input.dirZ },
-      createRng(spreadSeed),
-      spreadTuning.coneRadiusRad,
-    )
+    const spreadDirection = applySpread(aimDirection, createRng(spreadSeed), spreadTuning.coneRadiusRad)
 
     const ray: Ray = {
       origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, DEFAULT_HITBOX.eyeHeightM),
