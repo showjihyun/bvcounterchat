@@ -89,6 +89,8 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 (coder가 이미 커밋했으므로 워킹트리가 깨끗하다) 테스트 약화 검사가 조용히
 무력화된다. 산출: `03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거).
 
+**검출력 변이 실험은 `harness/workflow/tdd.md` Phase 3의 "변이 실험은 격리 워크트리에서만 한다"를 따른다** — 메인 트리에서 변이하지 않는다. 작업자와 평가자가 같은 파일에 동시에 변이를 심으면 서로의 `git checkout --`이 상대 실험을 무성으로 지운다(2026-07-28 RQ-61 라운드에서 실제 발생, 원장 20e).
+
 ## Phase 4: 종합
 
 - **PASS** → 구현 커밋 확인, 원장(`progress.md`) ✅ 갱신, PR 준비
