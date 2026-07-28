@@ -119,6 +119,41 @@ coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과
 `harness/agent-roster.md`의 evaluator 스펙을 따른다.
 산출: `_workspace/{RQ-ID}/03_evaluator_report.md` (PASS/FAIL/BLOCKED + 증거)
 
+### 변이 실험은 격리 워크트리에서만 한다
+
+검출력 확인용 변이(구현을 일부러 깨뜨려 테스트가 죽는지 보는 실험)는 **반드시
+격리된 워크트리**에서 수행한다. 메인 워킹트리에서 하지 않는다.
+
+```bash
+git worktree add --detach <경로> HEAD    # node_modules는 정션/심링크로 공유
+# …실험…
+git worktree remove --force <경로>
+```
+
+**이유는 동시성이다.** 작업자와 평가자가 같은 파일에 동시에 변이를 심으면 서로의
+`git checkout -- <path>` 복원이 **상대의 변이를 무성으로 지운다** — 실패해야 할
+실행이 통과하거나 그 반대가 되고, 어느 쪽도 그 사실을 알아채지 못한다. 실제로
+RQ-61 라운드(2026-07-28, 원장 20e)에서 평가자가 메인 트리의
+`src/server/rooms/GameRoom.ts` 크기가 실험 도중 바뀌었다 되돌아가는 것을 실측했고,
+그 오염 가능성 때문에 자기 스위트 실행 결과를 **폐기하고** 다시 돌려야 했다.
+실험이 끝나면 워크트리를 제거한다 — 남기면 다음 라운드가 그것을 메인으로 착각한다.
+
+복원 확인도 규약이다:
+
+- **CRLF 파일은 `git checkout -- <path>`**, LF 파일은 `git show HEAD:<path> > <path>`.
+  `git show … >`는 CRLF를 LF로 바꿔버려 바이트 비교가 어긋난다.
+- 실험 전후 `sha256sum`이 **동일**함을 출력으로 남긴다. "복원했다"는 주장이 아니라
+  해시가 증거다.
+
+### 통합 테스트 실행 명령
+
+이 저장소에는 **`vitest.integration.config.ts`가 없다.** `vitest.config.ts` 하나로
+단위·통합을 모두 돌린다. 통합만 돌리려면 경로로 좁힌다:
+
+```bash
+npx vitest run tests/integration/<파일>
+```
+
 ## Phase 4: 종합
 
 - **PASS** → 구현 커밋 확인, PR 준비 (스펙 변경이 있으면 같은 PR에 포함),
