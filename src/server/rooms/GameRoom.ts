@@ -686,6 +686,9 @@ export class GameRoom extends Room<GameState> {
     // 해제")까지 과거 시점으로 되돌릴 근거가 없다. `moveStates`가 없으면
     // (이 지점에 도달했다는 것은 위 candidates 구성에서 targetState가
     // 존재했다는 뜻이라 이론상 발생하지 않는다) 스키마 좌표로 폴백한다.
+    // `trackFallDamage`(아래, RQ-18)도 동일한 OR 합성을 쓴다 — 피해원이
+    // hitscan이든 낙하든 RQ-16·RQ-31 보호는 대칭이어야 한다(사용자 결정
+    // 2026-07-28, 그쪽 docblock 참고).
     const victimCurrentState = this.moveStates.get(closest.id)
     const isSafeZoneProtected = isWithinSafeZone(victimCurrentState ?? { x: victim.x, z: victim.z })
     const isProtected = isSpawnTimeProtected || isSafeZoneProtected
@@ -777,19 +780,23 @@ export class GameRoom extends Room<GameState> {
    *    게이트는 `handleFire`가 피격자에게 쓰는 것과 동일한 지점
    *    (`spawnedAtTick`/`firedSinceSpawn`)을 재사용한다 — RQ-16이 명시한
    *    "그 플레이어가 받는 **모든 피해**"에 낙하가 포함되므로 스펙 침묵이
-   *    아니라 문면 이행이다. **RQ-31(Safe Zone)은 의도적으로 여기 합류시
-   *    키지 않는다** — GA-11은 hitscan 피해 무효화만 시험하고(원문이 일반
-   *    "피해"라 낙하까지 넓게 읽을 여지는 있으나, 그 해석은 골든이 규정한
-   *    범위 밖이다), 실측 결과 낙하 데미지 테스트(`rq-18-fall-damage
-   *    .test.ts`/`rq-92-fall-damage-curve.test.ts`)가 스폰 지점 반경 안에서
-   *    착지하는 시나리오를 갖고 있어 이 게이트를 여기 두면 그 두 파일이
-   *    깨진다(스코프 밖 확장이 유발한 회귀 — `_workspace/RQ-31/
-   *    02_coder_green.md` §회귀 목록 참고). RQ-31이 낙하까지 포함해야
-   *    하는지는 스펙 해석 질문으로 남겨 사용자·test-writer 판단에 맡긴다.
-   *    사망 시 가해자가 없으므로 `registerDeath`를 `killerId` 없이
-   *    호출한다(킬 카운트 미증가, `diedAtTick`만 갱신). 처리 후에는 항상
-   *    (생존이든 사망이든) `fallPeakY`를 삭제해 다음 공중 구간을 위해
-   *    초기화한다.
+   *    아니라 문면 이행이다. **RQ-31(Safe Zone)도 동일한 이유로 여기
+   *    합류한다(사용자 결정, 2026-07-28)** — RQ-31 원문 "Safe Zone 내부의
+   *    플레이어가 받는 피해를 무효화해야 한다" 역시 피해원을 hitscan으로
+   *    한정하지 않는다. RQ-16과 여기서 갈리면(하나는 낙하 포함, 하나는
+   *    제외) "스폰 3.000초까지는 세이프존 안에서 낙하 무피해, 3.001초부터는
+   *    같은 자리에서 피해가 든다"는 자기모순이 생긴다 — 어떤 스펙 문장도
+   *    그 비대칭을 규정하지 않는다. 위치는 `handleFire`의 피격자 판정과
+   *    동일 기준(착지 시점의 현재 `moveStates`, 즉 이 함수의 `next`)으로
+   *    판정한다(원장 25h). 이 게이트를 여기 두면 `rq-18-fall-damage
+   *    .test.ts`/`rq-92-fall-damage-curve.test.ts`의 기존 시나리오(스폰
+   *    지점 반경 안에서 착지)가 깨진다 — 그러나 그건 이 두 파일이 아직
+   *    (다른 20개 통합 테스트와 마찬가지로) Safe Zone 밖으로 옮겨지지
+   *    않았기 때문이지 골든이 이 합류를 금지해서가 아니다(리뷰어 반증,
+   *    `_workspace/RQ-31/06_coder_fall-damage.md` §회귀 목록). 사망 시
+   *    가해자가 없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬
+   *    카운트 미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든
+   *    사망이든) `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
    * 3. 그 외(계속 접지 상태)는 아무 것도 하지 않는다.
    */
   private trackFallDamage(sessionId: string, player: Player, previous: MoveState, next: MoveState, currentTick: number): void {
@@ -811,9 +818,12 @@ export class GameRoom extends Room<GameState> {
     if (damage > 0) {
       const spawnedAt = this.spawnedAtTick.get(sessionId)
       const fired = this.firedSinceSpawn.get(sessionId) ?? false
-      // RQ-31(Safe Zone)을 의도적으로 합류시키지 않는다 — 위 docblock
-      // "RQ-31은 의도적으로 여기 합류시키지 않는다" 참고.
-      const isProtected = spawnedAt !== undefined && isSpawnProtected(spawnedAt, currentTick, SPAWN_PROTECTION_TICKS, fired)
+      const isSpawnTimeProtected = spawnedAt !== undefined && isSpawnProtected(spawnedAt, currentTick, SPAWN_PROTECTION_TICKS, fired)
+      // RQ-31: `handleFire`의 피격자 보호와 동일한 OR 합성(그쪽 주석·위
+      // docblock 참고, 사용자 결정 2026-07-28) — 착지 위치(`next`, 이 틱에서
+      // 막 확정된 실제 위치)로 Safe Zone 소속을 판정한다.
+      const isSafeZoneProtected = isWithinSafeZone(next)
+      const isProtected = isSpawnTimeProtected || isSafeZoneProtected
 
       const outcome = applyDamageWithProtection(player.hp, damage, isProtected)
       player.hp = outcome.hp

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPAWN_POINTS, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
+import { SPAWN_POINTS, isWithinSafeZone, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
 import { WORLD } from '@shared/constants'
 
 /**
@@ -129,5 +129,71 @@ describe('SpawnPoint 타입 형태', () => {
     for (const point of SPAWN_POINTS) {
       assertSpawnPointShape(point)
     }
+  })
+})
+
+/**
+ * `isWithinSafeZone` — RQ-31 Safe Zone 소속 판정(리뷰 major 3 대응,
+ * `_workspace/RQ-31/06_coder_fall-damage.md` §단위 테스트). 구현이 이미
+ * `handleFire`/`trackFallDamage`에 배선된 뒤 추가하는 test-after이지만
+ * (ADR-0011의 취지는 그물이 실재하는지이지 순서 자체가 아니라는 팀리드
+ * 지시), 아래 각 케이스는 §산출물 문서에 기록한 변이(구현을 일시적으로
+ * 되돌려 이 테스트가 실제로 실패하는지) 확인을 거쳤다 — 통과만 하고 아무
+ * 것도 못 잡는 죽은 단언이 아니다.
+ *
+ * docblock이 스스로 규정하는 3가지 판단 갈림을 각각 고정한다:
+ * 1. 경계(정확히 반경, 5.000m)는 `<=`(포함)다.
+ * 2. 수평(XZ)만 본다 — y는 무시한다.
+ * 3. 주입 인자(`spawnPoints?`·`radiusM?`)가 실제로 기본값을 대체한다.
+ *
+ * 원점에 스폰 지점 하나만 둔 합성 배열로 경계 산술을 실제 SPAWN_POINTS의
+ * 각·반지름 기하에서 분리한다(그 기하는 `describe('RQ-31(선택 규칙)...')`가
+ * 이미 따로 고정한다).
+ */
+describe('isWithinSafeZone — Safe Zone 소속 판정(RQ-31, GA-11·GA-19의 기반)', () => {
+  const ORIGIN_SPAWN: SpawnPoint = { x: 0, y: 0, z: 0 }
+  const RADIUS_M = 5
+
+  it('반경보다 짧은 거리(반경-0.5m)는 안(true)이다', () => {
+    expect(isWithinSafeZone({ x: RADIUS_M - 0.5, z: 0 }, [ORIGIN_SPAWN], RADIUS_M)).toBe(true)
+  })
+
+  it('정확히 반경(경계 자체, 5.000m)은 안(true)이다 — "<=" 판정. 원문 "반경을 벗어나면 해제"는 반경보다 커진 순간만 규정하고, 반경과 정확히 같은 지점의 소속은 규정하지 않는다', () => {
+    expect(isWithinSafeZone({ x: RADIUS_M, z: 0 }, [ORIGIN_SPAWN], RADIUS_M)).toBe(true)
+  })
+
+  it('반경보다 긴 거리(반경+0.5m)는 밖(false)이다', () => {
+    expect(isWithinSafeZone({ x: RADIUS_M + 0.5, z: 0 }, [ORIGIN_SPAWN], RADIUS_M)).toBe(false)
+  })
+
+  it('y는 무시한다(수평 XZ 거리만) — 같은 x·z에서 y만 크게 달라도 판정이 바뀌지 않는다', () => {
+    const groundLevel: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 }
+    const highAltitude: { x: number; y: number; z: number } = { x: 0, y: 100, z: 0 }
+    expect(isWithinSafeZone(groundLevel, [ORIGIN_SPAWN], RADIUS_M)).toBe(true)
+    expect(isWithinSafeZone(highAltitude, [ORIGIN_SPAWN], RADIUS_M)).toBe(true)
+  })
+
+  it('스폰 지점이 여럿이면 "하나라도" 반경 안이면 참이다 — 배열 전체를 순회한다(첫 원소만 보지 않는다)', () => {
+    const far: SpawnPoint = { x: 1000, y: 0, z: 1000 }
+    const near: SpawnPoint = { x: 0, y: 0, z: 0 }
+    expect(isWithinSafeZone({ x: 0, z: 0 }, [far, near], RADIUS_M)).toBe(true)
+  })
+
+  it('주입한 spawnPoints를 실제로 쓴다 — 기본 SPAWN_POINTS 기준 밖인 지점도, 그 지점 자신을 유일한 스폰 지점으로 주입하면 안이다', () => {
+    const farFromAllDefaults: SpawnPoint = { x: 1000, y: 0, z: 1000 }
+    expect(isWithinSafeZone(farFromAllDefaults)).toBe(false)
+    expect(isWithinSafeZone(farFromAllDefaults, [farFromAllDefaults], RADIUS_M)).toBe(true)
+  })
+
+  it('주입한 radiusM을 실제로 쓴다 — 기본 WORLD.SAFE_ZONE_RADIUS_M이 아니라 인자를 따른다', () => {
+    const position = { x: 1, z: 0 }
+    expect(isWithinSafeZone(position, [ORIGIN_SPAWN], 0.5)).toBe(false) // 반경을 0.5m로 좁히면 밖
+    expect(isWithinSafeZone(position, [ORIGIN_SPAWN], 2)).toBe(true) // 반경 2m면 안
+  })
+
+  it('인자를 생략하면 기본값(SPAWN_POINTS 전체·WORLD.SAFE_ZONE_RADIUS_M)을 쓴다 — 자기 자신의 스폰 지점(거리 0)은 안이다', () => {
+    const knownPoint = SPAWN_POINTS[0]
+    if (!knownPoint) throw new Error('테스트 전제 위반 — SPAWN_POINTS가 비어 있다')
+    expect(isWithinSafeZone({ x: knownPoint.x, z: knownPoint.z })).toBe(true)
   })
 })
