@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -9,7 +8,8 @@ import { join } from 'node:path'
 import { buildServer } from '@server/index'
 import { getStats, openStatsDb } from '@server/persistence/statsDb'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { PLAYER, WEAPON } from '@shared/constants'
+import { getSafeZoneSeam, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-81 통계 절반(B계층 — 서버 재시작 후에도 통계가 보존된다) — 서버
@@ -177,50 +177,14 @@ function waitForHpCondition(room: Room, sessionId: string, predicate: (hp: numbe
   )
 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). */
-function escapeSafeZone(seam: SafeZoneEscapeSeam, sessionId: string, base: { x: number; z: number }): PlayerFields {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: 0, z: base.z + uz * offsetM, hp: PLAYER.MAX_HP }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: 0, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
-
 /** RQ-31 회귀 대응 — `room`의 RQ-16 최초 입장 보호를 화이트박스로 즉시
  * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), Safe Zone 밖으로
- * 텔레포트한다(`unlockProtectionAndSettle`의 대체). */
+ * 텔레포트한다(`unlockProtectionAndSettle`의 대체 — 공용 헬퍼
+ * `tests/support/safe-zone.ts`에 위임하고, 이 파일의 `PlayerFields`(hp
+ * 포함) 반환 형태에 맞춰 hp를 채워 넣는다). */
 async function unlockProtectionAndSettle(seam: SafeZoneEscapeSeam, room: Room): Promise<PlayerFields> {
   const baseline = await waitForDefinedPlayer(room, room.sessionId)
-  seam.firedSinceSpawn.set(room.sessionId, true)
-  const escaped = escapeSafeZone(seam, room.sessionId, baseline)
+  const escaped = { ...releaseSpawnProtectionAndEscape(seam, room.sessionId, baseline), hp: PLAYER.MAX_HP }
   await sleep(SETTLE_MS)
   return escaped
 }

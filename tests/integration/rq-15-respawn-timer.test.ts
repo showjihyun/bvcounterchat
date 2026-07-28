@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WORLD } from '@shared/constants'
+import { PLAYER } from '@shared/constants'
 import { SPAWN_POINTS } from '@shared/sim/spawn'
+import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-15 리스폰 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus 룸 경계,
@@ -233,46 +233,6 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). */
-function escapeSafeZone(
-  seam: SafeZoneEscapeSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
 
 /**
  * A의 사격으로 B를 사망(HP 0)까지 몰아간다. **부위(헤드/바디) 무관 설계**:

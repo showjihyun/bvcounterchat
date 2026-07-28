@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WORLD } from '@shared/constants'
+import { PLAYER } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-16 스폰 보호 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus 룸 경계,
@@ -243,48 +243,12 @@ function aimAtBody(
  * 행위만으로 보호가 풀린다"를 증명하는 데 정확히 필요한 성질이다. */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). 이 파일은 `moveStates`(위치)만 바꾸고 `spawnedAtTick`은 절대
- * 건드리지 않는다 — RQ-16 시간 기반 보호 로직 자체는 이 파일의 검증
- * 대상이라 손대지 않는다(파일 상단 REV4 참고). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). */
-function escapeSafeZone(
-  seam: SafeZoneEscapeSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
+/** 이 파일은 `tests/support/safe-zone.ts`의 `escapeSafeZone`(위치만
+ * 이동)만 쓰고 `releaseSpawnProtectionAndEscape`(firedSinceSpawn까지
+ * 해제)는 GA-10의 관측 대상이 아닌 순수 셋업(아래 `killAndWaitForRespawn`의
+ * 최초 해제)에만 국한한다 — `spawnedAtTick`(RQ-16 시간 기반 보호 자체)은
+ * 이 파일의 검증 대상이라 그 외에는 절대 건드리지 않는다(파일 상단 REV4
+ * 참고). */
 
 /** B를 A의 사격으로 사망시키고, 리스폰(HP 100 복귀)까지 기다린다. GA-10의
  * given("B가 방금 스폰(리스폰)되어 스폰 보호가 시작됨")을 만드는 공통 절차 —
@@ -325,9 +289,8 @@ async function killAndWaitForRespawn(
   // 옮긴다 — A의 킬 시퀀스 사격 자체가 나가려면(GA-19), B가 실제로 피해를
   // 입으려면(GA-11) 필요하다. `spawnedAtTick`은 건드리지 않는다.
   const seam = getSafeZoneSeam(roomA)
-  seam.firedSinceSpawn.set(roomB.sessionId, true)
   const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
-  const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+  const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB)
   await sleep(SELF_FIRE_SETTLE_MS)
 
   const aim = aimAtBody(escapedA, escapedB)

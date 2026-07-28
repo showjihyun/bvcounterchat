@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { PLAYER, WEAPON } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-10 탄창 10발·예비 무한 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008:
@@ -70,7 +70,8 @@ import { PLAYER, WEAPON, WORLD } from '@shared/constants'
  * 사격 자체가 이제 GA-19 게이트에 막힌다. (2) **A(이 파일의 실제
  * 사수)도 자신의 스폰 지점(Safe Zone 내부)에 그대로 있으므로, A의 실제
  * 조준 사격(양성 대조군·탄창 소모 루프 전부)도 A를 옮기지 않으면 똑같이
- * 막힌다 — `rq-31-safe-zone.test.ts`의 반경-방사(radial-outward) 기하로
+ * 막힌다 — `tests/support/safe-zone.ts`(반경-방사(radial-outward) 기하,
+ * `rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명)의 공용 헬퍼로
  * A를 자신의 스폰 지점 기준 방사 방향으로 화이트박스 텔레포트해 모든
  * Safe Zone 밖으로 옮긴다(고정 방향(+X) 실이동은 15개 스폰 지점 중 4곳에서
  * 다른 스폰 지점의 Safe Zone에 새로 들어가는 것이 실측돼 채택하지 않았다).
@@ -211,51 +212,6 @@ function aimAtBody(
  * 탄약만 소모). */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 사수를 자신의 스폰 지점 기준 방사
- * 방향(원점→스폰 지점)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). 고정 방향(예: +X) 실이동은 특정 스폰
- * 인덱스에서 다른 스폰 지점의 Safe Zone에 새로 들어갈 수 있어(실측
- * 4/15 위반) 쓰지 않는다. */
-function escapeSafeZone(
-  seam: SafeZoneEscapeSeam,
-  sessionId: string,
-  base: { x: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  // 이 파일의 PlayerSnapshot은 y를 추적하지 않는다 — 모든 스폰 지점은
-  // 평지(y=0)이므로 0으로 고정한다.
-  const escaped = { x: base.x + ux * offsetM, y: 0, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
-
 describe('RQ-10/GA-03: 탄창 10발 소진 후에도 영구 사격 불가 상태가 되지 않는다(재장전하면 계속 사격 가능)', () => {
   let server: RunningServer
 
@@ -284,9 +240,8 @@ describe('RQ-10/GA-03: 탄창 10발 소진 후에도 영구 사격 불가 상태
         // 자체를 막고, B가 남아 있으면 RQ-16과 무관하게 GA-11(위치 기반
         // 피해 무효화)이 계속 피해를 무효화한다.
         const safeZoneSeam = getSafeZoneSeam(roomA)
-        safeZoneSeam.firedSinceSpawn.set(roomB.sessionId, true)
         const escapedA = escapeSafeZone(safeZoneSeam, roomA.sessionId, baselineA)
-        const escapedB = escapeSafeZone(safeZoneSeam, roomB.sessionId, baselineB)
+        const escapedB = releaseSpawnProtectionAndEscape(safeZoneSeam, roomB.sessionId, baselineB)
         await sleep(SELF_FIRE_SETTLE_MS)
 
         const aim = aimAtBody(escapedA, escapedB)

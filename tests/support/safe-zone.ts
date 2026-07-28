@@ -1,0 +1,147 @@
+import { matchMaker } from 'colyseus'
+import type { Room } from 'colyseus.js'
+import { WORLD } from '@shared/constants'
+
+/**
+ * RQ-31 Safe Zone 회귀 대응 공용 헬퍼 (`_workspace/RQ-31/03_test-writer
+ * _regression.md` §방침 수정 — 팀리드 지시).
+ *
+ * **경위**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 기존 20개
+ * 통합 테스트 파일이 쓰던 `UP_MISS_AIM` 자기 사격 관례가 깨졌다(사수가
+ * 자신의 스폰 지점=Safe Zone에 그대로 있어 GA-19가 사격 자체를 막는다).
+ * 처음에는 파일마다 이 좌표 수학을 각자 복제했는데(원장 20i의 대기 헬퍼
+ * 통합 논의와는 별개로, 이때는 `firedSinceSpawn` 한 줄 교체 수준이라
+ * 판단했다), 실측 검증 과정에서 그 판단이 틀렸음이 드러났다 — 기존
+ * 관례였던 고정 방향(+X) 실이동은 15개 스폰 지점 중 4곳에서 다른 스폰
+ * 지점의 Safe Zone에 새로 들어가는 것이 스크립트로 확인됐다(간헐적
+ * flaky의 소지). **검증된 수학을 20번 복제하면 20개의 틀릴 자리가
+ * 생긴다** — 그래서 이 좌표 수학을 여기 한 곳에 모은다.
+ *
+ * **반경-방사(radial-outward) 기하 증명**(`rq-31-safe-zone.test.ts` §반경
+ * -방사 기하와 동일): 원점에서 스폰 지점을 지나는 방향으로 오프셋만큼
+ * 더 밀면, 자기 자신과의 거리는 정확히 늘고 다른 모든 스폰 지점과의
+ * 거리는 결코 줄지 않는다(15개 스폰 지점 × 오프셋 0~20m 구간 전수
+ * 확인됨). 고정 방향(+X) 실이동에는 이 성질이 없다.
+ *
+ * **제품 관찰(팀리드가 원장에 이월 등재, 여기서 고치지 않는다)**: 반지름
+ * 22m 원 위에 15개 스폰 지점이 있으면 인접 간격이 약 9.16m인데 Safe Zone
+ * 반경이 각 5m(지름 10m)라 9.16m < 10m — 맵 가장자리를 따라 인접 Safe
+ * Zone이 서로 겹친다(실측: 15개 중 4개 지점에서 위반, 최소 거리
+ * 2.60~4.69m). RQ-31 스펙은 겹침을 금지하지 않고 `spawn.ts`의 좌표는
+ * 잠정값(맵 단계 RQ-30이 실제 지오메트리로 교체 예정)이라 스펙 위반은
+ * 아니다.
+ *
+ * **`moveStates.set` + `positionHistory.delete`를 한 함수로 묶는 이유**:
+ * 되감기(RQ-64)가 `positionHistory` 링버퍼에서 대상 위치를 조회하므로,
+ * `positionHistory`를 비우지 않고 `moveStates`만 옮기면 되감기가 옮기기
+ * **전** 낡은 위치를 계속 반환해 escape가 조용히 무의미해진다(같은
+ * 결함 계열이 `rq-90-spread-seed-determinism.test.ts`의 `teleportPlayer`
+ * 리뷰 blocker로 이미 한 번 나왔다 — 그 파일의 §"REV(텔레포트-되감기
+ * 버퍼 충돌 수정)" 참고). 둘을 따로 호출하게 두면 반드시 누가 잊는다
+ * (`tests/support/harness.ts`의 `advanceTicks`가 시계 전진과 스케줄러
+ * 만료를 한 호출로 묶은 것과 같은 이유).
+ *
+ * **주의**: 이 모듈의 존재가 원장 20i(대기 헬퍼(`waitForCrossViewCondition`
+ * 류) 44곳 생명주기 통합 여부) 결정을 예단하지 않는다 — 20i는 리스너
+ * 생명주기라는 별개 관심사를 다룬다. 이 모듈은 Safe Zone 탈출 좌표 수학과
+ * 그 화이트박스 적용이라는 다른 관심사를 다룬다.
+ */
+
+/** 서버 `MoveState`의 화이트박스 쓰기에 필요한 최소 형태(`GameRoom`의
+ * 기존 private `moveStates` 필드 값 — `rq-90-spread-seed-determinism
+ * .test.ts`의 `SpreadTestSeam.moveStates`·`rq-64-lag-compensation-bound
+ * .test.ts`의 `RewindTestSeam.moveStates`와 동일 형태, 그린필드가 아니다). */
+export interface MoveState {
+  x: number
+  y: number
+  z: number
+  vx: number
+  vy: number
+  vz: number
+  grounded: boolean
+}
+
+/**
+ * Safe Zone 탈출에 필요한 최소 화이트박스 접근 대상 계약. `positionHistory`의
+ * 배열 원소 타입은 파일마다 다르다(대부분 `unknown[]`로 읽기 전용 취급하지만
+ * `rq-64-lag-compensation-bound.test.ts`처럼 `PositionSnapshot[]`으로 구체화해
+ * 쓰는 파일도 있다) — 제네릭 `H`로 열어 둬, 각 파일의 커스텀 Seam 인터페이스가
+ * `extends SafeZoneEscapeSeam<자신의 원소 타입>`으로 이 계약을 상속하면서도
+ * 자기 필드 타입을 그대로 쓸 수 있게 한다.
+ */
+export interface SafeZoneEscapeSeam<H = unknown> {
+  moveStates: Map<string, MoveState>
+  positionHistory: Map<string, H[]>
+  firedSinceSpawn: Map<string, boolean>
+}
+
+/** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`·
+ * `rq-43-afk-kick.test.ts`가 이미 확립한 기법)로 테스트 프로세스 안에서
+ * 실행 중인 실제 `GameRoom` 인스턴스를 얻는다. 커스텀 Seam 인터페이스가
+ * 필요한 파일(예: 자체 필드를 더 갖는 파일)은 이 함수 대신 자신의
+ * `getServerRoom`류 함수를 유지해도 된다 — 이 함수는 순수 Safe Zone
+ * 탈출만 필요한 파일을 위한 최소 버전이다. */
+export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam<H> | undefined
+  if (!serverRoom) {
+    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** 기본 탈출 오프셋 — Safe Zone 반경 + 15m 여유(0~20m 증명 구간 안). */
+export const DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 15
+
+/** `base`(자신의 스폰 지점 또는 현재 위치) 기준 방사 방향 단위 벡터. 이
+ * 파일 안의 모든 방사 방향 계산(텔레포트든 실이동이든)이 이 함수 하나를
+ * 거치게 해, "고정 +X는 15개 중 4개에서 깨진다"는 종류의 좌표 공식
+ * 실수가 한 곳에서만 발생할 수 있게 한다. */
+export function radialUnitVector(base: { x: number; z: number }): { ux: number; uz: number } {
+  const magnitude = Math.hypot(base.x, base.z)
+  if (magnitude < 1e-6) {
+    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
+  }
+  return { ux: base.x / magnitude, uz: base.z / magnitude }
+}
+
+/** `base` 기준 방사 방향으로 `offsetM`만큼 밀어낸 좌표를 계산한다(순수
+ * 함수 — 화이트박스 쓰기는 하지 않는다). 스폰 지점은 전부 평지이므로
+ * y는 0으로 고정한다. */
+export function computeRadialEscape(
+  base: { x: number; z: number },
+  offsetM: number = DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M,
+): { x: number; y: number; z: number } {
+  const { ux, uz } = radialUnitVector(base)
+  return { x: base.x + ux * offsetM, y: 0, z: base.z + uz * offsetM }
+}
+
+/** 세션을 `base` 기준 방사 방향으로 밀어내 Safe Zone 밖으로 화이트박스
+ * 텔레포트한다. `moveStates.set`과 `positionHistory.delete`를 한 호출로
+ * 묶는다(모듈 docblock의 "묶는 이유" 참고). */
+export function escapeSafeZone<H = unknown>(
+  seam: SafeZoneEscapeSeam<H>,
+  sessionId: string,
+  base: { x: number; z: number },
+  offsetM?: number,
+): { x: number; y: number; z: number } {
+  const escaped = computeRadialEscape(base, offsetM)
+  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+  return escaped
+}
+
+/** 가장 흔한 조합 — RQ-16 스폰 보호 해제(`firedSinceSpawn`)와 Safe Zone
+ * 탈출을 한 호출로 묶는다. 보통 피격자 쪽에 쓴다(사수는 자신이 맞는
+ * 쪽이 아니므로 보통 `escapeSafeZone`만 필요하다). RQ-16 자체를 검증하는
+ * `rq-16-spawn-protection.test.ts`는 이 함수를 쓰지 않는다 — 시간 기반
+ * 보호 로직을 건드리지 않고 위치만 옮겨야 하므로 `escapeSafeZone`만
+ * 쓴다(파일 상단 REV 참고). */
+export function releaseSpawnProtectionAndEscape<H = unknown>(
+  seam: SafeZoneEscapeSeam<H>,
+  sessionId: string,
+  base: { x: number; z: number },
+  offsetM?: number,
+): { x: number; y: number; z: number } {
+  seam.firedSinceSpawn.set(sessionId, true)
+  return escapeSafeZone(seam, sessionId, base, offsetM)
+}

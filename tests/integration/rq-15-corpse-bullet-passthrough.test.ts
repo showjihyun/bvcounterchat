@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { MOVEMENT, NET, PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * 시신은 총알을 막지 않는다 — 서버 판정 로직(ADR-0011: `src/shared`·서버
@@ -242,45 +242,6 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 `SAFE_ZONE_ESCAPE_OFFSET_M`만큼 밀어내 모든
- * Safe Zone 밖으로 옮긴다(`rq-31-safe-zone.test.ts` §반경-방사 기하와
- * 동일 증명). */
-function escapeSafeZone(
-  seam: SafeZoneEscapeSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * SAFE_ZONE_ESCAPE_OFFSET_M, y: base.y, z: base.z + uz * SAFE_ZONE_ESCAPE_OFFSET_M }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
 
 interface Vec2 {
   x: number
@@ -442,11 +403,9 @@ describe('시신은 총알을 막지 않는다 (리뷰 minor-3, 사용자 결정
         // Safe Zone 밖으로 옮긴다 — 이후 모든 기하 계산은 이 탈출 후
         // 위치를 새 기준으로 삼는다(파일 상단 REV 근거).
         const seam = getSafeZoneSeam(roomA)
-        seam.firedSinceSpawn.set(roomB.sessionId, true)
-        seam.firedSinceSpawn.set(roomC.sessionId, true)
-        const escapedA = escapeSafeZone(seam, roomA.sessionId, { ...baselineA, y: 0 })
-        const escapedB = escapeSafeZone(seam, roomB.sessionId, { ...baselineB, y: 0 })
-        const escapedC = escapeSafeZone(seam, roomC.sessionId, { ...baselineC, y: 0 })
+        const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA, SAFE_ZONE_ESCAPE_OFFSET_M)
+        const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB, SAFE_ZONE_ESCAPE_OFFSET_M)
+        const escapedC = releaseSpawnProtectionAndEscape(seam, roomC.sessionId, baselineC, SAFE_ZONE_ESCAPE_OFFSET_M)
         await sleep(RELEASE_PROTECTION_SETTLE_MS)
 
         // 음성 대조군(1/2) — C의 **탈출 후** 위치를 조준해 "장애물 없는

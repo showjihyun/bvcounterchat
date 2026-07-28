@@ -4,7 +4,8 @@ import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WORLD } from '@shared/constants'
+import { PLAYER } from '@shared/constants'
+import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-61 서버 권위(Server Authoritative) — 위치 참칭 거부, 통합 테스트
@@ -242,7 +243,7 @@ interface PositionSnapshot {
  * `x`·`y`·`z`·`hp`·`lastProcessedInputSeq`는 이미 `Player` 스키마에 있고,
  * `pendingSeqs`는 `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이 이미 이 정확한
  * 이름으로 화이트박스 접근하는 기존 private 필드다). */
-interface PositionTestSeam {
+interface PositionTestSeam extends SafeZoneEscapeSeam {
   state: {
     players: {
       get: (sessionId: string) =>
@@ -255,36 +256,6 @@ interface PositionTestSeam {
    * 절대 오르지 않으므로(파일 상단 REV 절 참고) "서버가 이 메시지를
    * 수신·처리했다"는 대기 신호로 이 필드를 대신 쓴다. */
   pendingSeqs: Map<string, number>
-  /** RQ-31 회귀 대응(`_workspace/RQ-31/03_test-writer_regression.md`) —
-   * `moveStates`·`positionHistory`·`firedSinceSpawn`은 `GameRoom`의 기존
-   * private 필드다(`rq-90-spread-seed-determinism.test.ts`의
-   * `SpreadTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
-   * 아니다). */
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). */
-function escapeSafeZone(
-  seam: PositionTestSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로

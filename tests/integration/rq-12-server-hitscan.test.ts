@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { PLAYER, WEAPON } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-12 서버 hitscan — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus
@@ -273,49 +273,6 @@ function bodyCenterM(): number {
   return (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
 }
 
-/** RQ-31 회귀 대응 화이트박스 접근 대상 — `moveStates`·`positionHistory`·
- * `firedSinceSpawn`은 `GameRoom`의 기존 private 필드다(`rq-90-spread-seed
- * -determinism.test.ts`의 `SpreadTestSeam`·`rq-41-slot-promotion.test.ts`의
- * `PromotionTestSeam`이 이미 이 이름들로 화이트박스 결합한다, 그린필드가
- * 아니다). */
-interface SafeZoneEscapeSeam {
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, unknown[]>
-  firedSinceSpawn: Map<string, boolean>
-}
-
-function getSafeZoneSeam(room: Room): SafeZoneEscapeSeam {
-  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as SafeZoneEscapeSeam | undefined
-  if (!serverRoom) {
-    throw new Error(`RQ-31 회귀 대응 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
-  }
-  return serverRoom
-}
-
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). 고정 방향(예: +X, 이 파일의 기존
- * `travelAndSettle`) 실이동은 특정 스폰 인덱스에서 다른 스폰 지점의 Safe
- * Zone에 새로 들어갈 수 있어(실측 4/15 위반) 쓰지 않는다. */
-function escapeSafeZone(
-  seam: SafeZoneEscapeSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
-
 describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 그 결과만 HP에 반영된다', () => {
   let server: RunningServer
 
@@ -341,9 +298,8 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       // 한다. A·B 둘 다 Safe Zone 밖으로 옮긴다(반경-방사 텔레포트,
       // 고정 +X 실이동보다 안전 — 파일 상단 REV2 근거).
       const seam = getSafeZoneSeam(roomA)
-      seam.firedSinceSpawn.set(roomB.sessionId, true)
       const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
-      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+      const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB)
       await sleep(SETTLE_MS)
       expect(escapedB.x).not.toBe(baselineB.x) // 실제로 이동했다는 전제 확인(원점 가정 제거)
 
@@ -384,9 +340,8 @@ describe('RQ-12/GA-05: 서버 hitscan 레이캐스트가 명중을 결정하며 
       // Safe Zone 밖으로 옮긴다 — 그러지 않으면 A의 사격 자체가 GA-19에
       // 막혀 "HP 불변"이 진짜 미스가 아니라 사격 자체가 막혀서일 수 있다.
       const seam = getSafeZoneSeam(roomA)
-      seam.firedSinceSpawn.set(roomB.sessionId, true)
       escapeSafeZone(seam, roomA.sessionId, baselineA)
-      escapeSafeZone(seam, roomB.sessionId, baselineB)
+      releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB)
       await sleep(SETTLE_MS)
 
       // REV: 수직 위(UP_MISS_AIM)를 조준 — A·B의 실제 XZ 위치와 무관하게
@@ -430,9 +385,8 @@ describe('RQ-12/ADR-0005: 발사 속도 제한(rate-limit) — 150ms 미만 간�
       // RQ-31 회귀 대응(파일 상단 REV2) — B의 RQ-16 해제는 화이트박스로,
       // A·B 둘 다 Safe Zone 밖으로 옮긴다.
       const seam = getSafeZoneSeam(roomA)
-      seam.firedSinceSpawn.set(roomB.sessionId, true)
       const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
-      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+      const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB)
       await sleep(SETTLE_MS)
       const aim = aimAt(escapedA, escapedB, bodyCenterM())
 

@@ -7,7 +7,8 @@ import { applySpread, DEGENERATE_RADIAL_EPS, eyeOrigin, raycastHitbox, type Vec3
 import { createRng } from '@shared/sim/rng'
 import { type PositionSnapshot } from '@shared/sim/rewind'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { PLAYER, WEAPON } from '@shared/constants'
+import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-90 탄퍼짐(랜덤 콘) — **시드 결정론** 통합 테스트 (ADR-0008: Colyseus
@@ -494,7 +495,7 @@ function findSeedWithBucket(
  * 우연히 만들 수 없는 정확한 퇴화 기하(사수·피격자가 같은 z, 같은 높이)를
  * 직접 배치하는 데 함께 쓴다 — 둘 다 갱신해야 하는 이유는 아래
  * `teleportPlayer` 코멘트 참고. */
-interface SpreadTestSeam {
+interface SpreadTestSeam extends SafeZoneEscapeSeam<PositionSnapshot> {
   spreadTuningOverride?: { coneRadiusRad: number }
   // `| undefined`를 명시한다(단순 `?:`가 아니라) — `exactOptionalPropertyTypes`
   // 아래서는 `seam.forcedSpreadSeed = undefined`(22z4 회수, 명시 초기화)가
@@ -503,14 +504,6 @@ interface SpreadTestSeam {
   // 옵셔널이 아니라 이 유니언 형태다.
   forcedSpreadSeed?: number | undefined
   magazines: Map<string, number>
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, PositionSnapshot[]>
-  /** RQ-31 회귀 대응(`_workspace/RQ-31/03_test-writer_regression.md`) —
-   * RQ-16 최초 입장 스폰 보호를 화이트박스로 즉시 해제하는 데 쓴다. 자기
-   * 사격은 자신의 스폰 지점(Safe Zone 내부)에 막힐 수 있다(GA-19,
-   * `86fddf1`). 기존 private 필드다(`rq-41-slot-promotion.test.ts`의
-   * `PromotionTestSeam`이 이미 이 이름으로 화이트박스 결합한다). */
-  firedSinceSpawn: Map<string, boolean>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -591,22 +584,18 @@ function teleportPlayer(seam: SpreadTestSeam, sessionId: string, position: { x: 
 }
 
 /** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다. 좌표
+ * 수학은 `tests/support/safe-zone.ts`의 `computeRadialEscape`에 위임하고
  * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). 기존 `teleportPlayer`를 그대로 재사용한다. */
+ * 지점×오프셋 0~20m 전수 확인됨), 화이트박스 쓰기는 이 파일의 기존
+ * `teleportPlayer`(위 REV 코멘트 — `moveStates`+`positionHistory` 원자적
+ * 갱신 이력)를 그대로 재사용한다. */
 function escapeSafeZone(
   seam: SpreadTestSeam,
   sessionId: string,
-  base: { x: number; y: number; z: number },
+  base: { x: number; z: number },
 ): { x: number; y: number; z: number } {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
+  const escaped = computeRadialEscape(base)
   teleportPlayer(seam, sessionId, escaped)
   return escaped
 }

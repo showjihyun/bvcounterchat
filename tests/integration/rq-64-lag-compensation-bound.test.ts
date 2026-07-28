@@ -6,6 +6,12 @@ import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { MOVEMENT, NET, PLAYER, WEAPON, WORLD } from '@shared/constants'
 import { POSITION_HISTORY_CAPACITY, REWIND_CAP_TICKS, type PositionSnapshot } from '@shared/sim/rewind'
+import {
+  escapeSafeZone,
+  radialUnitVector,
+  releaseSpawnProtectionAndEscape,
+  type SafeZoneEscapeSeam,
+} from '../support/safe-zone'
 
 /**
  * RQ-64 랙 보상(Lag Compensation) — 서버 권위(RQ-61) 통합 테스트 (ADR-0005
@@ -231,36 +237,13 @@ async function leaveRoom(room: Room): Promise<void> {
  * `clearSpawnProtection`이 화이트박스로 처리한다. */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
-/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
- * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다
- * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
- * 지점×오프셋 0~20m 전수 확인됨). */
-function escapeSafeZone(
-  seam: RewindTestSeam,
-  sessionId: string,
-  base: { x: number; y: number; z: number },
-): Foot {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const offsetM = WORLD.SAFE_ZONE_RADIUS_M + 15
-  const ux = base.x / radialMagnitude
-  const uz = base.z / radialMagnitude
-  const escaped = { x: base.x + ux * offsetM, y: base.y, z: base.z + uz * offsetM }
-  seam.moveStates.set(sessionId, { x: escaped.x, y: escaped.y, z: escaped.z, vx: 0, vy: 0, vz: 0, grounded: true })
-  seam.positionHistory.delete(sessionId)
-  return escaped
-}
-
 /** RQ-31 회귀 대응 — `room`의 RQ-16 최초 입장 보호를 화이트박스로 즉시
- * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), 그 세션을 Safe
- * Zone 밖으로 텔레포트한다. */
+ * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), 그 세션을
+ * `tests/support/safe-zone.ts`의 공용 헬퍼로 Safe Zone 밖으로 텔레포트한다. */
 async function clearSpawnProtection(room: Room): Promise<void> {
   const seam = getServerRoom(room)
-  seam.firedSinceSpawn.set(room.sessionId, true)
   const current = seam.moveStates.get(room.sessionId)
-  if (current) escapeSafeZone(seam, room.sessionId, current)
+  if (current) releaseSpawnProtectionAndEscape(seam, room.sessionId, current)
 }
 
 interface Foot {
@@ -319,12 +302,7 @@ async function travelRadiallyAndSettle(
   base: { x: number; z: number },
   offsetM: number = WORLD.SAFE_ZONE_RADIUS_M + 2,
 ): Promise<PlayerFields> {
-  const radialMagnitude = Math.hypot(base.x, base.z)
-  if (radialMagnitude < 1e-6) {
-    throw new Error(`RQ-31 회귀 대응 전제 위반 — base(${base.x},${base.z})가 원점에 있어 방사 방향을 정의할 수 없다`)
-  }
-  const dirX = base.x / radialMagnitude
-  const dirZ = base.z / radialMagnitude
+  const { ux: dirX, uz: dirZ } = radialUnitVector(base)
   const travelMs = Math.ceil((offsetM / MOVEMENT.SPEED) * 1000) + 200 // 여유 200ms
   mover.send('move', { dirX, dirZ, mode: 'run', jump: false })
   await sleep(travelMs)
@@ -341,21 +319,11 @@ async function travelRadiallyAndSettle(
  * 때부터 있던 기존 private map을 읽기 전용으로 노출할 뿐이다
  * (`rq-18-fall-damage.test.ts` `FallDamageTestSeam`과 동일한 결합 방식).
  * `state`는 `Room.state`(public) 그대로다. */
-interface RewindTestSeam {
+interface RewindTestSeam extends SafeZoneEscapeSeam<PositionSnapshot> {
   state: {
     tick: number
     players: { get: (sessionId: string) => { hp?: number } | undefined }
   }
-  /** RQ-31 회귀 대응 — `escapeSafeZone`(아래)이 실제 서버 `MoveState`
-   * 전체 형태(`vx`·`vy`·`vz`·`grounded`)로 기입해야 하므로 `Foot`보다
-   * 넓게 선언한다(`rq-90-spread-seed-determinism.test.ts`의
-   * `SpreadTestSeam.moveStates`와 동일한 형태). 기존 읽기 전용 사용처는
-   * `Foot`의 구조적 부분집합이라 그대로 호환된다. */
-  moveStates: Map<string, Foot & { vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, PositionSnapshot[]>
-  /** RQ-16 — 리스폰 직후 자기 사격으로 새 스폰 보호를 해제했는지 확인하는
-   * 용도(F2 재현, 아래 `waitForServerFiredSinceSpawn` 참고). */
-  firedSinceSpawn: Map<string, boolean>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`·
