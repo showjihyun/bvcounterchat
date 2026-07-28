@@ -14,6 +14,21 @@ import { isValidStatsUuid } from '@shared/stats/uuid'
 
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000'
 
+// 아래 `vi.stubGlobal('crypto', ...)`로 `globalThis.crypto`를 교체하기
+// **전에** 진짜 구현을 붙잡아 둔다 — 대체 객체 내부에서 `globalThis.crypto
+// .getRandomValues`를 그대로 참조하면 스텁이 적용된 뒤에는 자기 자신을
+// 가리켜 무한 재귀(`Maximum call stack size exceeded`)가 난다.
+const realGetRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+
+/** `crypto.randomUUID`가 없고 `getRandomValues`만 있는 insecure context를
+ * 흉내내는 가짜 `crypto`(`statsUuid.ts`의 secure-context 폴백 분기 검증용,
+ * 평가 major 4). */
+function insecureContextCrypto(): { getRandomValues: (arr: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer> } {
+  return {
+    getRandomValues: (arr: Uint8Array<ArrayBuffer>) => realGetRandomValues(arr),
+  }
+}
+
 function fakeStorage(initial: Record<string, string> = {}): UuidStorage & { data: Record<string, string> } {
   const data: Record<string, string> = { ...initial }
   return {
@@ -76,6 +91,39 @@ describe('RQ-81 getOrCreateStatsUuid — 저장소 부작용', () => {
   it('RQ-81: generateUuid를 생략하면 기본값(crypto.randomUUID)이 유효한 통계 UUID 형식을 만든다', () => {
     const storage = fakeStorage()
     const uuid = getOrCreateStatsUuid(storage)
+    expect(isValidStatsUuid(uuid)).toBe(true)
+  })
+})
+
+describe('RQ-81 getOrCreateStatsUuid — secure-context 폴백(평가 major 4)', () => {
+  it("RQ-81: crypto.randomUUID가 없는 환경(HTTP 사내망 배포, insecure context)에서도 getRandomValues로 유효한 UUID를 만든다", () => {
+    // RQ-80/ADR-0009 HTTP 배포에서는 Crypto.randomUUID()가 없을 수 있다
+    // (secure context 전용) — getRandomValues()는 그 제약이 없으므로 이
+    // 조합을 흉내낸 가짜 crypto로 기본 생성기의 폴백 분기를 검증한다.
+    vi.stubGlobal('crypto', insecureContextCrypto())
+    try {
+      const storage = fakeStorage()
+      const uuid = getOrCreateStatsUuid(storage)
+      expect(isValidStatsUuid(uuid)).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('RQ-81: 폴백 경로도 매 호출 다른 값을 만든다(무작위성 최소 확인 — 상수 반환이 아니다)', () => {
+    vi.stubGlobal('crypto', insecureContextCrypto())
+    try {
+      const a = getOrCreateStatsUuid(fakeStorage())
+      const b = getOrCreateStatsUuid(fakeStorage())
+      expect(a).not.toBe(b)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('RQ-81: crypto.randomUUID가 있으면(secure context) 폴백을 쓰지 않고 그대로 쓴다', () => {
+    const storage = fakeStorage()
+    const uuid = getOrCreateStatsUuid(storage) // 이 테스트 환경(Node)은 secure — randomUUID 존재
     expect(isValidStatsUuid(uuid)).toBe(true)
   })
 })

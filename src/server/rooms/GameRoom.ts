@@ -308,8 +308,13 @@ export class GameRoom extends Room<GameState> {
     // RQ-81: `statsDbPath`는 `src/server/index.ts`의 `gameServer.define()`
     // 3번째 인자(룸 생성 옵션)로 항상 채워져 들어온다 — 폴백은 그 경로를
     // 우회하는 직접 인스턴스화(현재 테스트 스위트에는 없다)에 대비한
-    // 방어일 뿐이다.
-    this.statsDb = openStatsDb(options?.statsDbPath ?? 'stats.db')
+    // 방어일 뿐이다. **`':memory:'`를 쓴다**(평가 minor 7) — 상대경로
+    // 파일명(예전엔 `'stats.db'`)으로 두면 도달 시 cwd(저장소 루트 또는
+    // 컨테이너 `/app`)에 조용히 파일을 만든다. `buildServer()` 자신의
+    // 기본값을 `:memory:`로 정한 것(위 `BuildOptions.statsDbPath` 코멘트)과
+    // 같은 이유 — 도달 불가능한 방어선이라도 오염 위험이 있는 값을 두지
+    // 않는다.
+    this.statsDb = openStatsDb(options?.statsDbPath ?? ':memory:')
     this.state = new GameState()
     this.registerMessageHandlers()
     this.startTickLoop()

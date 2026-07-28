@@ -15,10 +15,17 @@
 #                단순하다 — nginx 컨테이너가 뜨는 순간 이미 정적 자산이
 #                이미지 안에 있다(부트 순서 경합 없음).
 #
-# node20 고정: package.json engines(">=20")·vite.server.config.ts의
-# `target: 'node20'`와 정합.
-
-FROM node:20-alpine AS base
+# node22 고정(RQ-81, 평가 blocker 1): package.json engines("^22.13.0")·
+# vite.server.config.ts의 `target: 'node22'`·`.nvmrc`(22.23.1)와 정합.
+# **node20에서는 이 이미지가 뜨지 않는다** — RQ-81 통계 저장(`node:sqlite`
+# = `DatabaseSync`)이 Node 22.5+ 내장 모듈이라 20.x에는 아예 없다. 서버
+# 번들(`vite.server.config.ts`)이 `import { DatabaseSync } from
+# "node:sqlite"`를 최상위 정적 import로 남기므로, 20.x에서는 모듈 평가
+# 시점에 `ERR_UNKNOWN_BUILTIN_MODULE`로 즉사한다(실측: `docker run --rm
+# node:20-alpine node --input-type=module -e 'import {DatabaseSync} from
+# "node:sqlite"'`). 이전(node20) 고정 근거였던 "engines(>=20)"는 RQ-81
+# 이전 값이다 — RQ-81이 런타임 하한을 22.5+로 올렸다.
+FROM node:22-alpine AS base
 WORKDIR /app
 
 # ---- deps: 빌드에 필요한 전체 의존성 (devDependencies 포함) ----
@@ -45,6 +52,19 @@ ENV NODE_ENV=production
 COPY package.json ./package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist/server ./dist/server
+
+# RQ-81(평가 major 5): 통계 SQLite 파일(`src/server/index.ts`
+# `PRODUCTION_STATS_DB_PATH` 기본값 `/app/data/stats.db`, `WORKDIR /app`
+# 기준)이 살 디렉터리를 **root로 미리 만들고 node 소유로 넘긴다.** 이
+# RUN이 없으면: 아래 `USER node`로 권한을 낮춘 뒤 서버 프로세스(uid 1000)가
+# `/app/data`를 직접 만들려 하는데, `docker-compose.yml`의 named volume이
+# 이 경로에 마운트되는 순간 Docker가 볼륨을 **이미지에 있던 내용물(소유권
+# 포함)로 초기화**한다 — 이미지에 이 디렉터리가 아예 없으면 볼륨 마운트
+# 지점이 root 소유로 생성되고, node 유저는 그 안에 파일을 만들 권한이
+# 없어(`EACCES`) 통계 저장이 조용히 실패한다. 여기서 미리 만들어 소유권을
+# 옮겨두면 볼륨이 그 소유권을 그대로 물려받는다(Docker 볼륨 최초 채움
+# 동작 — 이미지 쪽 디렉터리의 권한·소유권을 보존).
+RUN mkdir -p /app/data && chown node:node /app/data
 
 # 루트가 아닌 사용자로 실행 — node:*-alpine 베이스 이미지가 기본 제공하는
 # 비특권 계정(uid 1000)을 그대로 쓴다(별도 useradd 불필요).
