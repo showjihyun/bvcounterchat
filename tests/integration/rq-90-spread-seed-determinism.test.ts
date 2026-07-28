@@ -115,13 +115,10 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 시드가 결과에 드러나게 하는 시험 조건이다.
  *
  * **공허함 회피 — 세 단언의 역할**:
- *   (A) 재현성(양성, GA-17의 본문): 강제 시드 `seedHit`로 **두 번** 실제
- *       왕복 사격 → 둘 다 바디 명중·동일 데미지(25)여야 한다. **주의**:
- *       이 단언 하나만으로는 공허하다 — 만약 서버가 스프레드를 전혀 적용하지
- *       않는다면(오늘의 실제 상태) 원 조준이 바디 중심을 정확히 겨누므로
- *       이 두 발도 우연히 "똑같이 명중"해 버려 이 단언은 **오늘도 통과한다**
- *       (거짓 양성 위험 — 팀리드가 경고한 "공허함 함정"). 그래서 아래 (B)가
- *       반드시 필요하다.
+ *   (A) 재현성(양성, GA-17의 본문): 서로 다른 시드 12개(`F1_SEED_SEQUENCE`)를
+ *       고정 순서로 쏘고, 매 발의 관측 버킷을 오프라인 오라클의 예측과
+ *       **정확히** 대조한 뒤, 같은 12-시드 열을 한 번 더 반복해 동일 결과를
+ *       재확인한다(F1 수정 — 아래 REV 참고).
  *   (B) 음성 대조군(GA-17이 실제로 Red가 되는 지점): 오프라인 오라클이
  *       "반드시 빗나감"으로 분류한 다른 시드 `seedMiss`로 **같은 조준·같은
  *       콘 반경**에서 쏘면 hp가 그대로여야 한다. 서버가 스프레드를 적용하지
@@ -134,12 +131,28 @@ import { PLAYER, WEAPON } from '@shared/constants'
  *       오버라이드 자체가 스프레드를 실제로 켜고 끈다"를 보여준다(우연한
  *       seed 궁합이 아니라).
  *
+ * **REV(평가 F1/F2 blocker 수정, `_workspace/RQ-90/04_evaluator_report.md`)**:
+ * 최초 버전의 (A)는 "강제 시드 하나로 두 발 다 바디 데미지 25"만 확인했다
+ * — 이는 GA-17 then("두 번의 **탄착점**이 완전히 동일")이 아니라 **"둘 다
+ * 바디 버킷"**이라는 훨씬 거친 술어였다. 평가자가 `handleFire`에서 3발째
+ * 부터만 RNG 스트림을 1드로 더 전진시키는 변이(M1C)를 심어 실증했다 —
+ * 탄착점이 0.745m(콘 반경의 84%) 어긋나는데도 이전 단언은 전부 통과했다
+ * (두 탄착점 다 바디 히트박스 안이라 데미지가 같았을 뿐). (A)를 위
+ * "오라클 일치 열" 형태로 재작성했다(`F1_SEED_SEQUENCE`·
+ * `fireOracleSequenceAndAssert` 코멘트 참고) — (B)·(C)는 최초 버전 그대로
+ * 유지했다(이미 진짜 Red를 정확히 잡고 있었다는 것이 평가로 확인됨).
+ * 별도로, 신규 리스너(`waitForDefinedPlayer`·`waitForHpChange`)가 이
+ * 저장소의 리스너 생명주기 정본 형태(`rq-61`·`rq-92`의 참조 등록·즉시
+ * 충족 시 미등록·해제)를 어겼다는 지적(F2)도 함께 고쳤다(`waitForPlayerCondition`
+ * 코멘트 참고).
+ *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다(ADR-0008
  * 허용 예외, `rq-12`와 동일). 모든 대기에 `withTimeout()` 상한을 건다.
  * hp 변화 관측은 `onStateChange` 이벤트 기반 폴링(고정 슬립 아님)이고,
- * "변화 없음"(B) 확인만 예외적으로 고정 슬립 뒤 값을 읽는다(그 자체가
- * 확인 대상이라 이벤트 기반 대기가 부적합 — `rq-12`의 "무관한 방향" 테스트와
- * 동일한 필요성).
+ * "변화 없음"(오라클 'miss' 예측·(B)) 확인만 예외적으로 고정 슬립 뒤 값을
+ * 읽는다(그 자체가 확인 대상이라 이벤트 기반 대기가 부적합 — `rq-12`의
+ * "무관한 방향" 테스트와 동일한 필요성). 오프라인 오라클(`classifySpreadSeed`)
+ * 은 순수 산술이라 실행마다 항상 같은 답을 낸다(플레이키 아님).
  */
 
 const ROOM_NAME = 'game'
@@ -166,6 +179,11 @@ const SPREAD_CONE_MULTIPLIER = 3
  * (수천 회도 밀리초 미만). 실제로는 한 자릿수 안에서 찾힘(위 스크래치
  * 검증) — 이 값은 넉넉한 안전 여유다. */
 const SEARCH_LIMIT = 5_000
+/** F1 수정 — RQ-10(탄창 10발)의 재장전(RQ-11, 2초)이 이 파일의 관심사를
+ * 가리지 않도록 A의 탄창을 넉넉히 채운다(오라클 열 26발 예정, 아래
+ * `F1_SEED_SEQUENCE` 코멘트). 탄약·재장전 메커니즘 자체는 이 파일의
+ * 검증 대상이 아니다. */
+const AMPLE_MAGAZINE = 999
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -245,19 +263,54 @@ function readPlayer(room: Room, sessionId: string): PlayerFields | undefined {
   return undefined
 }
 
-function waitForDefinedPlayer(room: Room, sessionId: string): Promise<PlayerFields> {
+/**
+ * 리스너 생명주기 정본 형태(평가 F2 blocker 수정,
+ * `_workspace/RQ-90/04_evaluator_report.md` §7) —
+ * `rq-61-server-authoritative-position.test.ts`의 `waitForCrossViewCondition`
+ * (`:289-316`)·`rq-92-fall-damage-curve.test.ts`의 `waitForPlayerCondition`
+ * (`:225-253`)과 동일한 세 규칙을 따른다: (1) 등록은 **참조**로(익명 래퍼
+ * 금지 — `colyseus.js`의 `EventEmitter.remove(cb)`는 미등록 콜백을 넘기면
+ * `handlers[-1]=last; pop()`을 수행해 맨 뒤 정상 핸들러를 조용히 지운다,
+ * 원장 20e에서 실측 확인된 함정) (2) **즉시 충족되면 `onStateChange`를
+ * 아예 등록하지 않는다** — 해제할 리스너 자체가 없으므로 이 경로는 처음
+ * 부터 누수가 없다 (3) 조건 충족 시 그 자리에서 `remove`한다.
+ *
+ * 이전 버전(`waitForDefinedPlayer`·`waitForHpChange`를 각각 별도 익명
+ * 클로저로 구현)은 이 세 규칙을 전부 어겼다 — 룸이 곧 닫혀 이번 테스트의
+ * 정확성에는 영향이 없었으나, 같은 라운드의 `rq-61` 파일은 정본을
+ * 지키는데 이 파일만 어겨 형태가 갈렸다(평가 지적). 이제 `rq-92`와 동일한
+ * 이름·형태의 단일 헬퍼로 통합한다.
+ */
+function waitForPlayerCondition(
+  room: Room,
+  sessionId: string,
+  predicate: (p: PlayerFields) => boolean,
+  label: string,
+  timeoutMs: number,
+): Promise<PlayerFields> {
   return withTimeout(
     new Promise<PlayerFields>((resolve) => {
       const tryResolve = (): void => {
         const current = readPlayer(room, sessionId)
-        if (current) resolve(current)
+        if (current && predicate(current)) {
+          room.onStateChange.remove(tryResolve)
+          resolve(current)
+        }
       }
-      tryResolve()
-      room.onStateChange(() => tryResolve())
+      const immediate = readPlayer(room, sessionId)
+      if (immediate && predicate(immediate)) {
+        resolve(immediate)
+        return
+      }
+      room.onStateChange(tryResolve)
     }),
-    HP_TIMEOUT_MS,
-    `초기 스냅샷(hp 포함, sessionId=${sessionId}) 관측`,
+    timeoutMs,
+    label,
   )
+}
+
+function waitForDefinedPlayer(room: Room, sessionId: string): Promise<PlayerFields> {
+  return waitForPlayerCondition(room, sessionId, () => true, `초기 스냅샷(hp 포함, sessionId=${sessionId}) 관측`, HP_TIMEOUT_MS)
 }
 
 /** hp가 `previousHp`에서 실제로 바뀔 때까지 관측한다(어느 값으로 바뀌는지는
@@ -267,18 +320,7 @@ function waitForDefinedPlayer(room: Room, sessionId: string): Promise<PlayerFiel
  * predicate에 정확한 목표값을 박아 두면 오답일 때 타임아웃까지 기다려야
  * 하는 문제를 피한다). */
 function waitForHpChange(room: Room, sessionId: string, previousHp: number, label: string): Promise<PlayerFields> {
-  return withTimeout(
-    new Promise<PlayerFields>((resolve) => {
-      const tryResolve = (): void => {
-        const current = readPlayer(room, sessionId)
-        if (current && current.hp !== previousHp) resolve(current)
-      }
-      tryResolve()
-      room.onStateChange(() => tryResolve())
-    }),
-    HP_TIMEOUT_MS,
-    label,
-  )
+  return waitForPlayerCondition(room, sessionId, (p) => p.hp !== previousHp, label, HP_TIMEOUT_MS)
 }
 
 function bodyCenterM(): number {
@@ -333,12 +375,17 @@ function findSeedWithBucket(
 }
 
 /** RQ-90 화이트박스 접근 대상 계약 — 파일 상단 "테스트 시드 주입 인터페이스"
- * 절 참고. 둘 다 아직 존재하지 않는 신규 필드다(Red 전제, 그린필드 계약) —
- * `GameRoom`이 `applySpread`를 전혀 호출하지 않는 오늘 상태에서 이 필드들도
- * 당연히 없다. */
+ * 절 참고. `spreadTuningOverride`·`forcedSpreadSeed`는 그린필드 계약이다
+ * (Red 전제 — `GameRoom`이 `applySpread`를 전혀 호출하지 않는 오늘 상태에서
+ * 이 필드들도 당연히 없었다). `magazines`는 그린필드가 아니다 — `AfkTestSeam`
+ * (`rq-43-afk-kick.test.ts`)이 이미 이 정확한 이름으로 화이트박스 접근하는
+ * 기존 private 필드다(RQ-10/11 탄창). F1 수정(평가 blocker, §"오라클 일치
+ * 열" 참고)이 한 세션에서 26발을 쏘아야 해서, RQ-10/11의 재장전(2초)
+ * 대기를 이 파일의 관심사로 끌어들이지 않기 위해 미리 넉넉히 채운다. */
 interface SpreadTestSeam {
   spreadTuningOverride?: { coneRadiusRad: number }
   forcedSpreadSeed?: number
+  magazines: Map<string, number>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -351,6 +398,83 @@ function getServerRoom(room: Room): SpreadTestSeam {
     throw new Error(`RQ-90 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
   }
   return serverRoom
+}
+
+/**
+ * F1 수정(평가 blocker, `_workspace/RQ-90/04_evaluator_report.md` §4) —
+ * 서로 다른 시드 12개를 이 고정 순서로 쏘고(그 다음 같은 열을 한 번 더
+ * 반복한다), 각 발의 관측 버킷이 오프라인 오라클의 예측과 **정확히
+ * 일치**하는지 단언한다. 이전 버전은 "강제 시드 하나로 두 발 다 바디
+ * 데미지 25"만 확인했는데, 이는 GA-17 then("두 번의 **탄착점**이 완전히
+ * 동일")이 아니라 **"둘 다 바디 버킷"**이라는 훨씬 거친 술어였다 —
+ * 평가자가 `handleFire`에서 3발째부터만 RNG 스트림을 1드로 더 전진시키는
+ * 변이(M1C)를 심어 실증했다: 탄착점이 0.745m(콘 반경의 84%) 어긋나는데도
+ * 이전 단언은 전부 통과했다(두 탄착점 다 바디 히트박스 안이라 데미지가
+ * 같았을 뿐).
+ *
+ * 이 시퀀스는 **정확히 1개**의 'body' 버킷(시드 1)과 **11개**의 'miss'
+ * 버킷으로 골랐다 — 2 pass(24발) 전체에서 바디 명중은 정확히 2회
+ * (hp: 100→75→50)뿐이라 RQ-14(바디샷 4회=사망)에 걸리지 않고, 결과값도
+ * 기존 (B)/(C)가 참조하던 기준값(50)과 그대로 맞물린다. 11개의 miss
+ * 시드 중 `13`·`17`·`18`·`26`·`43`·`44` 여섯 개는 **"정상 계산에서는
+ * miss지만 RNG 스트림이 1드로 더 밀리면 다른 버킷으로 뒤집힌다"**는
+ * 것을 세션 스크래치 스크립트(오프라인 재구현, 커밋 안 함)로 이 정확한
+ * 기하(A=SPAWN_POINTS[0]·B=SPAWN_POINTS[1]·`coneRadiusRad =
+ * atan(bodyRadiusM/distance)*3`)에 대해 1..200 시드 전수 검사로 확인했다
+ * — 확률(팀리드 실측 K=12 생존율 ≈1.4%)에 기대지 않고, **이 정확한 집합이
+ * M1C류 변이를 실제로 죽인다는 것을 격리 워크트리에서 재확인**했다
+ * (`_workspace/RQ-90/05_test-writer_blockers.md` §2). 나머지 5개
+ * (2·4·5·9·10)는 안정적인(뒤집히지 않는) miss라 "잡음 없는 대조점"
+ * 역할이다.
+ *
+ * 순서상 첫 항목(시드 1, 'body')은 이 세션의 첫 사격(글로벌 사격 카운트가
+ * 아직 M1C류 변이의 문턱— "3발째부터"— 에 못 미치는 지점)이라 그 자체로는
+ * 변이 검출에 기여하지 않는다 — 검출은 뒤따르는 11개의 miss 시드가 맡는다.
+ */
+const F1_SEED_SEQUENCE: readonly number[] = [1, 2, 4, 5, 9, 10, 13, 17, 18, 26, 43, 44]
+
+/**
+ * `F1_SEED_SEQUENCE`를 고정 순서로 한 번(pass) 쏘고, 매 발의 관측 버킷이
+ * `expectedBuckets[i]`(오프라인 오라클 예측)와 정확히 일치하는지
+ * 단언한다 — 'body' 예측이면 hp가 정확히 `WEAPON.DAMAGE_BODY`만큼
+ * 줄어야 하고, 'miss' 예측이면 hp가 전혀 변하지 않아야 한다. 갱신된
+ * hp를 반환해 다음 pass·이후 (B)/(C)가 이어받는다.
+ */
+async function fireOracleSequenceAndAssert(
+  roomA: Room,
+  roomB: Room,
+  seam: SpreadTestSeam,
+  aim: Vec3,
+  seeds: readonly number[],
+  expectedBuckets: readonly SpreadBucket[],
+  startingHp: number,
+  passLabel: string,
+): Promise<number> {
+  let previousHp = startingHp
+  for (let i = 0; i < seeds.length; i += 1) {
+    const seed = seeds[i]!
+    const bucket = expectedBuckets[i]!
+    seam.forcedSpreadSeed = seed
+    roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
+
+    if (bucket === 'body') {
+      const after = await waitForHpChange(
+        roomB,
+        roomB.sessionId,
+        previousHp,
+        `RQ-90 F1: ${passLabel} #${i + 1}(seed=${seed}) 'body' 예측 hp 변화 대기`,
+      )
+      expect(after.hp).toBe(previousHp - WEAPON.DAMAGE_BODY) // 오라클 예측('body')과 정확히 일치
+      previousHp = after.hp
+      await sleep(SHOT_GAP_MS) // rate-limit 여유(hp 변화 대기가 빠르게 끝났을 수 있어 별도 확보)
+    } else {
+      // 'miss' 예측 — 정착 대기(=rate-limit 여유 겸용) 후 변화 없음을 확인.
+      await sleep(SHOT_GAP_MS)
+      const after = readPlayer(roomB, roomB.sessionId)
+      expect(after?.hp).toBe(previousHp) // 오라클 예측('miss')과 정확히 일치 — hp 불변
+    }
+  }
+  return previousHp
 }
 
 describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 같은 시드는 같은 탄착 결과를 재현한다', () => {
@@ -385,27 +509,58 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       const { aim, distance } = aimAtBodyWithDistance(baselineA, baselineB)
 
       const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
-      const seedHit = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'body', SEARCH_LIMIT)
       const seedMiss = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', SEARCH_LIMIT)
 
       const seam = getServerRoom(roomA)
       seam.spreadTuningOverride = { coneRadiusRad }
-      seam.forcedSpreadSeed = seedHit
+      // F1 수정 — 오라클 열이 A에게 26발(12*2 + (B) 1 + (C) 1)을 요구한다.
+      // RQ-10/11(탄창 10발·재장전 2초)이 이 파일의 관심사를 가리지 않도록
+      // 미리 넉넉히 채운다(위 `SpreadTestSeam.magazines` 코멘트 참고).
+      seam.magazines.set(roomA.sessionId, AMPLE_MAGAZINE)
 
-      // --- (A) 재현성 1/2 — 강제 시드 `seedHit`로 첫 발.
-      roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
-      const afterFirst = await waitForHpChange(roomB, roomB.sessionId, baselineB.hp, 'RQ-90 강제 시드 1발째 hp 변화 대기')
-      expect(afterFirst.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY) // 100 -> 75, 오프라인 오라클의 'body' 예측과 일치
+      // --- (A) 재현성 — F1 수정: 단일 시드·단일 버킷 비교 대신, 서로 다른
+      // 시드 12개(`F1_SEED_SEQUENCE`)를 고정 순서로 쏘고 매 발을 오프라인
+      // 오라클과 대조한 뒤, 같은 열을 한 번 더 반복해 동일 결과를 재확인한다
+      // — GA-17 then("두 번의 탄착점이 완전히 동일")을 "둘 다 바디"라는
+      // 거친 버킷 비교가 아니라 시드별 정밀 대조로 검증한다(평가 F1 blocker,
+      // 위 `F1_SEED_SEQUENCE` 코멘트 참고).
+      const expectedBuckets = F1_SEED_SEQUENCE.map((seed) => classifySpreadSeed(origin, aim, targetFoot, coneRadiusRad, seed))
+      const bodyBucketCount = expectedBuckets.filter((bucket) => bucket === 'body').length
+      if (bodyBucketCount !== 1 || expectedBuckets.includes('head')) {
+        throw new Error(
+          `RQ-90 F1 시퀀스 전제 위반 — F1_SEED_SEQUENCE는 정확히 1개의 'body'와 나머지 'miss'를 기대했으나 실제 분류는 [${expectedBuckets.join(', ')}]였다(스폰 기하가 스크래치 검증 때와 달라졌을 수 있다).`,
+        )
+      }
 
+      const hpAfterPass1 = await fireOracleSequenceAndAssert(
+        roomA,
+        roomB,
+        seam,
+        aim,
+        F1_SEED_SEQUENCE,
+        expectedBuckets,
+        baselineB.hp,
+        '1차 통과',
+      )
       await sleep(SHOT_GAP_MS)
 
-      // --- (A) 재현성 2/2 — 같은 강제 시드로 동일 조준을 재현. 두 번째
-      // 실제 왕복도 동일하게 바디 판정·동일 데미지가 나와야 "같은 시드 ->
-      // 같은 탄착점"이 증명된다. (단, 이 단언 하나만으로는 공허하다 — 아래
-      // (B)가 반드시 필요한 이유는 파일 상단 docblock 참고.)
-      roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
-      const afterSecond = await waitForHpChange(roomB, roomB.sessionId, afterFirst.hp, 'RQ-90 강제 시드 2발째(재현) hp 변화 대기')
-      expect(afterSecond.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 2) // 75 -> 50, 1발째와 동일한 감소폭
+      // 같은 12-시드 열을 한 번 더 반복 — GA-17 when("동일한 시드로 동일한
+      // 사격 판정을 두 번 재현")의 문자 그대로의 뜻. 각 발이 또다시
+      // 오프라인 오라클과 정확히 일치해야 하므로, 1차 통과와 다른 결과가
+      // 나오면(스트림이 조금이라도 어긋나면) 이 두 번째 통과에서 바로
+      // 잡힌다.
+      const hpAfterPass2 = await fireOracleSequenceAndAssert(
+        roomA,
+        roomB,
+        seam,
+        aim,
+        F1_SEED_SEQUENCE,
+        expectedBuckets,
+        hpAfterPass1,
+        '2차 통과(재현)',
+      )
+      const afterSecond = { hp: hpAfterPass2 }
+      expect(afterSecond.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 2) // 2 pass 합쳐 바디 명중 정확히 2회 — 기존 (B)/(C) 기준값과 동일
 
       await sleep(SHOT_GAP_MS)
 
@@ -437,6 +592,6 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
     },
-    30_000,
+    60_000, // F1 수정 이후 26발(12*2 + 2) — 이전(30_000ms, 4발)보다 넉넉히 늘렸다.
   )
 })
