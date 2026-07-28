@@ -967,18 +967,21 @@ function waitForStatsCondition(
   return withTimeout(
     new Promise<StatsRow | undefined>((resolve, reject) => {
       const interval = setInterval(tryResolve, 15)
+      // 성공 경로에서도 타임아웃 타이머를 반드시 해제한다 — 안 하면 이 파일이
+      // 끝난 뒤에도 타이머가 남아 워커 종료와 경합한다(리뷰 minor).
+      const timer = setTimeout(() => {
+        clearInterval(interval)
+        reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+      }, timeoutMs)
       function tryResolve(): void {
         const row = getStats(db, uuid)
         if (predicate(row)) {
           clearInterval(interval)
+          clearTimeout(timer)
           resolve(row)
         }
       }
       tryResolve()
-      setTimeout(() => {
-        clearInterval(interval)
-        reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
-      }, timeoutMs)
     }),
     timeoutMs,
     label,

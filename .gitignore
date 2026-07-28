@@ -28,3 +28,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.log
+
+# RQ-81 통계 SQLite (배포 진입점이 만든다 — 저장소에 넣지 않는다)
+data/
