@@ -224,14 +224,27 @@ export interface GameConnection {
  * 도착한 일회성 `chat-history`가 핸들러 없이 버려질 수 있었다(재전송
  * 경로 없음). 아래처럼 `joinOrCreate` resolve와 **같은 태스크**(중간에
  * 다른 `await` 없이)에서 즉시 구독하면 이 경합 창이 사라진다.
+ *
+ * RQ-81 (`uuid`, 선택 인자): 브라우저 `localStorage`에 보관하는 익명 통계
+ * UUID(ADR-0006 결정 4) — 호출자(`App.tsx`)가 `@client/identity/statsUuid`
+ * `getOrCreateStatsUuid`로 미리 읽고, 없으면 생성해 넘긴다. 이 함수(netcode
+ * 레이어) 자신은 `localStorage`를 참조하지 않는다 — 이 파일은 통합 테스트
+ * (Node 환경, `window` 없음)에서 직접 실행되므로(아래 `pingIntervalId` 관련
+ * 주석과 동일한 이유) 브라우저 전용 스토리지 API를 여기서 직접 부르면 그
+ * 자체로 테스트가 깨진다. 생략하면(레거시 호출·`20b-client-connect.test.ts`
+ * 등 uuid 없이 부르는 기존 호출) `joinOrCreate` 옵션에 `uuid` 필드 자체를
+ * 싣지 않는다 — 서버 `GameRoom.onJoin`은 그 경우 `isValidStatsUuid(undefined)
+ * === false`로 판정해 이번 세션을 통계 추적에서만 제외할 뿐 접속 자체는
+ * 그대로 진행된다(RQ-61 안전한 기본값, 기존 호출 회귀 없음).
  */
 export async function connectToGame(
   endpoint: string,
   nickname: string,
   store: StoreApi<GameStoreState>,
+  uuid?: string,
 ): Promise<GameConnection> {
   const client = new Client(endpoint)
-  const room = await client.joinOrCreate(ROOM_NAME, { nickname })
+  const room = await client.joinOrCreate(ROOM_NAME, uuid !== undefined ? { nickname, uuid } : { nickname })
 
   // RQ-40 M1 — join resolve 직후, 다른 await 없이 즉시 등록한다(위 함수
   // 코멘트 참고). 로그 상한(M3)은 `gameStore`의 `addChatMessage`/

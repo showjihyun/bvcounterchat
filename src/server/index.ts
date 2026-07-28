@@ -1,4 +1,5 @@
 import type { Socket } from 'node:net'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Fastify from 'fastify'
 import { Server as ColyseusServer } from 'colyseus'
@@ -24,13 +25,43 @@ import { GameRoom } from './rooms/GameRoom'
 const PORT = Number(process.env['PORT'] ?? 2567)
 const HOST = process.env['HOST'] ?? '0.0.0.0'
 
+/** RQ-81: 운영 기본 통계 SQLite 경로 — 실제 프로세스 직접 실행 진입점
+ * (아래 `isDirectRun` 블록)에서만 쓴다. 운영 배포는 ADR-0009 named volume
+ * 마운트 지점을 이 경로에 맞추면 된다(볼륨 선언 자체는 이번 라운드 스코프
+ * 밖). **`buildServer()` 자신의 기본값으로는 쓰지 않는다** — 아래
+ * `BuildOptions.statsDbPath` 코멘트 참고. */
+const PRODUCTION_STATS_DB_PATH = process.env['STATS_DB_PATH'] ?? join(process.cwd(), 'data', 'stats.db')
+
 export interface BuildOptions {
   /** 테스트는 false로 끈다 — 로그가 테스트 출력을 덮으면 실패를 놓친다. */
   logger?: boolean
+  /**
+   * RQ-81: SQLite 통계 파일 경로. **생략 시 `:memory:`**(프로세스 전유 임시
+   * 저장소, 재시작 시 소실)를 쓴다 — 안정적 공유 경로(예: `data/stats.db`)를
+   * 기본값으로 두면 이 함수를 인자 없이 부르는 기존 통합 테스트 30여 개
+   * (`tests/integration/rq-02~64-*.test.ts`, 이번 RQ 이전부터 존재하며
+   * `statsDbPath`를 전혀 모른다)가 전부 **같은 파일**을 공유하게 된다 —
+   * `pool:'forks'`(vitest.config.ts)로 여러 파일이 별도 프로세스에서
+   * 동시에 실행되므로, 그 파일들 중 킬·데스 이벤트가 있는 테스트끼리
+   * 동시에 SQLite 쓰기를 시도하면 파일 잠금 경합(Windows에서 특히
+   * 취약, `node:sqlite`의 기본 `timeout`은 0 — 즉시 실패)이 생길 수 있고,
+   * 저장소 루트에 실행마다 자라는 `data/stats.db`가 남는다(실측:
+   * `git status`에 `data/`가 추적되지 않은 채 나타남). `:memory:`는 이
+   * 위험 자체를 없앤다 — 통계 지속성을 실제로 검증하는 테스트
+   * (`tests/integration/rq-81-*.test.ts`)는 전부 명시적으로 격리된 임시
+   * 파일 경로를 넘긴다(ADR-0008 §5가 통합 테스트의 `:memory:` 대체를
+   * "최소 요구"로 허용하는 것과 반대 방향 — 여기서는 "통계를 신경 쓰지
+   * 않는 호출자"의 기본값을 `:memory:`로 둔 것이다). 운영 진입점
+   * (`isDirectRun`)은 이 기본값에 기대지 않고 `PRODUCTION_STATS_DB_PATH`를
+   * 항상 명시적으로 넘긴다 — RQ-81의 재시작 보존 요구는 그 경로에서만
+   * 성립하면 된다.
+   */
+  statsDbPath?: string
 }
 
 export function buildServer(options: BuildOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true })
+  const statsDbPath = options.statsDbPath ?? ':memory:'
 
   // ADR-0009: 배포 후 스모크와 컨테이너 헬스체크가 이 엔드포인트를 쓴다.
   app.get('/health', () => ({
@@ -74,7 +105,13 @@ export function buildServer(options: BuildOptions = {}) {
     gracefullyShutdown: false,
   })
   // RQ-04: 이름은 'game' 하나뿐 — 서버 전역에 상설 세션은 이 룸이 유일하다.
-  gameServer.define('game', GameRoom)
+  // RQ-81: `statsDbPath`는 룸 생성 옵션(서버 설정값 — 클라이언트별 값
+  // 아님)으로 실어 보낸다. `define()`의 3번째 인자(`defaultOptions`)는
+  // 룸을 최초로 만든 클라이언트의 join 옵션보다 나중에 병합돼 우선한다
+  // (`node_modules/@colyseus/core/build/MatchMaker.js` 실측, `onCreate`
+  // 호출부) — 악의적 클라이언트가 join 옵션에 같은 키를 실어 보내도 이
+  // 값이 이긴다.
+  gameServer.define('game', GameRoom, { statsDbPath })
 
   // RQ-04 종료 드레인 — app.close()가 반환되는 시점에 이 인스턴스가 열었던
   // TCP 연결(WS 업그레이드 포함)이 전부 실제로 닫혀 있어야 한다. 그래야
@@ -152,7 +189,10 @@ const entry = process.argv[1]
 const isDirectRun = entry !== undefined && import.meta.url === pathToFileURL(entry).href
 
 if (isDirectRun) {
-  const app = buildServer()
+  // RQ-81: 실제 배포/로컬 직접 실행에서만 안정적 통계 경로를 명시한다 —
+  // `buildServer()`의 인자 없는 기본값(`:memory:`)에 기대지 않는다(위
+  // `BuildOptions.statsDbPath` 코멘트 참고).
+  const app = buildServer({ statsDbPath: PRODUCTION_STATS_DB_PATH })
   app.listen({ port: PORT, host: HOST }).catch((err: unknown) => {
     app.log.error(err)
     process.exit(1)

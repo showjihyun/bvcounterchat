@@ -36,6 +36,8 @@ import {
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 import { filterProfanity } from '@shared/chat/profanityFilter'
+import { isValidStatsUuid } from '@shared/stats/uuid'
+import { addPlaytimeMs, openStatsDb, recordDeath, recordKill, type StatsDb } from '@server/persistence/statsDb'
 
 /** RQ-02: 닉네임 미제공 시 서버가 부여하는 기본 닉네임. 스펙이 침묵하는
  * 지점이라 임의로 정한다 — 어떤 값이든 자동 접미사 로직으로 고유화된다. */
@@ -274,11 +276,50 @@ export class GameRoom extends Room<GameState> {
    * 클라이언트가 발신·수신 양쪽에 참여한다(RQ-41).
    */
   private readonly chatHistory: ChatMessage[] = []
+  /** RQ-81: SQLite 통계 핸들 — `onCreate`에서 열고 `onDispose`에서 닫는다.
+   * 정의역 확정 순서(Colyseus 룸 생명주기: `onCreate`가 항상 다른 모든
+   * 콜백보다 먼저 정확히 한 번 실행된다)에 기대어 `!`(정의 단언)를 쓴다
+   * (`allocateSpawnPoint`의 `SPAWN_POINTS[...]!`와 동일한 관례). 닫지
+   * 않으면 재시작 시나리오(같은 프로세스 안에서 `buildServer()`를 다시
+   * 부르는 통합 테스트)에서 두 번째 인스턴스가 같은 파일을 열 때 Windows
+   * 파일 잠금 관례상 충돌할 수 있다(`_workspace/RQ-81/01_test-writer_red.md`
+   * §5.3 리스크 기록). */
+  private statsDb!: StatsDb
+  /** RQ-81: 세션별 통계 키(익명 UUID) — `onJoin`이 `isValidStatsUuid`를
+   * 통과한 값만 저장한다(§4 설계 포크 3, ADR-0006 "소유권 검증 아님, 형식
+   * 검사"). 통과하지 못한(미제공·형식 오류) 세션은 이 맵에 항목이 없고,
+   * `registerDeath`/`onLeave`의 통계 기록 지점이 `.get()`이 `undefined`를
+   * 반환하면 조용히 건너뛴다 — "이번 판은 통계 추적에서 아예 빠진다"는
+   * 안전한 기본값이다(공유 폴백 키로 대체하지 않는다 — 그러면 서로 무관한
+   * 형식 오류 세션들이 한 키로 수렴해 오염된다). `onLeave`가 정리한다.
+   */
+  private readonly playerUuids = new Map<string, string>()
+  /** RQ-81: 플레이어가 된 시점(`initializePlayer` — 최초 입장·AFK 승격
+   * 공통)의 `Date.now()` — 퇴장 시 경과를 `addPlaytimeMs`로 한 번에
+   * 적재한다(팀리드 위임 "쓰기 시점" 결정, `_workspace/RQ-81/
+   * 01_test-writer_red.md` §3). **관전 중 시간은 세지 않는다**(coder
+   * 재량 — 킬·데스·헤드샷 세 지표가 전부 플레이어 전유 개념이라 플레이타임도
+   * 같은 축에 맞췄다, §7 "관전자의 플레이타임 집계 여부"). `kickAfkPlayer`는
+   * 이 맵을 건드리지 않는다 — `lastInputAtTick`과 동일하게 실제 소켓 close로
+   * 도달하는 `onLeave`가 나중에 정리한다(이미 검증된 정리 패턴 재사용). */
+  private readonly joinedAtMs = new Map<string, number>()
 
-  override onCreate(): void {
+  override onCreate(options?: { statsDbPath?: string }): void {
+    // RQ-81: `statsDbPath`는 `src/server/index.ts`의 `gameServer.define()`
+    // 3번째 인자(룸 생성 옵션)로 항상 채워져 들어온다 — 폴백은 그 경로를
+    // 우회하는 직접 인스턴스화(현재 테스트 스위트에는 없다)에 대비한
+    // 방어일 뿐이다.
+    this.statsDb = openStatsDb(options?.statsDbPath ?? 'stats.db')
     this.state = new GameState()
     this.registerMessageHandlers()
     this.startTickLoop()
+  }
+
+  /** RQ-81: 룸이 폐기될 때(정상 종료 드레인이든 프로세스 재시작 시나리오든)
+   * SQLite 핸들을 닫는다 — 위 `statsDb` 필드 코멘트의 리스크 기록 참고.
+   * Colyseus가 `_dispose()`에서 정의돼 있으면 이 메서드를 부른다. */
+  override onDispose(): void {
+    this.statsDb.close()
   }
 
   /**
@@ -558,7 +599,9 @@ export class GameRoom extends Room<GameState> {
     const outcome = applyDamageWithProtection(victim.hp, damageForRegion(closest.result.region), isProtected)
     victim.hp = outcome.hp
     if (outcome.died) {
-      this.registerDeath(closest.id, this.state.tick, shooterId)
+      // RQ-81: 헤드샷 통계는 킬의 부분집합(§5.1 설계 결정 1) — 이 판정에
+      // 쓴 것과 동일한 `region` 값을 그대로 넘겨 두 판정이 어긋나지 않게 한다.
+      this.registerDeath(closest.id, this.state.tick, shooterId, closest.result.region === 'head')
     }
   }
 
@@ -573,16 +616,31 @@ export class GameRoom extends Room<GameState> {
    * 환경 피해(`killerId` 없음)는 가해자가 없으므로 킬을 기록하지 않는다
    * (`_workspace/RQ-18/01_test-writer_red.md` §3, 스코프 크리프 방지).
    *
+   * **RQ-81 통계**: 피해원과 무관하게(hitscan이든 낙하든) 피해자의 uuid가
+   * 있으면 항상 `recordDeath`를 부른다 — "데스"는 가해자 유무와 무관한
+   * 개념이다(이 함수가 "피해원과 무관하게 diedAtTick을 한 곳에서 갱신"하는
+   * 것과 같은 정신). 가해자가 있고 그 uuid도 있으면 `recordKill`을 함께
+   * 부른다 — `isHeadshot`은 `handleFire`가 `closest.result.region ===
+   * 'head'`를 그대로 넘긴다(§5.1 "헤드샷은 킬의 부분집합").
+   *
    * `fallPeakY`도 함께 정리한다 — 사인과 무관하게 사망은 "현재 공중 구간
    * 추적"을 끝내야 한다. 그렇지 않으면(예: 공중에서 피격사) 리스폰 후
    * 다음 낙하가 죽기 전 남은 최고점을 잘못 이어받아 과다 피해로 이어질 수
    * 있다. 낙하 자체로 죽는 경로(`trackFallDamage`)는 착지 처리 마지막에
    * 다시 한번 무조건 삭제하므로 이 삭제와 중복돼도 안전하다(멱등).
    */
-  private registerDeath(victimId: string, currentTick: number, killerId?: string): void {
+  private registerDeath(victimId: string, currentTick: number, killerId?: string, isHeadshot?: boolean): void {
+    const victimUuid = this.playerUuids.get(victimId)
+    if (victimUuid !== undefined) {
+      recordDeath(this.statsDb, victimUuid)
+    }
     if (killerId !== undefined) {
       const killer = this.state.players.get(killerId)
       if (killer) killer.kills += 1
+      const killerUuid = this.playerUuids.get(killerId)
+      if (killerUuid !== undefined) {
+        recordKill(this.statsDb, killerUuid, isHeadshot ?? false)
+      }
     }
     this.diedAtTick.set(victimId, currentTick)
     this.fallPeakY.delete(victimId)
@@ -968,20 +1026,38 @@ export class GameRoom extends Room<GameState> {
    * `joinOrCreate`하는 것이라 이 한 지점이 최초 입장·재접속 양쪽을 자동으로
    * 충족한다(test-writer 계약 §3.3 "가정 3"). 복사본(`[...this.chatHistory]`)을
    * 보내 이후 서버 쪽 배열 변경이 이미 보낸 값에 영향을 주지 않게 한다.
+   *
+   * **RQ-81**: `options.uuid`가 `isValidStatsUuid`를 통과하면 접속이 실제로
+   * 확정되는(플레이어 또는 관전자로 자리를 얻는) 두 분기 각각에서
+   * `playerUuids`에 저장한다 — 관전자로 입장했다가 나중에 승격
+   * (`promoteWaitingSpectator`)되면 그 시점에 이미 알고 있는 uuid로 킬·
+   * 데스·헤드샷을 기록해야 하기 때문이다. 정원 초과로 접속 자체가
+   * 거부되는(아래 `throw`) 경로에는 저장하지 않는다 — 다시는 쓰이지 않을
+   * sessionId가 이 맵에 영구히 남는 누수를 막는다. 통과하지 못하면(미제공·
+   * 타입 오류·형식 오류) 이 세션은 이번 판 통계 추적에서 아예 빠진다(접속
+   * 자체는 그대로 진행 — RQ-61 "크래시보다 안전한 기본값",
+   * `_workspace/RQ-81/01_test-writer_red.md` §4).
    */
-  override onJoin(client: Client, options?: { nickname?: unknown }): void {
+  override onJoin(client: Client, options?: { nickname?: unknown; uuid?: unknown }): void {
     const rawNickname = typeof options?.nickname === 'string' ? options.nickname : ''
     const sanitized = sanitizeNickname(rawNickname)
     const requested = sanitized.length > 0 ? sanitized : DEFAULT_NICKNAME
     const nickname = this.uniqueNickname(requested)
+    const rawUuid = options?.uuid
 
     if (this.state.players.size < CAPACITY.PLAYERS) {
+      if (isValidStatsUuid(rawUuid)) {
+        this.playerUuids.set(client.sessionId, rawUuid)
+      }
       this.initializePlayer(client.sessionId, nickname)
       client.send('chat-history', [...this.chatHistory])
       return
     }
 
     if (this.state.spectators.size < CAPACITY.SPECTATORS) {
+      if (isValidStatsUuid(rawUuid)) {
+        this.playerUuids.set(client.sessionId, rawUuid)
+      }
       const spectator = new Spectator()
       spectator.nickname = nickname
       this.state.spectators.set(client.sessionId, spectator)
@@ -1053,6 +1129,24 @@ export class GameRoom extends Room<GameState> {
     // onJoin/stepPlayerMovement가 새로 적립한다) — 다른 모든 세션 전유
     // 부기 상태와 동일한 정리 패턴(누수 방지).
     this.positionHistory.delete(client.sessionId)
+
+    // RQ-81: 플레이타임을 퇴장 시점에 한 번에 적재한다(팀리드 위임 "쓰기
+    // 시점" 결정, 위 `joinedAtMs` 필드 코멘트 참고). `wasPlayer`가 아니라
+    // `joinedAtMs`에 값이 있는지로 게이트한다 — `kickAfkPlayer`가 이미
+    // `state.players`에서 지운(AFK 킥) 세션은 이 시점에 `wasPlayer`가
+    // false이지만, 그 세션이 실제로 플레이어로 보낸 시간은 여전히 적재돼야
+    // 한다(`kickAfkPlayer`는 `joinedAtMs`를 건드리지 않는다 — 위 필드
+    // 코멘트). uuid가 없으면(미제공·형식 오류 세션) 통계를 기록하지 않는다
+    // (다른 세 지표와 동일 원칙, tamper-defense 계약).
+    const joinedAt = this.joinedAtMs.get(client.sessionId)
+    const statsUuid = this.playerUuids.get(client.sessionId)
+    if (joinedAt !== undefined && statsUuid !== undefined) {
+      addPlaytimeMs(this.statsDb, statsUuid, Date.now() - joinedAt)
+    }
+    this.joinedAtMs.delete(client.sessionId)
+    // RQ-81: 재접속 시 이전 세션의 통계 키를 이어받지 않는다(다음 onJoin이
+    // 새로 채운다) — 다른 모든 세션 전유 부기 상태와 동일한 정리 패턴.
+    this.playerUuids.delete(client.sessionId)
 
     // RQ-41 개정: 방금 비운 슬롯이 players였을 때만 대기 관전자를 승격한다
     // (FIFO, `promoteWaitingSpectator` 참고). AFK 경로와의 이중 승격 방지
@@ -1130,6 +1224,11 @@ export class GameRoom extends Room<GameState> {
     // 시작한다 — 그렇지 않으면 부재중이던 관전자 대기 시간이 그대로
     // 넘어와 승격 직후 곧바로 AFK 판정될 수 있다.
     this.lastInputAtTick.set(sessionId, this.state.tick)
+    // RQ-81: 플레이타임 측정 시작점 — 관전 중 대기 시간은 세지 않는다(위
+    // `joinedAtMs` 필드 코멘트의 설계 결정). `lastInputAtTick`과 동일하게
+    // "방금 플레이어가 된 이 순간"을 기준으로 다시 시작한다(승격 시
+    // 관전 대기 시간이 플레이타임에 섞이지 않는다).
+    this.joinedAtMs.set(sessionId, Date.now())
   }
 
   /**
