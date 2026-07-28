@@ -473,7 +473,7 @@ function getServerRoom(room: Room): SpreadTestSeam {
  * 텔레포트 **이전**의 stale 스냅샷이 남아 있으면 그 값을 그대로 반환해
  * 방금 세팅한 `moveStates`가 무시된다. 정확히 같은 결함 계열이 이미 한
  * 번 나왔다 — 리스폰 텔레포트도 같은 오염을 만들어서 `respawnPlayer`가
- * `positionHistory.delete(sessionId)`로 정리한다(`GameRoom.ts:1081`,
+ * `positionHistory.delete(sessionId)`로 정리한다(`GameRoom.ts:1089`,
  * "평가 F2 수정" 코멘트). 여기서는 대칭적으로 `positionHistory`를 비워
  * "버퍼가 비어 있으면 즉시 `moveStates`로 폴백"하는 기존 계약을 그대로
  * 이용한다 — **타이밍(틱 대기)이 아니라 제어 흐름으로 해결한다**(이
@@ -485,9 +485,9 @@ function getServerRoom(room: Room): SpreadTestSeam {
  * 프로덕션에는 어긋나는 경로가 없다"고 적었는데, 이는 **사실이 아니다**
  * — `moveStates.set`은 이 저장소에 **세 곳**에 있다:
  *   1. `stepPlayerMovement:950` — 매 틱, `positionHistory`도 같은 반복에서
- *      append한다(`:952` 부근).
+ *      append한다(`:960` 부근).
  *   2. `respawnPlayer:1080` — `positionHistory.delete`를 명시적으로
- *      동반한다(`:1081`, "평가 F2 수정").
+ *      동반한다(`:1089`, "평가 F2 수정").
  *   3. `initializePlayer:1269` — **`positionHistory`를 전혀 건드리지
  *      않는다.**
  * 그런데도 프로덕션에 stale 그림자가 생기지 않는 진짜 이유는 "한 곳뿐"이
@@ -681,8 +681,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
         hpAfterPass1,
         '2차 통과(재현)',
       )
-      const afterSecond = { hp: hpAfterPass2 }
-      expect(afterSecond.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 2) // 2 pass 합쳐 바디 명중 정확히 2회 — 기존 (B)/(C) 기준값과 동일
+      expect(hpAfterPass2).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 2) // 2 pass 합쳐 바디 명중 정확히 2회 — 기존 (B)/(C) 기준값과 동일
 
       await sleep(SHOT_GAP_MS)
 
@@ -697,7 +696,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
       await sleep(SHOT_GAP_MS)
       const afterDifferentSeed = readPlayer(roomB, roomB.sessionId)
-      expect(afterDifferentSeed?.hp).toBe(afterSecond.hp) // 변화 없음 — 실제로 빗나갔다(다른 시드 -> 다른 결과)
+      expect(afterDifferentSeed?.hp).toBe(hpAfterPass2) // 변화 없음 — 실제로 빗나갔다(다른 시드 -> 다른 결과)
 
       await sleep(SHOT_GAP_MS)
 
@@ -709,7 +708,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       // 궁합이 아니라).
       seam.spreadTuningOverride = { coneRadiusRad: 0 }
       roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
-      const afterRadiusZero = await waitForHpChange(roomB, roomB.sessionId, afterSecond.hp, 'RQ-90 콘 반경 0 복귀 후 hp 변화 대기')
+      const afterRadiusZero = await waitForHpChange(roomB, roomB.sessionId, hpAfterPass2, 'RQ-90 콘 반경 0 복귀 후 hp 변화 대기')
       expect(afterRadiusZero.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 3) // 50 -> 25, 다시 명중
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
@@ -718,7 +717,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
   )
 
   it(
-    'RQ-90 리뷰 blocker 재현: handleFire가 정규화되지 않은 클라 조준 벡터를 applySpread에 그대로 넘겨, (1) 콘 반경 0에서도 특정 방향에서 NaN으로 확정 미스가 나고 (2) 콘 반경이 0이 아니면 벡터 크기가 편차 분포를 왜곡한다',
+    'RQ-90 리뷰 blocker 재현: handleFire가 정규화되지 않은 클라 조준 벡터를 applySpread에 그대로 넘겨, (1) 콘 반경 0에서도 특정 방향에서 NaN으로 확정 미스가 나고 (2·**현재 공허 — 리뷰 major N-1**, 원장 22z3) 콘 반경이 0이 아니면 벡터 크기가 편차 분포를 왜곡한다',
     async () => {
       const roomA = await joinGame(newClient(server)) // 사수
       const roomB = await joinGame(newClient(server)) // 피격자
@@ -764,8 +763,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       // `raycastHitbox`가 걸러 무조건 빗나가고, hp가 그대로다.
       const hpBeforeDegenerate = baselineB.hp
       roomA.send('fire', { dirX: 0.5, dirY: 0, dirZ: 0 })
-      await sleep(SHOT_GAP_MS)
-      const afterDegenerate = readPlayer(roomB, roomB.sessionId)
+      const afterDegenerate = await waitForHpChange(
+        roomB,
+        roomB.sessionId,
+        hpBeforeDegenerate,
+        'RQ-90 퇴화 조준 사격 후 hp 변화 대기',
+      )
       expect(afterDegenerate?.hp).toBe(hpBeforeDegenerate - WEAPON.DAMAGE_BODY * WEAPON.HEADSHOT_MULTIPLIER)
 
       await sleep(SHOT_GAP_MS)
@@ -802,8 +805,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       // 절대값이 아니라 직전 관측값 기준으로 단언한다.
       const hpBeforeUnitControl = afterSubDegenerate?.hp ?? hpBeforeDegenerate
       roomA.send('fire', { dirX: 1, dirY: 0, dirZ: 0 })
-      await sleep(SHOT_GAP_MS)
-      const afterUnitControl = readPlayer(roomB, roomB.sessionId)
+      const afterUnitControl = await waitForHpChange(
+        roomB,
+        roomB.sessionId,
+        hpBeforeUnitControl,
+        'RQ-90 단위 벡터 대조군 사격 후 hp 변화 대기',
+      )
       expect(afterUnitControl?.hp).toBe(hpBeforeUnitControl - WEAPON.DAMAGE_BODY * WEAPON.HEADSHOT_MULTIPLIER)
 
       await sleep(SHOT_GAP_MS)
@@ -826,7 +833,10 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       const seedForScaleTest = findSeedWithBucket(origin2, aim2, targetFoot2, coneRadiusRad2, 'miss', SEARCH_LIMIT)
 
       seam.spreadTuningOverride = { coneRadiusRad: coneRadiusRad2 }
-      seam.forcedSpreadSeed = seedForScaleTest
+      seam.forcedSpreadSeed = seedForScaleTest // 위 (1)·N7 구간에서 물려받은 값을 여기서 확정한다
+      // (리뷰 minor N-3) 이 `it()`은 반경 0 구간에서 `forcedSpreadSeed`를
+      // 재설정하지 않는다 — 이전 `it()`의 값을 물려받되 `applySpread`가
+      // 항등이라 무해하다. "자기 완결적"이라는 서술은 그 범위로만 참이다.
 
       const hpBeforeOversized = currentB.hp
       roomA.send('fire', {
@@ -836,11 +846,22 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       })
       await sleep(SHOT_GAP_MS)
       const afterOversized = readPlayer(roomB, roomB.sessionId)
-      // **이 단언도 오늘 Red다**: 오프라인 오라클(단위 벡터 기준)은
-      // '빗나감'을 예측했지만, 벡터 크기가 실제 콘 모양을 왜곡해 명중으로
-      // 뒤집힐 수 있다(이 정확한 시드·기하 조합에서 사전에 확인됨,
-      // `_workspace/RQ-90/07_test-writer_blocker-red.md` §2 참고) — hp가
-      // 오라클 예측대로 그대로여야 한다.
+      // ⚠️ **이 단언은 오늘 아무것도 관측하지 못한다(리뷰 major N-1, 실측).**
+      // 여기 도달할 때 B는 이미 **hp 0**이다 — 위 (1)의 퇴화 발과 단위 대조군
+      // 발이 각각 헤드 데미지(50)를 넣어 100→50→0이 된다. `handleFire`는
+      // `!canAct`로 시신을 명중 후보에서 제외하므로(`GameRoom.ts:645`)
+      // **탄퍼짐이 무엇을 하든 hp가 변할 수 없다**. 리뷰어가 오라클이 '바디
+      // 명중'으로 분류한 시드로 바꾸는 변이(MUT-VAC)를 심었는데 그대로
+      // 통과했다 — 이 단언은 명중과 빗나감을 **원리적으로 구분하지 못한다**.
+      //
+      // 즉 "벡터 크기가 콘을 왜곡하지 못한다"의 실제 커버리지는 **0**이다.
+      // (1)의 정규화 그물이 같은 원인(비정규화 벡터)을 잡으므로 제품 결함은
+      // 아니지만, **이 블록이 그 명제를 지킨다고 믿지 마라**. 실패 가능한
+      // 유일한 경로는 B의 리스폰 경합이며 그건 거짓 실패다.
+      //
+      // 살리려면 (2)를 대조군 사격 **앞**(B가 hp 50일 때)으로 옮겨야 한다 —
+      // 순서 재배치라 회귀 위험이 있어 이월했다(원장 22z3, 트리거: 콘 반경을
+      // 0에서 올리는 밸런싱 PR). 골든 신설도 함께 제안됐다(리뷰 N11).
       expect(afterOversized?.hp).toBe(hpBeforeOversized)
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
