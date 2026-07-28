@@ -146,6 +146,31 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 충족 시 미등록·해제)를 어겼다는 지적(F2)도 함께 고쳤다(`waitForPlayerCondition`
  * 코멘트 참고).
  *
+ * **REV(리뷰 blocker 재현, `_workspace/review/feat-RQ-90-spread-seed-determinism.md`)**:
+ * 리뷰가 `handleFire`(`GameRoom.ts:593-604`)가 클라이언트의 조준 벡터를
+ * `applySpread`에 넘기기 **전에 정규화하지 않는다**는 계약 위반을 지적했다
+ * (`combat.ts`의 `applySpread` 계약은 "이미 정규화된 단위 벡터" — 정규화는
+ * 지금까지 `raycastHitbox`가 첫 소비자로서 담당했는데, 이 PR이 그 앞에
+ * `applySpread`를 끼워 넣어 전제가 깨졌다). 리뷰가 순수 함수 재현으로
+ * 실측한 두 결과를 실 서버 경계에서 재현하는 두 번째 `it()`를 추가했다:
+ *   1. **오늘 발생하는 회귀(콘 반경 0에서도)**: `direction.y===0 &&
+ *      direction.z===0 && |direction.x|<0.9`이면 `cross(helper={1,0,0},
+ *      direction)`이 정확히 영벡터가 되어 `normalize`가 `NaN`을 낸다 —
+ *      `coneRadiusRad===0`이어도 `scale(u,0)`이 `0*NaN=NaN`이라 항등
+ *      경로가 아니라 `NaN` 방향이 나오고, `raycastHitbox`가 이를 걸러
+ *      **무조건 빗나간다**. 자연 스폰 좌표는 이 정확한 퇴화 조건(사수·
+ *      피격자가 같은 z·같은 높이)을 우연히 만족하지 않으므로, 화이트박스로
+ *      B를 직접 배치한다(`DEGENERATE_DISTANCE` 코멘트 참고).
+ *   2. **콘 반경이 0을 벗어나는 순간의 서버 권위 구멍**: `v = cross(direction,
+ *      u)`가 정규화되지 않아 크기가 `|direction|`이 된다 — 클라이언트가
+ *      조준 벡터의 **크기**를 조절해 자기 탄퍼짐의 콘 모양(정확도)을 바꿀
+ *      수 있다. 오프라인 오라클(단위 벡터 기준 예측)과 실제로 부풀린
+ *      벡터(`OVERSIZED_AIM_SCALE`)로 쏜 결과를 대조해 확인한다.
+ * 이 두 재현은 서버 판정 로직(ADR-0011 Red-first 영역)이라 test-writer가
+ * 먼저 작성한다 — 수정(`handleFire`에서 `applySpread` 호출 전 정규화)은
+ * coder의 몫이다. (A)/(B)/(C)/`F1_SEED_SEQUENCE` 오라클 열은 이 REV가
+ * 한 줄도 건드리지 않았다.
+ *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다(ADR-0008
  * 허용 예외, `rq-12`와 동일). 모든 대기에 `withTimeout()` 상한을 건다.
  * hp 변화 관측은 `onStateChange` 이벤트 기반 폴링(고정 슬립 아님)이고,
@@ -184,6 +209,18 @@ const SEARCH_LIMIT = 5_000
  * `F1_SEED_SEQUENCE` 코멘트). 탄약·재장전 메커니즘 자체는 이 파일의
  * 검증 대상이 아니다. */
 const AMPLE_MAGAZINE = 999
+
+/** 리뷰 blocker 재현(§"REV(리뷰 blocker 재현)") — B를 A와 정확히 같은
+ * z·같은 높이, +X로만 이 거리만큼 떨어진 지점에 배치한다. `applySpread`의
+ * 퇴화 조건(`direction.y===0 && direction.z===0`)을 만들려면 사수·피격자가
+ * 정확히 같은 z·같은 높이여야 하는데, 자연 스폰 좌표(원 위의 15개 점)는
+ * 이 조건을 우연히 만족하지 않는다 — 화이트박스로 직접 배치한다. */
+const DEGENERATE_DISTANCE = 6
+/** 리뷰 blocker(2) 재현 — 조준 벡터를 이 배율만큼 부풀려 보낸다. 콘 반경이
+ * 0이 아닐 때 `v = cross(direction, u)`가 정규화되지 않아 크기가
+ * `|direction|`이 되므로(계약 위반), 벡터를 부풀리면 편차 분포가 왜곡된다
+ * — 리뷰가 실측한 배율(1000)과 동일하게 맞췄다. */
+const OVERSIZED_AIM_SCALE = 1000
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -377,15 +414,21 @@ function findSeedWithBucket(
 /** RQ-90 화이트박스 접근 대상 계약 — 파일 상단 "테스트 시드 주입 인터페이스"
  * 절 참고. `spreadTuningOverride`·`forcedSpreadSeed`는 그린필드 계약이다
  * (Red 전제 — `GameRoom`이 `applySpread`를 전혀 호출하지 않는 오늘 상태에서
- * 이 필드들도 당연히 없었다). `magazines`는 그린필드가 아니다 — `AfkTestSeam`
- * (`rq-43-afk-kick.test.ts`)이 이미 이 정확한 이름으로 화이트박스 접근하는
- * 기존 private 필드다(RQ-10/11 탄창). F1 수정(평가 blocker, §"오라클 일치
- * 열" 참고)이 한 세션에서 26발을 쏘아야 해서, RQ-10/11의 재장전(2초)
- * 대기를 이 파일의 관심사로 끌어들이지 않기 위해 미리 넉넉히 채운다. */
+ * 이 필드들도 당연히 없었다). `magazines`·`moveStates`는 그린필드가 아니다
+ * — `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이 `magazines`를, `FallDamageTestSeam`
+ * (`rq-18-fall-damage.test.ts`)·`rq-92-fall-damage-curve.test.ts`가
+ * `moveStates`를 이미 이 정확한 이름으로 화이트박스 접근하는 기존 private
+ * 필드다. `magazines`는 F1 수정(§"오라클 일치 열" 참고)이 한 세션에서
+ * 26발을 쏘아야 해서 RQ-10/11의 재장전(2초) 대기를 이 파일의 관심사로
+ * 끌어들이지 않기 위해 미리 채운다. `moveStates`는 리뷰 blocker 재현
+ * (§"REV(리뷰 blocker 재현)" 참고)이 자연 스폰 좌표로는 우연히 만들 수
+ * 없는 정확한 퇴화 기하(사수·피격자가 같은 z, 같은 높이)를 직접 배치하는
+ * 데 쓴다. */
 interface SpreadTestSeam {
   spreadTuningOverride?: { coneRadiusRad: number }
   forcedSpreadSeed?: number
   magazines: Map<string, number>
+  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -593,5 +636,119 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
     },
     60_000, // F1 수정 이후 26발(12*2 + 2) — 이전(30_000ms, 4발)보다 넉넉히 늘렸다.
+  )
+
+  it(
+    'RQ-90 리뷰 blocker 재현: handleFire가 정규화되지 않은 클라 조준 벡터를 applySpread에 그대로 넘겨, (1) 콘 반경 0에서도 특정 방향에서 NaN으로 확정 미스가 나고 (2) 콘 반경이 0이 아니면 벡터 크기가 편차 분포를 왜곡한다',
+    async () => {
+      const roomA = await joinGame(newClient(server)) // 사수
+      const roomB = await joinGame(newClient(server)) // 피격자
+
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
+      const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
+      expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+      // RQ-16: B 자신의 최초 입장 스폰 보호를 즉시 해제.
+      roomB.send('fire', UP_MISS_AIM)
+      await sleep(SHOT_GAP_MS)
+
+      const seam = getServerRoom(roomA)
+      // 이 `it()`은 이전 `it()`이 룸에 남긴 상태(`spreadTuningOverride`·
+      // `forcedSpreadSeed`)에 기대지 않는다 — 자기 완결적으로 명시한다.
+      seam.spreadTuningOverride = { coneRadiusRad: 0 } // (1)은 출하 기본값(반경 0)에서도 재현된다.
+
+      // --- (1) NaN 회귀 — 화이트박스로 B를 A와 정확히 같은 z·같은 높이,
+      // +X로 `DEGENERATE_DISTANCE`만큼 떨어진 지점에 배치한다(자연 스폰
+      // 좌표는 이 정확한 퇴화 조건을 우연히 만족하지 않는다). `handleFire`
+      // 의 대상 후보 위치는 `moveStates`를 동기적으로 읽으므로(되감기
+      // 버퍼가 비어 있으면 즉시 반영) 틱 경과를 기다릴 필요가 없다.
+      seam.moveStates.set(roomB.sessionId, {
+        x: baselineA.x + DEGENERATE_DISTANCE,
+        y: baselineA.y,
+        z: baselineA.z,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        grounded: true,
+      })
+
+      // 사전 확인(오프라인, 네트워크 없음) — 이 기하에서 "정규화된" 방향은
+      // 실제로 헤드에 명중해야 한다(그렇지 않다면 아래 실패가 이 blocker가
+      // 아니라 테스트 기하 자체의 결함일 수 있다).
+      const origin1 = eyeOrigin({ x: baselineA.x, y: baselineA.y, z: baselineA.z }, DEFAULT_HITBOX.eyeHeightM)
+      const targetFoot1: Vec3 = { x: baselineA.x + DEGENERATE_DISTANCE, y: baselineA.y, z: baselineA.z }
+      const normalizedDegenerateAim: Vec3 = { x: 1, y: 0, z: 0 }
+      const sanityResult = raycastHitbox({ origin: origin1, direction: normalizedDegenerateAim }, { position: targetFoot1 }, DEFAULT_HITBOX)
+      if (!sanityResult.hit || sanityResult.region !== 'head') {
+        throw new Error(
+          `RQ-90 리뷰 blocker 재현 셋업 실패 — 정규화된 방향 (1,0,0)이 이 기하에서 헤드에 명중해야 하는데 실제로는 ${JSON.stringify(sanityResult)}였다(DEGENERATE_DISTANCE 조정 필요).`,
+        )
+      }
+
+      // 퇴화 벡터(단위가 아님, |dirX|=0.5<0.9 → helper={1,0,0} → cross=0
+      // → NaN) — 정규화됐다면(위 사전 확인) 헤드에 명중해 데미지가
+      // 줄어야 한다. **이 단언이 오늘 Red다**: 실제로는 NaN이 전파돼
+      // `raycastHitbox`가 걸러 무조건 빗나가고, hp가 그대로다.
+      const hpBeforeDegenerate = baselineB.hp
+      roomA.send('fire', { dirX: 0.5, dirY: 0, dirZ: 0 })
+      await sleep(SHOT_GAP_MS)
+      const afterDegenerate = readPlayer(roomB, roomB.sessionId)
+      expect(afterDegenerate?.hp).toBe(hpBeforeDegenerate - WEAPON.DAMAGE_BODY * WEAPON.HEADSHOT_MULTIPLIER)
+
+      await sleep(SHOT_GAP_MS)
+
+      // 대조군(양성) — 같은 방향의 단위 벡터(|dirX|=1>=0.9 → helper=
+      // {0,1,0} → 퇴화 아님)는 이 리뷰 blocker와 무관하게 이전에도 정상
+      // 동작했다. 이 단언이 실패하면 기하 자체가 잘못된 것이지 blocker와
+      // 무관하다 — (1)의 실패가 "빗나가는 기하" 때문이 아니라 진짜
+      // NaN 회귀 때문임을 보증한다. hp는 (1)의 실제 결과와 무관하게
+      // "직전 관측값에서 정확히 헤드 데미지만큼" 줄어야 하므로 절대값이
+      // 아니라 직전 관측값 기준으로 단언한다.
+      const hpBeforeUnitControl = afterDegenerate?.hp ?? hpBeforeDegenerate
+      roomA.send('fire', { dirX: 1, dirY: 0, dirZ: 0 })
+      await sleep(SHOT_GAP_MS)
+      const afterUnitControl = readPlayer(roomB, roomB.sessionId)
+      expect(afterUnitControl?.hp).toBe(hpBeforeUnitControl - WEAPON.DAMAGE_BODY * WEAPON.HEADSHOT_MULTIPLIER)
+
+      await sleep(SHOT_GAP_MS)
+
+      // --- (2) 벡터 크기가 콘 형태를 왜곡 — 콘 반경을 0이 아닌 값으로
+      // 주입한다(반경 0에서는 이 결함이 관측 불가, 리뷰 minor 2와 동일
+      // 트리거). B는 (1)에서 배치한 위치(A + DEGENERATE_DISTANCE·X)를
+      // 그대로 유지한다 — 좌표는 실측값을 그대로 재사용하므로 하드코딩이
+      // 아니다.
+      const currentB = readPlayer(roomB, roomB.sessionId)
+      if (!currentB) throw new Error('RQ-90 리뷰 blocker 재현 — (2) 시작 전 B 상태 관측 실패')
+      const origin2 = origin1 // A는 이동하지 않았다.
+      const targetFoot2: Vec3 = { x: currentB.x, y: currentB.y, z: currentB.z }
+      const { aim: aim2, distance: distance2 } = aimAtBodyWithDistance(baselineA, currentB)
+      const coneRadiusRad2 = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance2) * SPREAD_CONE_MULTIPLIER
+      // 오프라인 오라클 — "정규화된(단위) 벡터라면 반드시 빗나간다"로
+      // 분류한 시드를 찾는다. 실제로 보낼 때는 이 벡터를
+      // `OVERSIZED_AIM_SCALE`배로 부풀린다 — 정규화됐다면(계약대로) 결과가
+      // 같아야 하므로, 부풀린 벡터도 여전히 빗나가야 한다.
+      const seedForScaleTest = findSeedWithBucket(origin2, aim2, targetFoot2, coneRadiusRad2, 'miss', SEARCH_LIMIT)
+
+      seam.spreadTuningOverride = { coneRadiusRad: coneRadiusRad2 }
+      seam.forcedSpreadSeed = seedForScaleTest
+
+      const hpBeforeOversized = currentB.hp
+      roomA.send('fire', {
+        dirX: aim2.x * OVERSIZED_AIM_SCALE,
+        dirY: aim2.y * OVERSIZED_AIM_SCALE,
+        dirZ: aim2.z * OVERSIZED_AIM_SCALE,
+      })
+      await sleep(SHOT_GAP_MS)
+      const afterOversized = readPlayer(roomB, roomB.sessionId)
+      // **이 단언도 오늘 Red다**: 오프라인 오라클(단위 벡터 기준)은
+      // '빗나감'을 예측했지만, 벡터 크기가 실제 콘 모양을 왜곡해 명중으로
+      // 뒤집힐 수 있다(이 정확한 시드·기하 조합에서 사전에 확인됨,
+      // `_workspace/RQ-90/07_test-writer_blocker-red.md` §2 참고) — hp가
+      // 오라클 예측대로 그대로여야 한다.
+      expect(afterOversized?.hp).toBe(hpBeforeOversized)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    30_000,
   )
 })
