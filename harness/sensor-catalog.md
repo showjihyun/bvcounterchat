@@ -46,6 +46,7 @@
 | 트랙 B rubric 체크 | Inf | 하네스 변경 시·주간 | 사람 (수동) | ✅ 절차만 (harness/evals/README.md + track-b 시드 완료) |
 | PR 리뷰 게이트 (reviewer, 솔로 대체) | Inf | PR 머지 전 | APPROVE 없이 머지 금지 + 브랜치 보호(status check 필수) | ✅ **2026-07-21 구축.** `.claude/skills/review-gate/SKILL.md` + `.claude/agents/reviewer.md`(opus). 검토 항목 10건(스코프 이탈·ADR 모순·서버 권위·결정론·테스트 약화·렌더 루프 할당·shared 환경오염·값 복제·문서 동행·틱 예산). 격리 규칙: 구현 세션의 대화를 reviewer에 넘기지 않는다. ⚠️ 브랜치 보호(status check 필수) 설정은 **아직 안 됨** — 지금은 규율로만 지켜진다 |
 | 배포 후 스모크 | Comp | main 머지 → 배포 직후 | deploy.yml → smoke.sh | 🟡 RQ-80·RQ-81(배포·저장소) 구현 후 |
+| 런타임 가드(Node ≥24 차단) | Comp | 전체 검증(`npm run check`)·CI — `--fast` 제외 | `scripts/check.sh` exit 1 (major ≥ 24) | ✅ 2026-07-28 구축 — 통합 워커가 v24에서 네이티브 abort(`0xC0000409`). `engines`는 npm 경고일 뿐이라 검증 진입점에서 직접 막는다. 근거: 원장 28a |
 
 ## 게임 특화 센서
 
