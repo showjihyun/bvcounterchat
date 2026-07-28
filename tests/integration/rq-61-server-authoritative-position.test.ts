@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { PLAYER } from '@shared/constants'
 
 /**
  * RQ-61 서버 권위(Server Authoritative) — 위치 참칭 거부, 통합 테스트
@@ -95,6 +97,29 @@ import { buildServer } from '@server/index'
  * 9999-센티넬 케이스는 그대로 둔다(M1·M2 검출력은 이미 확인됨,
  * `02_test-writer_mutation.md`) — 새 케이스는 그 위에 M5까지 덮는
  * **추가** 커버리지다.
+ *
+ * **REV(원장 20f 회수, 이월 항목 회수)**: 위 두 케이스는 전부 **살아있는**
+ * 플레이어만 다룬다. `stepPlayerMovement`가 `!canAct`(시신)에서 위치·
+ * `lastProcessedInputSeq` 갱신 코드(924~960행)에 도달하기 **전에** return하므로
+ * (`GameRoom.ts:916-922`, 실측 확인) 오늘은 시신의 위치가 애초에 갱신되지
+ * 않아 참칭 표면 자체가 없다 — **지금은 안전하다.** 하지만 이 그물은
+ * 살아있는 플레이어 경로만 덮고, 시신 분기에 위치 쓰기가 들어오는 회귀가
+ * 생기면 시신에 한해 참칭이 잔존할 수 있다(관전 카메라(RQ-91)가 시신을
+ * 보여주면 표시 계층까지 오염). 아래 세 번째 `it()`가 이 그물을 시신
+ * 상태까지 넓히는 **회귀 방지 추가**다(GA-15 자체는 이미 done — 새 골든
+ * 없이 같은 GA-15의 커버리지 확장).
+ *
+ * **시신에게는 `lastProcessedInputSeq === seq` 대기 술어를 쓸 수 없다**:
+ * 위에서 확인한 조기 return 때문에 이 필드는 시신에게 절대 오르지 않는다
+ * (영원히 미충족 -> 타임아웃). 대신 `pendingSeqs`(private map -- `'move'`
+ * 핸들러가 생사와 무관하게 무조건 갱신한다, `GameRoom.ts` 확인)를
+ * 화이트박스로 직접 폴링해 "서버가 이 메시지를 수신·처리했다"는 단조
+ * 신호로 쓴다(아래 `waitForServerPendingSeq`).
+ *
+ * **리스폰(3초)과의 경합 회피**: 사망 유도 -> 참칭 시도 -> 관측까지 총
+ * 경과를 `PLAYER.RESPAWN_MS`(3000ms)보다 한참 작게(약 1.5~2초) 설계했고,
+ * 관측 시점마다 `hp === 0`을 재확인해 리스폰이 끼어들지 않았음을 실측으로도
+ * 확인한다(고정 슬립만으로 가정하지 않는다).
  */
 
 const ROOM_NAME = 'game'
@@ -121,6 +146,23 @@ const SPOOFED_COORD = 9999
  * 설계다. 평가자가 동일 형태(x:12.5·y:1.5·z:-12.5)로 검출력을 직접
  * 실행해 확인했다(`03_evaluator_report.md` §6). */
 const IN_MAP_SPOOF = { x: 12.5, y: 1.5, z: -12.5 }
+
+/** GA-06/GA-08/`rq-14`/`rq-15`와 동일한 근거로 기하학적으로 항상 빗나가는
+ * 방향(수직 위) — 원장 20f 확장이 B를 사망시키기 전, B 자신의 최초 입장
+ * 스폰 보호(RQ-16)를 즉시 해제하는 용도로만 쓴다. */
+const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
+/** 연속 사격 사이의 여유(원장 20f) — ADR-0005 rate-limit(150ms)을 명백히
+ * 초과한다(`rq-14`/`rq-15`의 `BETWEEN_SHOTS_MS`와 동일 값·동일 근거). */
+const BETWEEN_SHOTS_MS = 300
+/** B의 자기-빗나감 사격(스폰 보호 해제)이 서버에 반영될 시간(원장 20f,
+ * `rq-15`의 `RELEASE_PROTECTION_SETTLE_MS`와 동일 값·동일 근거). */
+const RELEASE_PROTECTION_SETTLE_MS = 300
+/** 시신의 참칭 'move' 수신 확인 이후, 여러 서버 틱(`NET.TICK_MS`≈33ms)이
+ * 지날 정착 대기(원장 20f) — C1류 회귀(시신 분기에서 return 전에 위치를
+ * 쓰는 변이)가 있었다면 이 창 안에 이미 반영됐을 시간이다(`rq-15`의
+ * `MOVE_IGNORE_OBSERVE_MS`=400ms와 동일 값·동일 근거). `PLAYER.RESPAWN_MS`
+ * (3000ms)보다 한참 작아 리스폰과 섞이지 않는다. */
+const CORPSE_SETTLE_MS = 400
 
 /** 모든 대기에 상한을 강제하는 래퍼 — 상한 초과는 hang이 아니라 즉시 실패다. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -180,21 +222,32 @@ interface PositionSnapshot {
   y: number
   z: number
   lastProcessedInputSeq: number
+  /** 원장 20f 확장 — 시신 상태(hp<=0)를 관측 시점에 재확인하는 용도
+   * (리스폰 3초와의 경합 회피). 기존 두 케이스는 이 필드를 읽지 않으므로
+   * 살아있는 플레이어의 hp=100이 그대로 들어와도 아무 영향이 없다. */
+  hp: number
 }
 
 /** 화이트박스 접근 대상 계약 — `state`는 `Room.state`(public) 그대로다.
  * `rq-18-fall-damage.test.ts`·`rq-43-afk-kick.test.ts`·
  * `rq-64-lag-compensation-bound.test.ts`와 동일한 `as unknown as` 결합
  * 방식(신규 필드를 추가하지 않으므로 이 계약 자체는 그린필드가 아니다 —
- * `x`·`y`·`z`·`lastProcessedInputSeq`는 이미 `Player` 스키마에 있다). */
+ * `x`·`y`·`z`·`hp`·`lastProcessedInputSeq`는 이미 `Player` 스키마에 있고,
+ * `pendingSeqs`는 `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이 이미 이 정확한
+ * 이름으로 화이트박스 접근하는 기존 private 필드다). */
 interface PositionTestSeam {
   state: {
     players: {
       get: (sessionId: string) =>
-        | { x?: number; y?: number; z?: number; lastProcessedInputSeq?: number }
+        | { x?: number; y?: number; z?: number; hp?: number; lastProcessedInputSeq?: number }
         | undefined
     }
   }
+  /** 원장 20f 확장 — 'move' 핸들러가 생사와 무관하게 무조건 갱신하는
+   * seq map(`GameRoom.ts` 확인). 시신에게는 `lastProcessedInputSeq`가
+   * 절대 오르지 않으므로(파일 상단 REV 절 참고) "서버가 이 메시지를
+   * 수신·처리했다"는 대기 신호로 이 필드를 대신 쓴다. */
+  pendingSeqs: Map<string, number>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -213,9 +266,10 @@ function readServerPosition(seam: PositionTestSeam, sessionId: string): Position
     typeof p?.x === 'number' &&
     typeof p?.y === 'number' &&
     typeof p?.z === 'number' &&
+    typeof p?.hp === 'number' &&
     typeof p?.lastProcessedInputSeq === 'number'
   ) {
-    return { x: p.x, y: p.y, z: p.z, lastProcessedInputSeq: p.lastProcessedInputSeq }
+    return { x: p.x, y: p.y, z: p.z, hp: p.hp, lastProcessedInputSeq: p.lastProcessedInputSeq }
   }
   return undefined
 }
@@ -261,7 +315,7 @@ function readCrossViewPosition(observerRoom: Room, targetSessionId: string): Pos
   const state = observerRoom.state as {
     players?: {
       get?: (key: string) =>
-        | { x?: unknown; y?: unknown; z?: unknown; lastProcessedInputSeq?: unknown }
+        | { x?: unknown; y?: unknown; z?: unknown; hp?: unknown; lastProcessedInputSeq?: unknown }
         | undefined
     }
   } | null
@@ -270,9 +324,10 @@ function readCrossViewPosition(observerRoom: Room, targetSessionId: string): Pos
     typeof player?.x === 'number' &&
     typeof player?.y === 'number' &&
     typeof player?.z === 'number' &&
+    typeof player?.hp === 'number' &&
     typeof player?.lastProcessedInputSeq === 'number'
   ) {
-    return { x: player.x, y: player.y, z: player.z, lastProcessedInputSeq: player.lastProcessedInputSeq }
+    return { x: player.x, y: player.y, z: player.z, hp: player.hp, lastProcessedInputSeq: player.lastProcessedInputSeq }
   }
   return undefined
 }
@@ -313,6 +368,100 @@ function waitForCrossViewCondition(
     SNAPSHOT_TIMEOUT_MS,
     label,
   )
+}
+
+/** 원장 20f 확장 — 시신에게는 절대 오르지 않는 `lastProcessedInputSeq`
+ * 대신, 'move' 핸들러가 생사와 무관하게 무조건 갱신하는 `pendingSeqs`를
+ * 화이트박스로 직접 폴링한다(파일 상단 REV 절 근거). "이 정확한 'move'
+ * 메시지를 서버가 수신·처리했다"는 단조 신호(다음 메시지가 오기 전까지
+ * 값이 유지된다) — `waitForServerCondition`과 동일한 폴링+타임아웃
+ * 골격이나, 데이터 출처가 `state.players`가 아니라 `pendingSeqs`라 별도
+ * 함수로 둔다. */
+function waitForServerPendingSeq(
+  seam: PositionTestSeam,
+  sessionId: string,
+  expectedSeq: number,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const tryResolve = (): boolean => {
+      if (seam.pendingSeqs.get(sessionId) === expectedSeq) {
+        resolve()
+        return true
+      }
+      return false
+    }
+    if (tryResolve()) return
+    const interval = setInterval(() => {
+      if (tryResolve()) {
+        clearInterval(interval)
+        clearTimeout(timeout)
+      }
+    }, SERVER_POLL_INTERVAL_MS)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+    }, timeoutMs)
+  })
+}
+
+/** A(사수)의 눈높이에서 B(피격자)의 바디 중심을 겨누는 조준 벡터(원장
+ * 20f) — `rq-14-death-kill-credit.test.ts`/`rq-15-respawn-timer.test.ts`의
+ * `aimAtBody`와 동일 산식(파일마다 자기 완결 복제, 저장소 관례). */
+function aimAtBody(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+): { dirX: number; dirY: number; dirZ: number } {
+  const bodyCenterM = (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
+  const dy = bodyCenterM - DEFAULT_HITBOX.eyeHeightM
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
+}
+
+/**
+ * A의 사격으로 B를 사망(hp=0)까지 몰아간다(원장 20f) — `rq-14`/`rq-15`
+ * (GA-08/GA-09)의 킬 헬퍼와 동일 목적이나, 이 파일은 이미 화이트박스
+ * `seam`을 갖고 있으므로 서버 자체 상태(관측 지점 (a), 클라 패치 배치
+ * 지연과 무관)로 hp를 직접 추적한다. 부위(헤드/바디) 무관 설계 — "몇
+ * 발에 죽는가"의 정밀 산술은 GA-08(`sim-combat.test.ts`·
+ * `rq-14-death-kill-credit.test.ts`)이 이미 고정했다, 이 헬퍼는 "죽여서
+ * 사망 상태를 준비"만 한다. B 자신의 최초 입장 스폰 보호(RQ-16)를 먼저
+ * 자기-빗나감 사격으로 즉시 해제한다(`rq-14`/`rq-15`와 동일 패턴).
+ */
+async function killVictim(
+  seam: PositionTestSeam,
+  roomA: Room,
+  roomB: Room,
+  aim: { dirX: number; dirY: number; dirZ: number },
+): Promise<PositionSnapshot> {
+  roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제
+  await sleep(RELEASE_PROTECTION_SETTLE_MS)
+
+  let previousHp: number = PLAYER.MAX_HP
+  const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다) — GA-08 근거
+  for (let shot = 1; shot <= MAX_KILL_SHOTS && previousHp > 0; shot += 1) {
+    roomA.send('fire', aim)
+    const afterShot = await waitForServerCondition(
+      seam,
+      roomB.sessionId,
+      (s) => s.hp !== previousHp,
+      `RQ-61/20f: ${shot}번째 사격 후 B의 서버 hp 변화 대기(직전 hp=${previousHp})`,
+      SNAPSHOT_TIMEOUT_MS,
+    )
+    previousHp = afterShot.hp
+    if (previousHp > 0) await sleep(BETWEEN_SHOTS_MS)
+  }
+  const atDeath = readServerPosition(seam, roomB.sessionId)
+  if (!atDeath) throw new Error('RQ-61/20f: 사망 직후 B의 서버 상태 관측 실패')
+  expect(atDeath.hp).toBe(0)
+  return atDeath
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 describe('RQ-61/GA-15: 위치 참칭 — 서버 자체 상태와 다른 플레이어(B)의 브로드캐스트 시야 양쪽에서 서버 권위가 유지된다', () => {
@@ -480,6 +629,96 @@ describe('RQ-61/GA-15: 위치 참칭 — 서버 자체 상태와 다른 플레�
       expect(afterCross.x).toBeCloseTo(idleCross.x, 5)
       expect(afterCross.y).toBeCloseTo(idleCross.y, 5)
       expect(afterCross.z).toBeCloseTo(idleCross.z, 5)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    20_000,
+  )
+
+  it(
+    'RQ-61/GA-15 확장(원장 20f — 사망 상태 회귀 방지): 사망(시신) 상태의 B가 참칭 좌표를 실은 move를 보내도, (a) 서버 자체 상태와 (b) A의 브로드캐스트 시야 양쪽 모두 사망 시점 위치 그대로다 — hp=0을 관측 시점에 재확인해 리스폰(3초)과 경합하지 않는다',
+    async () => {
+      const roomA = await joinGame(newClient(server)) // 사수 + 크로스뷰 관찰자
+      const roomB = await joinGame(newClient(server)) // 피격자 → 시신 → 스푸퍼
+      const seam = getServerRoom(roomA) // GA-29: 서버 전역 단일 룸 — roomA·roomB가 같은 룸
+
+      const baselineA = await waitForServerCondition(
+        seam,
+        roomA.sessionId,
+        () => true,
+        'RQ-61/20f: A 초기 서버 스냅샷',
+        SNAPSHOT_TIMEOUT_MS,
+      )
+      const baselineB = await waitForServerCondition(
+        seam,
+        roomB.sessionId,
+        () => true,
+        'RQ-61/20f: B 초기 서버 스냅샷',
+        SNAPSHOT_TIMEOUT_MS,
+      )
+      expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+      const aim = aimAtBody(baselineA, baselineB)
+      const atDeathServer = await killVictim(seam, roomA, roomB, aim)
+      expect(atDeathServer.hp).toBe(0) // 재확인 1/3 — 사망 직후(서버 상태)
+
+      // 크로스뷰(A)로도 사망을 확인한다 — 이후 "사망 시점 위치"의 크로스뷰
+      // 기준점이 된다(GA-15 then "다른 플레이어에게 브로드캐스트").
+      const atDeathCross = await waitForCrossViewCondition(
+        roomA,
+        roomB.sessionId,
+        (s) => s.hp === 0,
+        'RQ-61/20f: A 시야 — B의 사망(hp=0) 관측 대기',
+      )
+      expect(atDeathCross.hp).toBe(0) // 재확인 2/3 — 사망 직후(크로스뷰)
+
+      // 참칭 시도 — 시신이 맵 안쪽 참칭 좌표(GA-15 given과 동일 형태,
+      // `IN_MAP_SPOOF`)를 실은 'move'를 보낸다. 방향 입력은 정지로
+      // 둔다(사망자의 방향 이동 자체는 `rq-15`의 "사망자 갭" 케이스가 이미
+      // 고정했다 — 이 테스트가 확인하려는 것은 절대 좌표 참칭 쪽이다).
+      const SPOOF_SEQ = 9001 // B는 사망 전까지 'move'를 전혀 보내지 않았다(`killVictim`은 'fire'만 쓴다) — pendingSeqs가 아직 없어 임의 양수로 충분히 구별된다.
+      roomB.send('move', {
+        dirX: 0,
+        dirZ: 0,
+        mode: 'run',
+        jump: false,
+        seq: SPOOF_SEQ,
+        x: IN_MAP_SPOOF.x,
+        y: IN_MAP_SPOOF.y,
+        z: IN_MAP_SPOOF.z,
+      })
+
+      // 수신 확인(단조 신호) — `lastProcessedInputSeq`는 시신에게 절대
+      // 오르지 않으므로(파일 상단 REV 절 참고) `pendingSeqs`를 대신 쓴다.
+      await waitForServerPendingSeq(
+        seam,
+        roomB.sessionId,
+        SPOOF_SEQ,
+        SNAPSHOT_TIMEOUT_MS,
+        'RQ-61/20f: 서버가 시신의 참칭 move(seq=9001)를 수신했는지 대기',
+      )
+
+      // 정착 대기 — 여러 서버 틱이 지날 시간을 준다(파일 상단
+      // `CORPSE_SETTLE_MS` 코멘트 참고. C1류 회귀가 있었다면 이 창 안에
+      // 이미 위치가 바뀌어 있었을 것이다).
+      await sleep(CORPSE_SETTLE_MS)
+
+      // (a) 서버 자체 상태 — "센티넬이 아니다"가 아니라 "사망 시점 위치
+      // 그 값이다"를 단언한다(RQ-61 F1 교훈과 동일 형태, 위 두 번째
+      // `it()` 참고).
+      const afterServer = readServerPosition(seam, roomB.sessionId)
+      expect(afterServer?.hp).toBe(0) // 재확인 3/3 — 아직 리스폰되지 않았다(경합 없음)
+      expect(afterServer?.x).toBeCloseTo(atDeathServer.x, 5)
+      expect(afterServer?.y).toBeCloseTo(atDeathServer.y, 5)
+      expect(afterServer?.z).toBeCloseTo(atDeathServer.z, 5)
+
+      // (b) A의 브로드캐스트 시야에서도 동일하게 사망 시점 위치 그대로여야
+      // 한다(GA-15 then "다른 플레이어에게 브로드캐스트").
+      const afterCross = readCrossViewPosition(roomA, roomB.sessionId)
+      expect(afterCross?.hp).toBe(0)
+      expect(afterCross?.x).toBeCloseTo(atDeathCross.x, 5)
+      expect(afterCross?.y).toBeCloseTo(atDeathCross.y, 5)
+      expect(afterCross?.z).toBeCloseTo(atDeathCross.z, 5)
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
     },
