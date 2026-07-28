@@ -48,7 +48,7 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
      억제한다). 그럼에도 실 WebSocket 통합은 워커 fork가
      무성으로 죽는 flaky가 남는다. **근본 원인은 2026-07-28 규명됐다 — Windows 실측 기준
      Node v24다**(`Linux + v24`는 미검증이고 abort를 호출하는 네이티브
-     프레임도 미특정 — 남은 후보는 Windows 전용 `__fastfail` 계열이다)(종료 코드 `0xC0000409` 네이티브 abort, 예외·`process.exit`
+     프레임도 미특정 — 남은 후보는 Windows 전용 `__fastfail` 계열이다. (종료 코드 `0xC0000409` 네이티브 abort, 예외·`process.exit`
      전부 배제. 같은 머신 A/B에서 v24는 누적 12런 중 6런 실패, v22는 8런 전부
      통과). 살아 있는 Colyseus 클라이언트 세션이 필요조건이며, 풀 계층
      조정(`threads`·`maxWorkers:1`·`no-file-parallelism`·`no-isolate`)은
