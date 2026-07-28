@@ -64,7 +64,7 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
      사라진다. 대신 결정론 요구(2번)로 fake timer와 조합해 재현성을
      확보한다.
    - Redis/SQLite([ADR-0006](0006-identity-and-persistence.md))는 통합 테스트에서
-     최소한 SQLite를 `:memory:` 모드로 대체한다. Redis 대체 방식(in-memory
+     최소한 SQLite를 `:memory:` 모드로 대체한다. **단 "서버 재시작 후에도 통계가 보존되는가"(RQ-81)는 `:memory:`로 원리적으로 검증할 수 없으므로, 그 케이스에 한해 **테스트별 격리된 임시 파일**을 허용한다 — 공유 경로를 쓰면 `pool:'forks'` 동시 실행에서 파일 잠금 경합이 난다. `buildServer()`의 기본값은 `:memory:`여야 하며(인자 없이 부르는 기존 통합 테스트가 30개 있다), 파일 경로는 그것이 필요한 케이스가 **명시적으로** 넘긴다(2026-07-28 RQ-81 라운드, 원장 26a). Redis 대체 방식(in-memory
      mock vs 실제 Redis 컨테이너)은 구현 단계에서 확정한다.
 6. **렌더링(R3F)은 단위/통합 테스트 대상이 아니다** — WebGL 렌더링
    결과(픽셀)·Three.js 씬 그래프의 시각적 정확성은 자동화된 단위 테스트로
