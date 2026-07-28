@@ -65,6 +65,22 @@ import { MOVEMENT } from '@shared/constants'
  * 대기에 `withTimeout()` 상한을 걸고, 고정 슬립 대신 `onStateChange`로 실제
  * 값 변화를 폴링한다 — 무관한 갱신(예: 매 틱 갱신되는 `tick` 필드)을 우리가
  * 보낸 메시지의 효과로 착각하는 경합을 피한다.
+ *
+ * **REV(잠복 레이스 수정, CI 실패 run 30322257390 — `_workspace/RQ-81/
+ * 05_test-writer_rq62-race.md` 근거 전문)**: "스푸핑 좌표" 케이스의 두 번째
+ * 대기가 `(s) => s.x !== afterLegit.x`였다 — `pendingInputs`가 "최근값
+ * 유지" 모델이라(원장 22f) seq=1의 `dirX:1`이 새 메시지 없이도 매 틱
+ * 재적용돼 x가 계속 바뀐다. 즉 이 술어는 seq=2가 실제로 처리되기 **전에도**
+ * 참이 될 수 있었다(관찰하려는 사건과 무관한 원인으로 만족되는 대기 술어 —
+ * 컨벤션 ① 위반). 로컬(저지연)에서는 seq=2 처리가 다음 무관 패치보다 거의
+ * 항상 먼저 도착해 가려져 있었으나, CI(더 높은 지연 가능성)에서 그 순서가
+ * 뒤집혀 `lastProcessedInputSeq`가 아직 1인 스냅샷에서 대기가 풀렸다
+ * (`expected 1 to be 2`). 격리 재현 스크립트로 "seq=1 이후 새 메시지
+ * 없이도 x가 여러 번 바뀌면서 seq는 계속 1에 머무른다"를 직접 확인해
+ * 구조적 원인임을 확정했다(레이스 확률 재현이 아니라 술어 자체의 무효성
+ * 증명). 수정: 대기를 사건의 직접 신호 `lastProcessedInputSeq === 2`
+ * (한 번 오르면 되돌아가지 않는 안정 신호)로 옮겼다 — x 관련 단언들은
+ * 전부 그대로 유지하되, 대기 조건에서만 제외했다.
  */
 
 const ROOM_NAME = 'game'
@@ -310,11 +326,20 @@ describe('RQ-62 입력 시퀀스 — 서버가 처리한 seq가 스냅샷의 las
         y: SPOOFED_COORD,
         z: SPOOFED_COORD,
       })
+      // fix(RQ-62 잠복 레이스, `_workspace/RQ-81/05_test-writer_rq62-race.md`):
+      // `pendingInputs`는 "최근값 유지" 모델이라(원장 22f) seq=1의 dirX=1이
+      // 새 메시지 없이도 매 틱 재적용돼 x가 계속 바뀐다 — 그래서 이전 버전의
+      // `(s) => s.x !== afterLegit.x`는 seq=2가 실제로 처리되기 **전에도**
+      // 참이 될 수 있었다(x 변화가 seq=2 처리와 무관한 원인으로도 일어난다).
+      // 이 사건이 실제로 검증하려는 것은 "seq=2가 처리됐다"이므로, 대기를
+      // 그 사건의 직접 신호(`lastProcessedInputSeq`, 한 번 오르면 되돌아가지
+      // 않는 단조 신호)로 옮긴다 — x 변화는 더 이상 대기 조건이 아니라
+      // 대기가 끝난 뒤 확인하는 단언(아래)으로만 쓴다.
       const afterSpoofed = await waitForSnapshotCondition(
         room,
-        (s) => s.x !== afterLegit.x,
+        (s) => s.lastProcessedInputSeq === 2,
         SNAPSHOT_TIMEOUT_MS,
-        '스푸핑 메시지 이후 위치 변화 대기',
+        'lastProcessedInputSeq === 2 대기(스푸핑 메시지 처리 확인)',
       )
 
       expect(afterSpoofed.x).not.toBeCloseTo(SPOOFED_COORD, 0)
