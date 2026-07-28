@@ -24,12 +24,24 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * `DAMAGE_PER_METER` 조합이 달라져도(예: `SAFE_HEIGHT_M` 3→2,
  * `DAMAGE_PER_METER` 10→15) 그 두 점만으로는 잡히지 않는 조합이 존재한다.
  * 이 파일은 그 공백을 메운다:
- * 1. **안전 높이 경계 정확히**(`FALL_DAMAGE.SAFE_HEIGHT_M` = 3m, GA-44처럼
- *    0.1m 여유를 두지 않는다)를 주입해 "3m **이하**"(경계 포함) 규칙
- *    자체를 고정한다 — `fallDamageForHeight`가 `<=`가 아니라 `<`로
- *    바뀌는 회귀(경계 미포함으로 뒤집힘)를 GA-44는 잡지 못하지만(0.1m은
- *    어느 쪽 연산자에서도 안전) 이 케이스는 정확히 그 경계에서 값을
- *    비교하므로 잡는다.
+ * 1. **안전 높이 경계 정확히**(3m 리터럴, GA-44처럼 0.1m 여유를 두지
+ *    않는다)를 주입한다. **정정(평가 blocker 2,
+ *    `_workspace/RQ-92/02_evaluator_report.md` §7 M1·§9)**: `fallDamage
+ *    ForHeight`의 조기 반환 연산자를 `<=`→`<`로 뒤집는 변이는 **등가
+ *    변이(equivalent mutant)**라 이 케이스를 포함해 어떤 테스트도 잡지
+ *    못한다 — 정확히 `SAFE_HEIGHT_M`에서는 초과분 `(h-SAFE)*DPM`이 이미
+ *    0이라 조기 반환 여부가 관측에 영향을 주지 않는다(반증: `<=`→`<`로
+ *    바꾼 뒤 관련 4파일 33테스트 전부 통과했다). 이 케이스가 실제로
+ *    잡는 것은 **`fallDamageForHeight` 산술 안의 임계가 상수
+ *    (`SAFE_HEIGHT_M`)보다 낮게 드리프트하는 회귀**다(평가자 변이 M2 —
+ *    조기 반환 임계만 3→2로 하드코딩하고 상수는 그대로 둔 경우 — 에서
+ *    `hp 90≠100`으로 사망 확인, 같은 실행에서 GA-44(0.1m)는 생존). 주입값을
+ *    상수 참조가 아니라 **리터럴 3**으로 고정한 이유도 여기 있다 — 상수
+ *    참조였다면 `SAFE_HEIGHT_M` 자체가 드리프트하는 회귀(예: 3→2)에서
+ *    행위 단언(`afterLanding.hp`)은 통과하고 리터럴 가드만 죽어, 그
+ *    가드와 등가인 단언이 이미 있는 `tests/unit/shared-constants.test.ts`
+ *    대비 순증 커버리지가 0이 됐다(평가자 실측, minor 1). 리터럴 3으로
+ *    고정하면 그 회귀를 행위로도 잡는다.
  * 2. **5m→20**이라는 8m(GA-45)·3m(경계)과 다른 세 번째 좌표를 고정해
  *    `DAMAGE_PER_METER` 계수 변형(예: 10→15)에 대한 교차검증을 늘린다 —
  *    8m 한 점만으로는 그 점을 지나가는 여러 계수·오프셋 조합이 통과할 수
@@ -92,8 +104,17 @@ const TAKEOFF_POLL_INTERVAL_MS = 15
 const POST_LANDING_SETTLE_MS = 300
 
 /** GA-25: 안전 높이 "이하"(포함) 규칙의 경계 그 자체 — GA-44(0.1m 여유)와
- * 달리 정확히 `SAFE_HEIGHT_M`을 주입해 `<=`↔`<` 경계 반전 회귀를 잡는다. */
-const SAFE_BOUNDARY_PEAK_M = FALL_DAMAGE.SAFE_HEIGHT_M
+ * 달리 정확히 3m을 주입한다. **리터럴 `3`으로 고정한다(상수 참조가 아님,
+ * 평가 minor 1 수정)** — `FALL_DAMAGE.SAFE_HEIGHT_M`을 그대로 참조하면
+ * 주입값이 상수를 따라 움직여, `SAFE_HEIGHT_M` 자체가 드리프트하는
+ * 회귀(예: 3→2)에서 행위 단언(`afterLanding.hp`)은 통과하고 아래 파일
+ * 안의 리터럴 가드만 죽는다 — 그 가드와 등가인 단언이 이미
+ * `tests/unit/shared-constants.test.ts`에 있어 순증 커버리지가 0이 된다
+ * (평가자 실측). 리터럴로 고정하면 그 회귀를 행위로도 잡는다 — 골든
+ * `given` 자체가 "3m"을 리터럴 수치로 말하므로 문면과도 더 정확히
+ * 대응한다. `<=`↔`<` 연산자 반전은 이 지점에서 **등가 변이**라 이 상수를
+ * 무엇으로 두든 잡을 수 없다(파일 상단 docblock, 평가 blocker 2 참고). */
+const SAFE_BOUNDARY_PEAK_M = 3
 /** GA-25: 중간값 — 기존 `rq-18-fall-damage.test.ts`의 8m(GA-45)과 다른
  * 세 번째 좌표. (5-3)×10=20. */
 const MID_OVERRIDE_PEAK_M = 5
@@ -175,6 +196,19 @@ function readPlayer(room: Room, sessionId: string): PlayerSnapshot | undefined {
   return undefined
 }
 
+/**
+ * 리스너 생명주기 정본 형태(평가 blocker 1 수정,
+ * `_workspace/RQ-92/02_evaluator_report.md` §9) —
+ * `rq-61-server-authoritative-position.test.ts`의 `waitForCrossViewCondition`
+ * (`:289-316`)과 동일한 세 규칙을 따른다: (1) 등록은 **참조**로(익명 래퍼
+ * 금지 — `colyseus.js`의 `EventEmitter.remove(cb)`는 미등록 콜백을 넘기면
+ * `handlers[-1]=last; pop()`을 수행해 맨 뒤 정상 핸들러를 조용히 지운다,
+ * 실측 확인됨) (2) **즉시 충족되면 `onStateChange`를 아예 등록하지
+ * 않는다** — 해제할 리스너 자체가 없으므로 이 경로는 처음부터 누수가
+ * 없다 (3) 조건 충족 시 그 자리에서 `remove`한다. 타임아웃 reject
+ * 경로의 해제는 정본 자체에도 없는 잔여 한계다(그 파일 원장 20i 항목이
+ * 이미 명시 — 48개 호출부 전체를 다루는 별도 PR의 범위).
+ */
 function waitForPlayerCondition(
   room: Room,
   sessionId: string,
@@ -186,10 +220,19 @@ function waitForPlayerCondition(
     new Promise<PlayerSnapshot>((resolve) => {
       const tryResolve = (): void => {
         const current = readPlayer(room, sessionId)
-        if (current && predicate(current)) resolve(current)
+        if (current && predicate(current)) {
+          room.onStateChange.remove(tryResolve)
+          resolve(current)
+        }
       }
-      tryResolve()
-      room.onStateChange(() => tryResolve())
+      // 즉시 충족되면 `onStateChange`를 아예 등록하지 않는다 — 해제할
+      // 리스너 자체가 없으므로 이 경로는 처음부터 누수가 없다.
+      const immediate = readPlayer(room, sessionId)
+      if (immediate && predicate(immediate)) {
+        resolve(immediate)
+        return
+      }
+      room.onStateChange(tryResolve)
     }),
     timeoutMs,
     label,
@@ -310,7 +353,9 @@ describe('RQ-92/GA-25: 낙하 데미지 곡선 — 안전 높이 경계(3m, 포�
         room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        expect(SAFE_BOUNDARY_PEAK_M).toBe(3) // GA-25 given 그대로 — 리터럴로도 재확인
+        // `SAFE_BOUNDARY_PEAK_M`은 리터럴 3(위 상수 docblock, 평가 minor 1
+        // 수정) — `3 === 3`류 항진 단언은 없다. 검출력은 아래 행위 단언
+        // (`afterLanding.hp`) 하나가 전부 짊어진다.
         const afterLanding = await jumpAndObserveLanding(room, SAFE_BOUNDARY_PEAK_M)
 
         expect(afterLanding.hp).toBe(PLAYER.MAX_HP)
