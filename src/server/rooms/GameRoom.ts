@@ -7,6 +7,7 @@ import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 import {
+  applySpread,
   canFire,
   damageForRegion,
   eyeOrigin,
@@ -14,6 +15,7 @@ import {
   type HitCandidate,
   type Ray,
 } from '@shared/sim/combat'
+import { createRng } from '@shared/sim/rng'
 import { SPAWN_POINTS, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
 import {
   RESPAWN_TICKS,
@@ -33,7 +35,7 @@ import {
   sampleRewoundPosition,
   type PositionSnapshot,
 } from '@shared/sim/rewind'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 import { filterProfanity } from '@shared/chat/profanityFilter'
 import { isValidStatsUuid } from '@shared/stats/uuid'
@@ -267,6 +269,28 @@ export class GameRoom extends Room<GameState> {
    * (`nextSpawnIndex`의 "직전 사용 지점 회피"가 전역 순서 기준이라는
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
   private spawnCursor: number | undefined
+  /** RQ-90: 탄퍼짐 콘 반경 오버라이드(테스트 전용, 화이트박스) — 값이 있으면
+   * 이 룸 인스턴스의 사격 판정에서 `DEFAULT_SPREAD`(출하 기본값, 반경 0)
+   * 대신 이 값을 쓴다. 이 필드에 값을 대입하는 프로덕션 코드 경로는 없다 —
+   * 오직 통합 테스트만 화이트박스로 값을 쓴다. **이름을 바꾸지 않는다** —
+   * 통합 테스트(`rq-90-spread-seed-determinism.test.ts`의 `SpreadTestSeam`)가
+   * `matchMaker.getLocalRoomById`로 이 정확한 필드명을 화이트박스 주입
+   * 대상으로 참조한다(`fallPeakY`·`lastInputAtTick`·`positionHistory`와
+   * 동일한 결합 방식 — `as unknown as` 캐스팅이라 `tsc`가 대조하지 않는다). */
+  private spreadTuningOverride: SpreadTuning | undefined
+  /** RQ-90: 강제 탄퍼짐 시드(테스트 전용, 화이트박스) — 값이 있으면 다음
+   * 'fire'부터(발신자 무관, 테스트가 다시 바꾸기 전까지 계속 유지 —
+   * **자동 소비되지 않는다**) 그 값 그대로 `createRng`에 넘겨 `applySpread`
+   * 편차 계산에 쓴다. 없으면 서버 자신이 `issueSpreadSeed()`로 시드를
+   * 조달한다(아래 `handleFire`·`issueSpreadSeed` 참고). **이름을 바꾸지
+   * 않는다** — 위 필드와 동일한 근거(`SpreadTestSeam.forcedSpreadSeed`). */
+  private forcedSpreadSeed: number | undefined
+  /** RQ-90: `forcedSpreadSeed`가 없을 때 서버가 스스로 발급하는 탄퍼짐 시드의
+   * 재료 — 이 룸이 처리한 사격 발수(세션 무관, 룸 전역)만큼 전진하는 순수
+   * 카운터. `issueSpreadSeed()`가 `state.tick`과 섞어 매 사격을 서로 다른
+   * 시드로 만드는 데 쓴다 — `Math.random()`을 직접 부르지 않는다(ADR-0008,
+   * `issueSpreadSeed` 코멘트 참고). */
+  private spreadSeedCounter = 0
   /** RQ-40: 최근 채팅 이력 — 오래된 것이 배열 앞쪽(도착 순서 그대로), 최대
    * `UI.CHAT_HISTORY`(50)개만 유지한다(초과분은 앞에서 폐기). 저장되는
    * 텍스트는 이미 `filterProfanity`를 거친 값이다(RQ-95) — 브로드캐스트
@@ -559,9 +583,24 @@ export class GameRoom extends Room<GameState> {
       this.reloadStartedAtTick.set(shooterId, this.state.tick)
     }
 
+    // RQ-90: 클라이언트가 보낸 조준 방향(input.dirX/Y/Z)을 가공 없이 레이로
+    // 쓰지 않는다 — 서버가 발급(또는 테스트가 강제)한 시드로 콘 편차를
+    // 얹은 뒤에 판정한다(RQ-61: 시드·콘 반경 모두 클라이언트 payload에서
+    // 읽지 않는다 — `sanitizeFireInput`이 애초에 그런 필드를 받지 않는다).
+    // `spreadTuningOverride`가 없으면 `DEFAULT_SPREAD`(출하 기본값, 반경
+    // 0) 그대로라 `applySpread`가 항등 함수가 되어 기존 정조준 동작과
+    // 완전히 동일하다(`applySpread` docblock, 회귀 방지).
+    const spreadTuning = this.spreadTuningOverride ?? DEFAULT_SPREAD
+    const spreadSeed = this.forcedSpreadSeed ?? this.issueSpreadSeed()
+    const spreadDirection = applySpread(
+      { x: input.dirX, y: input.dirY, z: input.dirZ },
+      createRng(spreadSeed),
+      spreadTuning.coneRadiusRad,
+    )
+
     const ray: Ray = {
       origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, DEFAULT_HITBOX.eyeHeightM),
-      direction: { x: input.dirX, y: input.dirY, z: input.dirZ },
+      direction: spreadDirection,
     }
 
     // RQ-64: 사수가 보고한 RTT를 되감기 틱 수로 환산(+상한 클램프)한다 —
@@ -608,6 +647,31 @@ export class GameRoom extends Room<GameState> {
       // 쓴 것과 동일한 `region` 값을 그대로 넘겨 두 판정이 어긋나지 않게 한다.
       this.registerDeath(closest.id, this.state.tick, shooterId, closest.result.region === 'head')
     }
+  }
+
+  /**
+   * RQ-90: `forcedSpreadSeed`(테스트 전용)가 설정돼 있지 않을 때 서버가
+   * 스스로 조달하는 탄퍼짐 시드. `state.tick`(틱마다 전진하는 결정론적
+   * 시뮬레이션 시계, RQ-60)과 `spreadSeedCounter`(이 룸이 처리한 사격
+   * 발수, 사격마다 1씩 전진)를 섞어 만든다 — 두 값 다 `Math.random()`이
+   * 아니라 서버 자신의 상태에서 나오므로, 시드의 *재료*를 서버가 조달하는
+   * 것 자체는 ADR-0008 위반이 아니다(`handleFire`의 rate-limit이
+   * `Date.now()`를 쓰는 것과 동일한 이유 — 그 규율은 `src/shared`에만
+   * 적용된다). 위반은 오직 편차 계산 자체(`applySpread` 내부)를
+   * `Math.random()`으로 하는 경우인데, 여기서는 이 시드로 만든
+   * `createRng`의 `SeededRng`만 거친다. 한 틱에 여러 발(다른 사수·재발사)이
+   * 겹쳐도 `spreadSeedCounter`가 매번 전진하므로 시드가 겹치지 않는다.
+   *
+   * 이 조합 방식(비트 시프트 + XOR)의 구체적 형태는 GA-17이 규정하지 않은
+   * coder 재량 영역이다(`_workspace/RQ-90/01_test-writer_red.md` §4.2) —
+   * 재현이 필요한 시나리오는 전부 `forcedSpreadSeed`로 이 경로 자체를
+   * 우회하므로, 이 조합의 통계적 분포 품질은 이 라운드의 검증 대상이
+   * 아니다.
+   */
+  private issueSpreadSeed(): number {
+    const seed = ((this.state.tick << 16) ^ this.spreadSeedCounter) >>> 0
+    this.spreadSeedCounter = (this.spreadSeedCounter + 1) >>> 0
+    return seed
   }
 
   /**
