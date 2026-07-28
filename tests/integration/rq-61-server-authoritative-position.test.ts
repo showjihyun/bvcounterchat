@@ -79,6 +79,22 @@ import { buildServer } from '@server/index'
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다
  * (ADR-0008 허용 예외 — 기존 RQ-02/03/04/20/60/62/64 통합 테스트와 동일).
  * 모든 대기에 상한(`timeoutMs`)을 강제한다.
+ *
+ * **REV(평가 F1 blocker 수정, `_workspace/RQ-61/03_evaluator_report.md`
+ * §5.4·§6)**: 첫 회차 테스트는 GA-15 `then`의 첫째("그대로 반영하지
+ * 않는다")·셋째("다른 플레이어에게 브로드캐스트") 절만 단언하고, 둘째 절
+ * ("**서버 자체 시뮬레이션이 계산한 위치만**")은 단언하지 않았다.
+ * `not.toBeCloseTo(9999, 0)`("그 센티넬이 아니다")·`toBeGreaterThan(...)`
+ * ("전진했다")는 둘 다 클라가 **맵 안** 좌표(GA-15 given의 "벽 반대편"
+ * 예시)를 참칭해도 통과한다 — 평가자가 서버가 참칭 좌표를 맵 범위로
+ * 절단해 그대로 채택하는 변이(M5)를 심었을 때 이 파일을 포함한 통합
+ * 스위트 전체가 초록이었던 것으로 실증됐다. 아래 두 번째 `it()`가 그
+ * 간극을 메운다 — 참칭 좌표를 **정지 입력**(`dirX:0, dirZ:0`)과 함께
+ * 보내 "서버 시뮬레이션 결과(=정지 상태, 직전 위치)와 **정확히 같다**"를
+ * 단언한다("센티넬이 아니다"가 아니라 "그 값이다"로 전환). 기존
+ * 9999-센티넬 케이스는 그대로 둔다(M1·M2 검출력은 이미 확인됨,
+ * `02_test-writer_mutation.md`) — 새 케이스는 그 위에 M5까지 덮는
+ * **추가** 커버리지다.
  */
 
 const ROOM_NAME = 'game'
@@ -95,6 +111,16 @@ const SERVER_POLL_INTERVAL_MS = 15
  * (`rq-20-movement-authority.test.ts`·`rq-62-input-sequence-authority
  * .test.ts`와 동일한 상수). */
 const SPOOFED_COORD = 9999
+/** REV(F1 수정) — GA-15 given "벽 반대편"을 재현하는 **맵 안** 참칭 좌표
+ * (60×60m 맵, `WORLD.SIZE_M`, 절반 30m 안쪽). 정수가 아닌 `.5` 값을 쓴다
+ * — `SPAWN_POINTS`(`@shared/sim/spawn`)는 전부 `Math.round`로 정수 좌표만
+ * 갖고 y는 항상 0(접지)이므로, `x`·`z`의 `.5` 성분과 `y=1.5`(y≠0) 둘 다
+ * 어느 스폰 지점과도 우연히 일치할 수 없다 — 이 테스트가 어느 스폰
+ * 지점을 배정받든(룸 전역 순환 커서, 이전 `it()`들의 접속 수에 따라
+ * 달라진다) 검출력이 좌표 우연 일치로 무력화되지 않는다는 것을 보장하는
+ * 설계다. 평가자가 동일 형태(x:12.5·y:1.5·z:-12.5)로 검출력을 직접
+ * 실행해 확인했다(`03_evaluator_report.md` §6). */
+const IN_MAP_SPOOF = { x: 12.5, y: 1.5, z: -12.5 }
 
 /** 모든 대기에 상한을 강제하는 래퍼 — 상한 초과는 hang이 아니라 즉시 실패다. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -251,6 +277,15 @@ function readCrossViewPosition(observerRoom: Room, targetSessionId: string): Pos
   return undefined
 }
 
+/** REV(평가 minor 1, `03_evaluator_report.md` §9-1): `observerRoom
+ * .onStateChange(...)`가 반환하는 것이 아니라 `tryResolve` 자체를
+ * `.remove()`로 해제해야 한다(colyseus.js `Signal`은 `register(cb)`로
+ * 등록한 콜백 참조를 `remove(cb)`로 해제하는 API — `lib/core/signal.d.ts`).
+ * 원래는 해제하지 않아, 이 파일에서만 `it()` 1건당 최대 4회 호출되며
+ * 리스너가 계속 누적됐다(케이스 추가 시 더 누적). 조건이 충족돼 resolve할
+ * 때 그 시점의 리스너를 명시적으로 제거한다 — 조건이 즉시(첫 `tryResolve()`
+ * 호출) 충족되는 경우는 애초에 `onStateChange`를 등록하지 않으므로 해제할
+ * 대상이 없다(정상, no-op). */
 function waitForCrossViewCondition(
   observerRoom: Room,
   targetSessionId: string,
@@ -261,10 +296,19 @@ function waitForCrossViewCondition(
     new Promise<PositionSnapshot>((resolve) => {
       const tryResolve = (): void => {
         const current = readCrossViewPosition(observerRoom, targetSessionId)
-        if (current && predicate(current)) resolve(current)
+        if (current && predicate(current)) {
+          observerRoom.onStateChange.remove(tryResolve)
+          resolve(current)
+        }
       }
-      tryResolve()
-      observerRoom.onStateChange(() => tryResolve())
+      // 즉시 충족되면 `onStateChange`를 아예 등록하지 않는다 — 해제할
+      // 리스너 자체가 없으므로 이 경로는 처음부터 누수가 없다.
+      const immediate = readCrossViewPosition(observerRoom, targetSessionId)
+      if (immediate && predicate(immediate)) {
+        resolve(immediate)
+        return
+      }
+      observerRoom.onStateChange(tryResolve)
     }),
     SNAPSHOT_TIMEOUT_MS,
     label,
@@ -369,6 +413,73 @@ describe('RQ-61/GA-15: 위치 참칭 — 서버 자체 상태와 다른 플레�
       expect(afterSpoofCross.y).not.toBeCloseTo(SPOOFED_COORD, 0)
       expect(afterSpoofCross.z).not.toBeCloseTo(SPOOFED_COORD, 0)
       expect(afterSpoofCross.x).toBeGreaterThan(afterLegitCross.x)
+
+      await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
+    },
+    20_000,
+  )
+
+  it(
+    'RQ-61/GA-15 보강(F1, 평가 blocker 수정): 정지 입력과 함께 맵 안쪽 참칭 좌표(GA-15 given "벽 반대편" 유형)를 보내도, (a) 서버 자체 상태와 (b) B의 브로드캐스트 시야 양쪽 모두 서버 시뮬레이션이 계산한 값(=정지 상태, 직전 위치)과 정확히 같다 — "센티넬이 아니다"가 아니라 "그 값이다"를 단언한다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomB = await joinGame(newClient(server))
+      const seam = getServerRoom(roomA)
+
+      // seq=1: 정지 입력 — 서버 시뮬레이션 결과는 "그대로"(정지)다. 이후
+      // seq=2의 참칭 시도가 이 값을 조금이라도 움직이면 검출된다.
+      roomA.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false, seq: 1 })
+      const idleServer = await waitForServerCondition(
+        seam,
+        roomA.sessionId,
+        (s) => s.lastProcessedInputSeq === 1,
+        '서버 상태 — seq=1(정지) 처리 대기',
+        SNAPSHOT_TIMEOUT_MS,
+      )
+      const idleCross = await waitForCrossViewCondition(
+        roomB,
+        roomA.sessionId,
+        (s) => s.lastProcessedInputSeq === 1,
+        'B 시야 — seq=1(정지) 처리 대기',
+      )
+
+      // seq=2: 같은 정지 입력 + 맵 안쪽 참칭 좌표. 방향 입력이 정지이므로
+      // 서버 시뮬레이션이 실제로 계산하는 값은 "직전과 동일"이어야
+      // 한다(GA-15 then ② "서버 자체 시뮬레이션이 계산한 위치만").
+      roomA.send('move', {
+        dirX: 0,
+        dirZ: 0,
+        mode: 'run',
+        jump: false,
+        seq: 2,
+        x: IN_MAP_SPOOF.x,
+        y: IN_MAP_SPOOF.y,
+        z: IN_MAP_SPOOF.z,
+      })
+
+      // (a) 서버 자체 상태 — 참칭 좌표가 아니라 정지 상태 그대로여야 한다.
+      const afterServer = await waitForServerCondition(
+        seam,
+        roomA.sessionId,
+        (s) => s.lastProcessedInputSeq === 2,
+        '서버 상태 — seq=2(맵 안 참칭 + 정지 입력) 처리 대기',
+        SNAPSHOT_TIMEOUT_MS,
+      )
+      expect(afterServer.x).toBeCloseTo(idleServer.x, 5)
+      expect(afterServer.y).toBeCloseTo(idleServer.y, 5)
+      expect(afterServer.z).toBeCloseTo(idleServer.z, 5)
+
+      // (b) B의 브로드캐스트 시야에서도 동일하게 정지 상태 그대로여야 한다
+      // — GA-15 then ③("다른 플레이어에게 브로드캐스트")과 ②를 함께 덮는다.
+      const afterCross = await waitForCrossViewCondition(
+        roomB,
+        roomA.sessionId,
+        (s) => s.lastProcessedInputSeq === 2,
+        'B 시야 — seq=2(맵 안 참칭 + 정지 입력) 처리 대기',
+      )
+      expect(afterCross.x).toBeCloseTo(idleCross.x, 5)
+      expect(afterCross.y).toBeCloseTo(idleCross.y, 5)
+      expect(afterCross.z).toBeCloseTo(idleCross.z, 5)
 
       await Promise.all([leaveRoom(roomA), leaveRoom(roomB)])
     },
