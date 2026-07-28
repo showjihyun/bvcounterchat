@@ -9,6 +9,7 @@ import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/moveme
 import {
   applySpread,
   canFire,
+  DEGENERATE_RADIAL_EPS,
   damageForRegion,
   eyeOrigin,
   findClosestHit,
@@ -605,9 +606,16 @@ export class GameRoom extends Room<GameState> {
     // 판정만 무효화(빗나감과 동일한 결과)한다. `dirMagnitude === 0`
     // (또는 비유한)인 입력은 이전에도 `raycastHitbox`가 결국 빗나감으로
     // 처리했으므로 관측 가능한 동작은 바뀌지 않는다.
+    //
+    // 리뷰 N7: 임계를 `1e-12` 리터럴로 복제하지 않고 `combat.ts`가 export한
+    // `DEGENERATE_RADIAL_EPS`를 그대로 재사용한다(ADR-0010 값 복제 금지) —
+    // `applySpread`가 `raycastHitbox`보다 먼저 이 값을 소비하므로, 두 곳의
+    // 퇴화 임계가 갈리면 "정규화는 통과했는데 raycastHitbox는 거부"(또는 그
+    // 반대)가 생겨 두 층위의 판정이 어긋난다. 값은 같으므로 순수 재사용이고
+    // 동작은 바뀌지 않는다.
     const rawAim = { x: input.dirX, y: input.dirY, z: input.dirZ }
     const dirMagnitude = Math.sqrt(rawAim.x ** 2 + rawAim.y ** 2 + rawAim.z ** 2)
-    if (!Number.isFinite(dirMagnitude) || dirMagnitude < 1e-12) return // raycastHitbox와 동일 임계
+    if (!Number.isFinite(dirMagnitude) || dirMagnitude < DEGENERATE_RADIAL_EPS) return
     const aimDirection = { x: rawAim.x / dirMagnitude, y: rawAim.y / dirMagnitude, z: rawAim.z / dirMagnitude }
 
     const spreadTuning = this.spreadTuningOverride ?? DEFAULT_SPREAD
