@@ -130,6 +130,17 @@ git worktree add --detach <경로> HEAD    # node_modules는 정션/심링크로
 git worktree remove --force <경로>
 ```
 
+> ⚠️ **정션을 `rm -rf`로 지우지 마라.** Windows 정션은 `rm -rf`가 **링크가 아니라
+> 대상 디렉터리의 내용을 지운다** — 워크트리를 치우려다 메인 트리의
+> `node_modules`가 통째로 비워진다(2026-07-28 RQ-61 라운드에서 실제로 발생,
+> `npm ci`로 복구). 링크만 끊으려면:
+>
+> ```bash
+> cmd //c rmdir "<워크트리>
+ode_modules"   # 정션은 rmdir로 링크만 제거된다
+> git worktree remove --force <경로>
+> ```
+
 **이유는 동시성이다.** 작업자와 평가자가 같은 파일에 동시에 변이를 심으면 서로의
 `git checkout -- <path>` 복원이 **상대의 변이를 무성으로 지운다** — 실패해야 할
 실행이 통과하거나 그 반대가 되고, 어느 쪽도 그 사실을 알아채지 못한다. 실제로
