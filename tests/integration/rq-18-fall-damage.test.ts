@@ -381,11 +381,12 @@ import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSea
  * GA-44·GA-25(3m)는 기대 데미지가 원래 0이라 이 회귀와 무관하게
  * 통과했지만, Safe Zone 무피해와 "안전 높이 이하라서 무피해"가 구분되지
  * 않는 공허화가 생기므로 같은 탈출을 추가해 강화했다(팀리드 지시) —
- * 단언(`PLAYER.MAX_HP`)은 그대로다. "리뷰 보강(minor 5)" 케이스는 의도적으로
- * 손대지 않는다 — 그 케이스의 존재 이유 자체가 "자기 사격도, 위치 이동도
- * 하지 않은 채 최초 입장 스폰 보호(RQ-16, 시간 기반)만으로 낙하 데미지가
- * 무효화되는가"이므로, 여기서 탈출을 넣으면 검증 대상(RQ-16 시간 보호)이
- * Safe Zone(위치 보호)으로 가려진다.
+ * 단언(`PLAYER.MAX_HP`)은 그대로다. **"리뷰 보강(minor 5)" 케이스는
+ * 이 시점에는 의도적으로 손대지 않았다** — 그 케이스의 존재 이유
+ * 자체가 "자기 사격도, 위치 이동도 하지 않은 채 최초 입장 스폰
+ * 보호(RQ-16, 시간 기반)만으로 낙하 데미지가 무효화되는가"이므로,
+ * 탈출을 넣으면 검증 대상(RQ-16 시간 보호)이 사라진다고 (**잘못**)
+ * 판단했다. **이 인과는 뒤집혀 있었다 — 아래 REV8이 바로잡는다.**
  *
  * **REV7(델타 재평가 blocker 대응)**: REV6까지의 수정은 전부 "Safe Zone
  * **밖**에서는 낙하 피해가 정상 적용된다"만 지킨다 — "Safe Zone **안**에서는
@@ -407,6 +408,24 @@ import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSea
  * 사용자 결정 대기 중이라 이번 라운드에서 만들지 않는다 — RQ-31
  * 문면 자체가 이미 피해원을 한정하지 않으므로 이 그물은 그 결정을
  * 기다릴 필요가 없다.
+ *
+ * **REV8(재리뷰 신규 blocker 대응)**: REV7이 닫은 공백(Safe Zone 축)을
+ * 닫으면서 **다른 그물을 무너뜨렸다.** `trackFallDamage`에서 RQ-16
+ * 항(`isSpawnTimeProtected`)만 제거해도(`isProtected = isSafeZoneProtected`)
+ * 전체 스위트가 그대로 통과했다(리뷰어 MUT-F) — "리뷰 보강(minor 5)"
+ * 케이스가 자기 스폰 지점(=Safe Zone)에 그대로 있으므로, RQ-16 항이
+ * 있든 없든 `isSafeZoneProtected` 하나만으로 이미 무효화가 성립해
+ * 결과가 같아졌기 때문이다. 그 케이스는 원래 **이전 라운드 리뷰
+ * minor 5("RQ-16 가드 0건")가 지적해 신설된 회귀 테스트**였는데, REV6이
+ * 이번 라운드 그 케이스를 "의도적으로 손대지 않는다"고 판단한 근거
+ * (바로 위 문단)가 **인과가 뒤집혀 있었다** — 탈출을 넣으면 검증
+ * 대상이 가려지는 게 아니라, **넣지 않아서** 이미 Safe Zone에 가려져
+ * 있었다. 수정은 그 `it()`에 **`escapeSafeZone`만**(위치만 이동,
+ * `releaseSpawnProtectionAndEscape`가 **아니다** — 그건 RQ-16 자체를
+ * 꺼 버려 검증 대상을 통째로 없앤다) 추가해 Safe Zone을 미리 제거하고
+ * RQ-16(시간 보호, 자기 사격을 안 보내므로 여전히 유효)만 남긴다 —
+ * 이후 관측되는 무피해는 RQ-16 **단독**의 결과가 된다(그 `it()`
+ * 본문의 실측 확인 코멘트 참고).
  */
 
 const ROOM_NAME = 'game'
@@ -960,6 +979,15 @@ describe('RQ-18 리뷰 보강(minor 5) — RQ-16 스폰 보호가 낙하 데미�
         const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
         expect(baseline.hp).toBe(PLAYER.MAX_HP)
 
+        // 재리뷰 blocker 대응(파일 상단 REV8 참고) — **위치만** Safe Zone
+        // 밖으로 옮긴다. `releaseSpawnProtectionAndEscape`가 **아니다** —
+        // 그건 firedSinceSpawn까지 해제해 이 케이스가 검증하려는 RQ-16을
+        // 꺼 버린다. RQ-16(시간 보호)은 자기 사격을 보내지 않으므로
+        // (아래) 여전히 유효한 채로 남는다 — 이 escape 한 줄이 Safe
+        // Zone(위치 보호)이라는 두 번째 무효화 경로를 미리 제거해, 이후
+        // 관측되는 무피해가 RQ-16 **단독**의 결과임을 보장한다.
+        escapeSafeZone(getServerRoom(room), room.sessionId, baseline)
+
         // 다른 케이스들과 달리 자기 사격을 보내지 않는다 — 최초 입장 스폰
         // 보호(RQ-16, PLAYER.SPAWN_PROTECTION_MS=3000ms)가 해제되지 않은
         // 채로 남아 있어야 이 케이스의 의미가 성립한다.
@@ -968,10 +996,17 @@ describe('RQ-18 리뷰 보강(minor 5) — RQ-16 스폰 보호가 낙하 데미�
         // 핵심 회귀 단언 — 치명적 높이(FATAL_OVERRIDE_PEAK_M, GA-46과 동일
         // 값)를 주입했음에도 스폰 보호가 유효한 동안은 낙하 데미지를 포함한
         // "모든 피해"가 무효화돼야 한다(RQ-16 문면, 리뷰 쟁점 4·minor 5).
-        // `trackFallDamage`가 스폰 보호 게이트를 건너뛰도록 바뀌면(리뷰가
-        // 실증한 변이 M9와 동치) 이 단언만 실패한다 — 기존 3케이스는 전부
-        // 점프 전 자기 사격으로 보호를 먼저 해제하므로 이 회귀를 잡지
-        // 못했다.
+        // **실측 확인(재리뷰 blocker, MUT-F)**: `trackFallDamage`의
+        // `isProtected`에서 RQ-16 항(`isSpawnTimeProtected`)만 제거하면
+        // (`isProtected = isSafeZoneProtected`) 이 단언이 실제로 죽는다 —
+        // 위에서 이미 Safe Zone을 탈출했으므로 `isSafeZoneProtected`는
+        // false이고, RQ-16 항이 없으면 아무것도 남지 않아 데미지가
+        // 정상 적용된다(격리 워크트리 재현, `_workspace/RQ-31/
+        // 12_test-writer_rq16-net.md` §MUT-F). **이 escape가 없던
+        // 시점(RQ-31 Safe Zone·낙하 데미지 합류 이후)에는 이 단언이
+        // 죽지 않았다** — 위치가 자기 스폰 지점(=Safe Zone)에 그대로
+        // 있어 `isSafeZoneProtected`만으로 이미 무효화가 성립했기
+        // 때문이다(RQ-16 항 유무와 무관하게 결과가 같았다).
         expect(afterLanding.hp).toBe(PLAYER.MAX_HP)
       } finally {
         await leaveRoom(room)
