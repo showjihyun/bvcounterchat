@@ -82,6 +82,45 @@ describe('RQ-31(선택 규칙) — SPAWN_POINTS 구성', () => {
       seen.add(key)
     }
   })
+
+  /**
+   * GA-51 비겹침 절(원장 26s 복원 대상, RQ-31 v1.5 "Safe Zone은 서로 겹치지
+   * 않는다") — **모든 두 스폰 지점** 쌍의 중심 간 거리가 Safe Zone 반경의
+   * 2배(지름)를 **초과**해야 한다. 좌표가 아니라 반경(`WORLD.SAFE_ZONE_RADIUS_M`)
+   * 쪽만 상수를 참조한다 — 거리 임계(실측 8.6023m/2 = 4.3012m, 원장 26s)는
+   * 여기서 하드코딩하지 않고 실제 `SPAWN_POINTS` 좌표에서 매번 계산한다.
+   *
+   * `>`이지 `>=`가 아니다: 골든 문면이 "겹치지도 **접하지도** 않는다"이고,
+   * 현재 반경(5m)에서는 실제로 정확히 10.00m(=2×5m)로 접하는 쌍이 존재해
+   * 그 경계 취급이 결과를 좌우한다.
+   *
+   * 인접 쌍(원형 배치의 옆자리)만 보지 않는다 — 배치가 원이 아닌 임의
+   * 좌표로 바뀌면 "인접"의 정의 자체가 무너지므로 **가능한 모든 조합**
+   * (15개면 105쌍)을 순회한다.
+   */
+  it('임의의 두 스폰 지점 Safe Zone은 서로 겹치지도 접하지도 않는다(GA-51 비겹침 절, 원장 26s) — 모든 쌍의 중심 간 거리 > 2 × SAFE_ZONE_RADIUS_M', () => {
+    const minSeparationM = 2 * WORLD.SAFE_ZONE_RADIUS_M
+    const violations: string[] = []
+    for (let i = 0; i < SPAWN_POINTS.length; i += 1) {
+      const a = SPAWN_POINTS[i]
+      if (!a) throw new Error('테스트 전제 위반 — SPAWN_POINTS 인덱스 범위 밖')
+      for (let j = i + 1; j < SPAWN_POINTS.length; j += 1) {
+        const b = SPAWN_POINTS[j]
+        if (!b) throw new Error('테스트 전제 위반 — SPAWN_POINTS 인덱스 범위 밖')
+        const distance = Math.hypot(a.x - b.x, a.z - b.z)
+        if (!(distance > minSeparationM)) {
+          violations.push(
+            `[${i}](${a.x},${a.z}) ↔ [${j}](${b.x},${b.z}) 거리 ${distance.toFixed(4)}m ≤ 임계(2×반경) ${minSeparationM}m`,
+          )
+        }
+      }
+    }
+    const totalPairs = (SPAWN_POINTS.length * (SPAWN_POINTS.length - 1)) / 2
+    expect(
+      violations,
+      `Safe Zone이 겹치거나 접하는 쌍 ${violations.length}/${totalPairs}건 (반경 ${WORLD.SAFE_ZONE_RADIUS_M}m):\n${violations.join('\n')}`,
+    ).toEqual([])
+  })
 })
 
 describe('nextSpawnIndex — 직전 사용 지점을 회피하는 순환 로테이션(RQ-31)', () => {
