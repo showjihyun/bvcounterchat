@@ -142,7 +142,7 @@ describe('SpawnPoint 타입 형태', () => {
  * 것도 못 잡는 죽은 단언이 아니다.
  *
  * docblock이 스스로 규정하는 3가지 판단 갈림을 각각 고정한다:
- * 1. 경계(정확히 반경, 주입 반경 정확히 그 값)는 `<=`(포함)다.
+ * 1. 경계(주입 반경과 정확히 같은 거리)는 `<=`(포함)다.
  * 2. 수평(XZ)만 본다 — y는 무시한다.
  * 3. 주입 인자(`spawnPoints?`·`radiusM?`)가 실제로 기본값을 대체한다.
  *
@@ -152,7 +152,7 @@ describe('SpawnPoint 타입 형태', () => {
  */
 describe('isWithinSafeZone — Safe Zone 소속 판정(RQ-31, GA-11·GA-19의 기반)', () => {
   const ORIGIN_SPAWN: SpawnPoint = { x: 0, y: 0, z: 0 }
-  // 주입 반경 — 출하 기본값(`WORLD.SAFE_ZONE_INJECTED_RADIUS_M`)이 아니라
+  // 주입 반경 — 출하 기본값(`WORLD.SAFE_ZONE_RADIUS_M`)이 아니라
   // 이 테스트가 인자로 넘기는 값이다(리뷰 minor 6).
   const INJECTED_RADIUS_M = 5
 
@@ -160,7 +160,7 @@ describe('isWithinSafeZone — Safe Zone 소속 판정(RQ-31, GA-11·GA-19의 �
     expect(isWithinSafeZone({ x: INJECTED_RADIUS_M - 0.5, z: 0 }, [ORIGIN_SPAWN], INJECTED_RADIUS_M)).toBe(true)
   })
 
-  it('정확히 반경(경계 자체, 주입 반경 정확히 그 값)은 안(true)이다 — "<=" 판정. 원문 "반경을 벗어나면 해제"는 반경보다 커진 순간만 규정하고, 반경과 정확히 같은 지점의 소속은 규정하지 않는다', () => {
+  it('경계 자체(주입 반경과 정확히 같은 거리)는 안(true)이다 — "<=" 판정. 원문 "반경을 벗어나면 해제"는 반경보다 커진 순간만 규정하고, 반경과 정확히 같은 지점의 소속은 규정하지 않는다', () => {
     expect(isWithinSafeZone({ x: INJECTED_RADIUS_M, z: 0 }, [ORIGIN_SPAWN], INJECTED_RADIUS_M)).toBe(true)
   })
 
@@ -187,13 +187,13 @@ describe('isWithinSafeZone — Safe Zone 소속 판정(RQ-31, GA-11·GA-19의 �
     expect(isWithinSafeZone(farFromAllDefaults, [farFromAllDefaults], INJECTED_RADIUS_M)).toBe(true)
   })
 
-  it('주입한 radiusM을 실제로 쓴다 — 기본 WORLD.SAFE_ZONE_INJECTED_RADIUS_M이 아니라 인자를 따른다', () => {
+  it('주입한 radiusM을 실제로 쓴다 — 기본 WORLD.SAFE_ZONE_RADIUS_M이 아니라 인자를 따른다', () => {
     const position = { x: 1, z: 0 }
     expect(isWithinSafeZone(position, [ORIGIN_SPAWN], 0.5)).toBe(false) // 반경을 0.5m로 좁히면 밖
     expect(isWithinSafeZone(position, [ORIGIN_SPAWN], 2)).toBe(true) // 반경 2m면 안
   })
 
-  it('인자를 생략하면 기본값(SPAWN_POINTS 전체·WORLD.SAFE_ZONE_INJECTED_RADIUS_M)을 쓴다 — 자기 자신의 스폰 지점(거리 0)은 안이다', () => {
+  it('인자를 생략하면 기본값(SPAWN_POINTS 전체·WORLD.SAFE_ZONE_RADIUS_M)을 쓴다 — 자기 자신의 스폰 지점(거리 0)은 안이다', () => {
     const knownPoint = SPAWN_POINTS[0]
     if (!knownPoint) throw new Error('테스트 전제 위반 — SPAWN_POINTS가 비어 있다')
     expect(isWithinSafeZone({ x: knownPoint.x, z: knownPoint.z })).toBe(true)
