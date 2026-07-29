@@ -4,8 +4,14 @@ import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { NET, PLAYER, WEAPON } from '@shared/constants'
+import { MOVEMENT, NET, PLAYER, WEAPON, WORLD } from '@shared/constants'
 import { POSITION_HISTORY_CAPACITY, REWIND_CAP_TICKS, type PositionSnapshot } from '@shared/sim/rewind'
+import {
+  escapeSafeZone,
+  radialUnitVector,
+  releaseSpawnProtectionAndEscape,
+  type SafeZoneEscapeSeam,
+} from '../support/safe-zone'
 
 /**
  * RQ-64 랙 보상(Lag Compensation) — 서버 권위(RQ-61) 통합 테스트 (ADR-0005
@@ -103,6 +109,25 @@ import { POSITION_HISTORY_CAPACITY, REWIND_CAP_TICKS, type PositionSnapshot } fr
  * 탄퍼짐(RQ-90/94 별도 라운드)·헤드샷 볼륨 정밀화(RQ-13 기구현)·클라 HUD
  * 표시·안티치트(§11 비요구사항)·"RTT를 어떻게 측정하는가"(클라이언트 구현,
  * 이 RQ는 서버가 보고값을 신뢰하지 않고 방어적으로 절단하는 것만 다룬다).
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 사수·피격자
+ * 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면 (1) GA-19가
+ * 사수의 사격 자체를 막고 (2) 피격자가 Safe Zone 안에 있으면 RQ-16과
+ * 무관하게 GA-11(위치 기반 피해 무효화)이 계속 피해를 무효화한다.
+ * `clearSpawnProtection`이 이제 대상의 RQ-16 해제(화이트박스,
+ * `firedSinceSpawn`)와 Safe Zone 탈출(화이트박스, 반경-방사 텔레포트)을
+ * 함께 한다 — 자기 사격은 자신의 Safe Zone에 막힐 수 있고, 기존
+ * `travelAndSettle`(고정 +X 실이동)은 15개 스폰 지점 중 4개에서 다른
+ * 스폰 지점의 Safe Zone에 새로 들어가는 것이 실측됐다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하 참고). **F2 재현 테스트의
+ * 화이트박스 텔레포트는 `positionHistory`를 정리하는데, F2 자체가
+ * 검증하려는 "리스폰 시 이전 생의 이력 정리"는 `respawnPlayer`가 이미
+ * 별도로 수행하는 것과 같은 정리라 서로 충돌하지 않는다(사망 전 탈출은
+ * 그 시점의 위치를 "얼어붙는 사망 전 값"으로 재사용할 뿐이고, 리스폰
+ * 후에는 `respawnPlayer`가 어차피 이미 비운 맵을 다시 비우는 멱등
+ * 연산이다) — 상세 근거는 `_workspace/RQ-31/03_test-writer_regression.md`
+ * §rq-64 참고.
  */
 
 const ROOM_NAME = 'game'
@@ -118,12 +143,9 @@ const HISTORY_CLEANUP_TIMEOUT_MS = 5_000
  * 노리므로 15ms 간격이면 충분히 여러 번 샘플링한다). */
 const SERVER_POLL_INTERVAL_MS = 15
 
-/** 자기 사격(스폰 보호 해제, RQ-16)이 서버에 반영될 시간 — 기존
- * RQ-12/15/16/18 파일들과 동일한 값·동일한 근거. */
-const SELF_FIRE_SETTLE_MS = 300
-/** 실 이동 시나리오(회귀·누적 확인)의 이동 시간·정착 여유 — `rq-12`의
- * `TRAVEL_MS`/`SETTLE_MS`와 동일한 값·근거. */
-const TRAVEL_MS = 900
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간, 그리고 실 이동 시나리오(회귀·누적 확인)의
+ * 정착 여유(`rq-12`의 `SETTLE_MS`와 동일한 값·근거). */
 const SETTLE_MS = 200
 /** 위치 이력 누적 확인용 — 20 tick(≈667ms)보다 훨씬 길게 이동시켜 버퍼가
  * 확실히 트림 경계(`POSITION_HISTORY_CAPACITY`)를 넘어서게 한다. */
@@ -208,12 +230,20 @@ async function leaveRoom(room: Room): Promise<void> {
 }
 
 /** GA-06/GA-08/RQ-16 파일들과 동일한 근거로 기하학적으로 항상 빗나가는
- * 방향(수직 위) — 자기 자신을 쏘면 스폰 보호(RQ-16)가 즉시 해제된다. */
+ * 방향(수직 위) — F2 재현 테스트가 "리스폰하자마자 자기 사격"이라는 실제
+ * 발견된 트리거 경로를 그대로 재현하는 데만 쓴다(RQ-31 회귀 대응 이후,
+ * 그 세션이 Safe Zone 밖으로 이미 옮겨져 있어야 이 자기 사격이 GA-19에
+ * 막히지 않는다 — 파일 상단 REV 참고). 그 외 세션의 RQ-16 해제는
+ * `clearSpawnProtection`이 화이트박스로 처리한다. */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
+/** RQ-31 회귀 대응 — `room`의 RQ-16 최초 입장 보호를 화이트박스로 즉시
+ * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), 그 세션을
+ * `tests/support/safe-zone.ts`의 공용 헬퍼로 Safe Zone 밖으로 텔레포트한다. */
 async function clearSpawnProtection(room: Room): Promise<void> {
-  room.send('fire', UP_MISS_AIM)
-  await sleep(SELF_FIRE_SETTLE_MS)
+  const seam = getServerRoom(room)
+  const current = seam.moveStates.get(room.sessionId)
+  if (current) releaseSpawnProtectionAndEscape(seam, room.sessionId, current)
 }
 
 interface Foot {
@@ -257,17 +287,29 @@ function waitForDefinedPlayer(room: Room, sessionId: string): Promise<PlayerFiel
   )
 }
 
-/** 실 이동(레거시 회귀 케이스 전용) — `dir`로 `TRAVEL_MS`만큼 실제 이동시킨
- * 뒤 정지시키고, 실제로 도달한 최종 위치를 읽는다(가정한 거리에 결합하지
- * 않는다) — `rq-12-server-hitscan.test.ts`의 `travelAndSettle`과 동일한
- * 근거·구조(사수·대상 어느 쪽에도 적용 가능하도록 방향을 인자로 뺐다). */
-async function travelAndSettle(mover: Room, dir: { dirX: number; dirZ: number }): Promise<PlayerFields> {
-  mover.send('move', { dirX: dir.dirX, dirZ: dir.dirZ, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
+/** RQ-31 회귀 대응 — 기존 `travelAndSettle`(고정 +X 실이동)을 대체한다. 이 파일의
+ * "RTT 0/미보고" describe는 **실 이동**이 현재 위치 판정에 반영되는지를
+ * 검증하는 것 자체가 목적(팀리드 지시대로 화이트박스 텔레포트로 대체하지
+ * 않는다)이라, 실 이동은 유지하되 방향을 고정 +X 대신 `base` 기준
+ * 방사(원점→`base`) 방향으로 바꿨다 — 고정 +X는 15개 스폰 지점 중 4개에서
+ * 다른 스폰 지점의 Safe Zone에 새로 들어가는 것이 실측됐다
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하 참고). `offsetM`(기본
+ * `WORLD.SAFE_ZONE_RADIUS_M + 2`=7m)만큼 이동하는 데 필요한 시간을
+ * `MOVEMENT.SPEED`(6m/s)에서 역산한다(하드코딩 금지) — 그 기하 증명이
+ * 검증한 오프셋 범위(0~20m) 안이라 안전하다. */
+async function travelRadiallyAndSettle(
+  mover: Room,
+  base: { x: number; z: number },
+  offsetM: number = WORLD.SAFE_ZONE_RADIUS_M + 2,
+): Promise<PlayerFields> {
+  const { ux: dirX, uz: dirZ } = radialUnitVector(base)
+  const travelMs = Math.ceil((offsetM / MOVEMENT.SPEED) * 1000) + 200 // 여유 200ms
+  mover.send('move', { dirX, dirZ, mode: 'run', jump: false })
+  await sleep(travelMs)
   mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
   await sleep(SETTLE_MS)
   const settled = readPlayer(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
+  if (!settled) throw new Error('travelRadiallyAndSettle: 이동 후 위치 관측 실패')
   return settled
 }
 
@@ -277,16 +319,11 @@ async function travelAndSettle(mover: Room, dir: { dirX: number; dirZ: number })
  * 때부터 있던 기존 private map을 읽기 전용으로 노출할 뿐이다
  * (`rq-18-fall-damage.test.ts` `FallDamageTestSeam`과 동일한 결합 방식).
  * `state`는 `Room.state`(public) 그대로다. */
-interface RewindTestSeam {
+interface RewindTestSeam extends SafeZoneEscapeSeam<PositionSnapshot> {
   state: {
     tick: number
     players: { get: (sessionId: string) => { hp?: number } | undefined }
   }
-  moveStates: Map<string, Foot>
-  positionHistory: Map<string, PositionSnapshot[]>
-  /** RQ-16 — 리스폰 직후 자기 사격으로 새 스폰 보호를 해제했는지 확인하는
-   * 용도(F2 재현, 아래 `waitForServerFiredSinceSpawn` 참고). */
-  firedSinceSpawn: Map<string, boolean>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`·
@@ -472,8 +509,11 @@ describe('RQ-64/GA-16: RTT 300ms(상한 초과) — 되감기는 6틱(200ms)에�
       await clearSpawnProtection(roomB) // RQ-16 — 보호 중이면 피해가 무효화돼 이 테스트가 성립하지 않는다
 
       const seam = getServerRoom(roomA)
-      const shooterFoot = seam.moveStates.get(roomA.sessionId)
-      if (!shooterFoot) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
+      if (!shooterFootRaw) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      // RQ-31 회귀 대응 — A를 Safe Zone 밖으로 옮긴다(그러지 않으면 A의
+      // 사격 자체가 GA-19에 막힌다).
+      const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
       const baselineHp = seam.state.players.get(roomB.sessionId)?.hp
       expect(baselineHp).toBe(PLAYER.MAX_HP)
@@ -519,8 +559,11 @@ describe('RQ-64/GA-16: RTT 300ms(상한 초과) — 되감기는 6틱(200ms)에�
       await clearSpawnProtection(roomB)
 
       const seam = getServerRoom(roomA)
-      const shooterFoot = seam.moveStates.get(roomA.sessionId)
-      if (!shooterFoot) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
+      if (!shooterFootRaw) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      // RQ-31 회귀 대응 — A를 Safe Zone 밖으로 옮긴다(그러지 않으면 A의
+      // 사격 자체가 GA-19에 막힌다).
+      const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
       const hitFoot: Foot = { x: shooterFoot.x + AIM_DISTANCE_M, y: shooterFoot.y, z: shooterFoot.z }
       const missFoot: Foot = { x: shooterFoot.x - AIM_DISTANCE_M, y: shooterFoot.y, z: shooterFoot.z }
@@ -575,8 +618,11 @@ describe('RQ-64: RTT 100ms(150ms 예산 이내) — 절단 없이 자연값(3틱
       await clearSpawnProtection(roomB)
 
       const seam = getServerRoom(roomA)
-      const shooterFoot = seam.moveStates.get(roomA.sessionId)
-      if (!shooterFoot) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
+      if (!shooterFootRaw) throw new Error('RQ-64: 사수의 moveStates 스냅샷을 찾지 못했다')
+      // RQ-31 회귀 대응 — A를 Safe Zone 밖으로 옮긴다(그러지 않으면 A의
+      // 사격 자체가 GA-19에 막힌다).
+      const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
       const baselineHp = seam.state.players.get(roomB.sessionId)?.hp
       expect(baselineHp).toBe(PLAYER.MAX_HP)
@@ -631,15 +677,21 @@ describe('RQ-64: RTT 0/미보고 — 되감기 없이 현재 위치로 판정한
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      await clearSpawnProtection(roomB)
-      const settledB = await travelAndSettle(roomB, { dirX: 1, dirZ: 0 })
-      expect(settledB.x).toBeGreaterThan(baselineB.x) // 실제로 이동했다는 전제 확인
+      // RQ-31 회귀 대응(파일 상단 REV) — A는 화이트박스로 Safe Zone 밖으로
+      // 옮긴다(A의 실 이동 자체는 이 테스트의 관심사가 아니다). B는 이
+      // describe의 취지(실 이동이 현재 위치 판정에 반영되는지)를 보존하기
+      // 위해 실제로 이동시키되, 방향을 방사(radial)로 바꾼다
+      // (`travelRadiallyAndSettle` 참고).
+      const seam = getServerRoom(roomA)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const settledB = await travelRadiallyAndSettle(roomB, baselineB)
+      expect(settledB.x !== baselineB.x || settledB.z !== baselineB.z).toBe(true) // 실제로 이동했다는 전제 확인
 
-      const aim = aimAt(baselineA, settledB, bodyCenterM())
+      const aim = aimAt(escapedA, settledB, bodyCenterM())
       // rttMs 필드를 아예 싣지 않는다 — 이 RQ 이전의 fire payload와 동일한 shape.
       roomA.send('fire', { dirX: aim.dirX, dirY: aim.dirY, dirZ: aim.dirZ })
 
-      const seam = getServerRoom(roomA)
       const afterShot = await waitForServerHp(
         seam,
         roomB.sessionId,
@@ -664,14 +716,16 @@ describe('RQ-64: RTT 0/미보고 — 되감기 없이 현재 위치로 판정한
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      await clearSpawnProtection(roomB)
-      const settledB = await travelAndSettle(roomB, { dirX: 1, dirZ: 0 })
-      expect(settledB.x).toBeGreaterThan(baselineB.x)
+      // RQ-31 회귀 대응 — 위 첫 번째 it()과 동일한 근거.
+      const seam = getServerRoom(roomA)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const settledB = await travelRadiallyAndSettle(roomB, baselineB)
+      expect(settledB.x !== baselineB.x || settledB.z !== baselineB.z).toBe(true)
 
-      const aim = aimAt(baselineA, settledB, bodyCenterM())
+      const aim = aimAt(escapedA, settledB, bodyCenterM())
       roomA.send('fire', { dirX: aim.dirX, dirY: aim.dirY, dirZ: aim.dirZ, rttMs: 0 })
 
-      const seam = getServerRoom(roomA)
       const afterShot = await waitForServerHp(
         seam,
         roomB.sessionId,
@@ -721,9 +775,12 @@ describe('RQ-64: 변조된 rttMs(문자열·음수)가 되감기를 우회하지
     await clearSpawnProtection(roomB)
 
     const seam = getServerRoom(roomA)
-    const shooterFoot = seam.moveStates.get(roomA.sessionId)
+    const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
     const bFoot = seam.moveStates.get(roomB.sessionId)
-    if (!shooterFoot || !bFoot) throw new Error('RQ-64: moveStates 스냅샷을 찾지 못했다')
+    if (!shooterFootRaw || !bFoot) throw new Error('RQ-64: moveStates 스냅샷을 찾지 못했다')
+    // RQ-31 회귀 대응 — A도 Safe Zone 밖으로 옮긴다(그러지 않으면 A의
+    // 사격 자체가 GA-19에 막힌다).
+    const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
     const missFoot: Foot = { x: shooterFoot.x - AIM_DISTANCE_M, y: shooterFoot.y, z: shooterFoot.z }
 
@@ -802,14 +859,28 @@ describe('RQ-64: 되감기는 대상에게만 적용된다 — 사수 자신의 
       const roomA = await joinGame(newClient(server)) // 사수 — 실제로 이동
       const roomB = await joinGame(newClient(server)) // 대상 — 스폰 위치 고정
 
-      await clearSpawnProtection(roomB) // B가 맞아야 하므로 보호 해제 필요
+      await clearSpawnProtection(roomB) // B가 맞아야 하므로 보호 해제 필요 + Safe Zone 탈출
 
-      const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
-      const bFoot: Foot = { x: baselineB.x, y: baselineB.y, z: baselineB.z }
+      const baselineA = await waitForDefinedPlayer(roomA, roomA.sessionId)
+      // RQ-31 회귀 대응 — B의 위치는 클라 시야(room.state, 20Hz 패치)가
+      // 아니라 서버 화이트박스로 직접 읽는다. `clearSpawnProtection`의
+      // 텔레포트는 서버 상태를 동기로 바꾸지만, 클라 시야는 다음 패치까지
+      // 반영되지 않아(수십ms 지연) `waitForDefinedPlayer`로 읽으면 탈출
+      // 이전(스폰 지점) 좌표를 그대로 받을 위험이 있다 — 그러면 아래 aim이
+      // B의 실제(탈출 후) 위치가 아니라 스폰 지점을 겨눠 빗나간다.
+      const seamForB = getServerRoom(roomB)
+      const bFootRaw = seamForB.moveStates.get(roomB.sessionId)
+      if (!bFootRaw) throw new Error('RQ-64: B의 moveStates 스냅샷을 찾지 못했다')
+      const bFoot: Foot = { x: bFootRaw.x, y: bFootRaw.y, z: bFootRaw.z }
 
       // A를 실제로 이동시켜 새 위치(P2)에 정착시킨다 — rq-12의 travelAndSettle과
-      // 동일한 절차를 대상이 아니라 사수에게 적용한다.
-      const settledA = await travelAndSettle(roomA, { dirX: 1, dirZ: 0 })
+      // 동일한 절차를 대상이 아니라 사수에게 적용한다. RQ-31 회귀 대응
+      // (파일 상단 REV) — 이 테스트의 핵심은 "A의 실 이동이 A 자신의
+      // 가짜 과거(P1)를 이긴다"이므로 실 이동 자체는 보존하되, 방향을
+      // 고정 +X 대신 방사(radial)로 바꿔 Safe Zone 밖으로 안전하게
+      // 옮긴다(`travelRadiallyAndSettle` 참고 — GA-19가 A의 사격 자체를
+      // 막지 않으려면 A도 Safe Zone 밖에 있어야 한다).
+      const settledA = await travelRadiallyAndSettle(roomA, baselineA)
 
       const seam = getServerRoom(roomA)
       const baselineHp = seam.state.players.get(roomB.sessionId)?.hp
@@ -875,8 +946,12 @@ describe('RQ-64: 접속 직후(링버퍼 미충전) 되감기 요청도 크래�
       expect(freshHistory.length).toBeLessThan(REWIND_CAP_TICKS)
 
       const cFoot = seam.moveStates.get(roomC.sessionId)
-      const shooterFoot = seam.moveStates.get(roomA.sessionId)
-      if (!cFoot || !shooterFoot) throw new Error('RQ-64: moveStates 스냅샷을 찾지 못했다')
+      const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
+      if (!cFoot || !shooterFootRaw) throw new Error('RQ-64: moveStates 스냅샷을 찾지 못했다')
+      // RQ-31 회귀 대응 — A를 Safe Zone 밖으로 옮긴다. 그러지 않으면 A의
+      // 사격 자체가 GA-19에 막혀 이 테스트가 검증하려는 되감기 샘플링
+      // 코드 경로(`sampleRewoundPosition`)에 아예 도달하지 못한다(공허화).
+      const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
       const aim = aimAt(shooterFoot, cFoot, bodyCenterM())
       const tickBeforeFire = seam.state.tick
@@ -1024,12 +1099,19 @@ describe('RQ-64/F2: 리스폰 직후 되감기 사격은 사망 이전 위치가
       const roomA = await joinGame(newClient(server)) // 사수
       const roomB = await joinGame(newClient(server)) // 사망 → 리스폰할 대상 — 이동하지 않는다
 
-      await clearSpawnProtection(roomB) // 최초 입장 스폰 보호(RQ-16) 해제
+      await clearSpawnProtection(roomB) // 최초 입장 스폰 보호(RQ-16) 해제 + Safe Zone 탈출
 
       const seam = getServerRoom(roomA)
-      const shooterFoot = seam.moveStates.get(roomA.sessionId)
-      const deathFoot = seam.moveStates.get(roomB.sessionId) // B는 이동하지 않으므로 사망 시점까지 이 위치 그대로다
-      if (!shooterFoot || !deathFoot) throw new Error('RQ-64/F2: moveStates 스냅샷을 찾지 못했다')
+      const shooterFootRaw = seam.moveStates.get(roomA.sessionId)
+      // B는 위 clearSpawnProtection이 이미 Safe Zone 밖으로 옮겨 뒀고, 이후
+      // 사망 시점까지 다시 움직이지 않는다 — 이 탈출 후 위치가 곧 "사망 전
+      // 값"으로 얼어붙는다(RQ-31 회귀 대응, 파일 상단 REV 참고 — F2 자체의
+      // "리스폰 시 이전 생 이력 정리" 검증과 충돌하지 않는다).
+      const deathFoot = seam.moveStates.get(roomB.sessionId)
+      if (!shooterFootRaw || !deathFoot) throw new Error('RQ-64/F2: moveStates 스냅샷을 찾지 못했다')
+      // RQ-31 회귀 대응 — A도 Safe Zone 밖으로 옮긴다(그러지 않으면 A의
+      // 킬 시퀀스 사격 자체가 GA-19에 막힌다).
+      const shooterFoot = escapeSafeZone(seam, roomA.sessionId, shooterFootRaw)
 
       const killAim = aimAt(shooterFoot, deathFoot, bodyCenterM())
 
@@ -1052,18 +1134,26 @@ describe('RQ-64/F2: 리스폰 직후 되감기 사격은 사망 이전 위치가
         RESPAWN_OBSERVE_TIMEOUT_MS,
       )
 
-      const respawnFoot = seam.moveStates.get(roomB.sessionId)
-      if (!respawnFoot) throw new Error('RQ-64/F2: 리스폰 직후 moveStates 스냅샷을 찾지 못했다')
+      const respawnFootRaw = seam.moveStates.get(roomB.sessionId)
+      if (!respawnFootRaw) throw new Error('RQ-64/F2: 리스폰 직후 moveStates 스냅샷을 찾지 못했다')
 
       // 양성 대조군 — 리스폰 지점이 사망 지점과 실제로 다르다(공허화 방지,
       // 파일 상단 docblock 참고). 스폰 지점 간 최소 간격(15개 원형 배치,
       // `@shared/sim/spawn`)보다 한참 작은 여유(히트박스 반지름의 10배)로
       // "명백히 다른 지점"만 확인한다.
-      const respawnDeathDistance = Math.hypot(respawnFoot.x - deathFoot.x, respawnFoot.z - deathFoot.z)
+      const respawnDeathDistance = Math.hypot(respawnFootRaw.x - deathFoot.x, respawnFootRaw.z - deathFoot.z)
       expect(respawnDeathDistance).toBeGreaterThan(DEFAULT_HITBOX.bodyRadiusM * 10)
 
+      // RQ-31 회귀 대응 — 리스폰으로 B는 새 스폰 지점(다시 Safe Zone
+      // 내부)에 배치된다. `respawnPlayer`가 이미 `positionHistory`를 비워
+      // 뒀으므로(F2 수정 자체) 이 텔레포트가 그 정리를 다시 한번(멱등)
+      // 수행할 뿐 F2 검증과 충돌하지 않는다.
+      const respawnFoot = escapeSafeZone(seam, roomB.sessionId, respawnFootRaw)
+
       // 리스폰 직후 B 자신이 사격해 새 스폰 보호를 즉시 해제한다(RQ-16) —
-      // 평가가 지목한 실제 도달 경로("리스폰하자마자 쏜다") 그대로다.
+      // 평가가 지목한 실제 도달 경로("리스폰하자마자 쏜다") 그대로다. B가
+      // 이미 Safe Zone 밖으로 옮겨졌으므로 이 자기 사격은 GA-19에 막히지
+      // 않는다.
       roomB.send('fire', UP_MISS_AIM)
       await waitForServerFiredSinceSpawn(seam, roomB.sessionId, RESPAWN_PROTECTION_CONFIRM_TIMEOUT_MS)
 

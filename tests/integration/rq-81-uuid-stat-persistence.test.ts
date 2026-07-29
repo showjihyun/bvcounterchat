@@ -9,6 +9,7 @@ import { buildServer } from '@server/index'
 import { getStats, openStatsDb, type StatsDb } from '@server/persistence/statsDb'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { getSafeZoneSeam, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-81 통계 절반(B계층 — SQLite 영속 + 익명 UUID 키) — 서버 권위(RQ-61)
@@ -89,6 +90,15 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * `rq-14-death-kill-credit.test.ts`의 검증된 바디샷 4연타 패턴을 그대로
  * 재사용한다(전투 산술 자체는 이미 그 파일이 고정했다 — 이 파일은 그
  * 산술의 재현이 아니라 통계 영속만 신경 쓴다).
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 사수·피격자
+ * 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면 킬
+ * 시퀀스 자체가 성립하지 않는다. 기존 `unlockProtectionAndSettle`(자기
+ * 사격 + 고정 +X 실이동)을 화이트박스 Safe Zone 탈출(`firedSinceSpawn`
+ * 직접 기입 + 반경-방사 텔레포트, `rq-31-safe-zone.test.ts` §반경-방사
+ * 기하)로 대체했다 — 고정 +X 실이동은 15개 스폰 지점 중 4개에서 다른
+ * 스폰 지점의 Safe Zone에 새로 들어가는 것이 실측됐다.
  */
 
 const ROOM_NAME = 'game'
@@ -97,13 +107,10 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const STATE_TIMEOUT_MS = 5_000
-const TRAVEL_MS = 900
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SETTLE_MS = 200
 const BETWEEN_SHOTS_MS = 300
-
-/** 기하학적으로 항상 빗나가는 방향(수직 위) — 자신의 스폰 보호를 즉시
- * 해제하는 자기 사격에 쓴다(rq-14/rq-13 선례와 동일). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -238,21 +245,16 @@ function waitForNickname(room: Room, sessionId: string): Promise<string> {
   )
 }
 
-async function travelAndSettle(mover: Room): Promise<PlayerFields> {
-  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
-  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+/** RQ-31 회귀 대응 — `room`의 RQ-16 최초 입장 보호를 화이트박스로 즉시
+ * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), Safe Zone 밖으로
+ * 텔레포트한다(`unlockProtectionAndSettle`의 대체 — 공용 헬퍼
+ * `tests/support/safe-zone.ts`에 위임하고, 이 파일의 `PlayerFields`(hp
+ * 포함) 반환 형태에 맞춰 hp를 채워 넣는다). */
+async function unlockProtectionAndSettle(seam: SafeZoneEscapeSeam, room: Room): Promise<PlayerFields> {
+  const baseline = await waitForDefinedPlayer(room, room.sessionId)
+  const escaped = { ...releaseSpawnProtectionAndEscape(seam, room.sessionId, baseline), hp: PLAYER.MAX_HP }
   await sleep(SETTLE_MS)
-  const settled = readPlayer(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
-  return settled
-}
-
-/** 자신에게 빗나가는 방향으로 한 발 쏴 최초 입장 스폰 보호를 즉시
- * 해제한 뒤, 이동해 자리를 잡는다(rq-13/rq-14 "REV" 패턴 재사용). */
-async function unlockProtectionAndSettle(room: Room): Promise<PlayerFields> {
-  room.send('fire', UP_MISS_AIM)
-  return travelAndSettle(room)
+  return escaped
 }
 
 function aimAtBody(shooter: { x: number; z: number }, target: { x: number; z: number }): { dirX: number; dirY: number; dirZ: number } {
@@ -304,9 +306,10 @@ describe('RQ-81/GA-22: 재접속(UUID 동일·닉네임 변경)에도 킬·데�
       const x1 = await joinGame(newClient(server), { nickname: 'victim1', uuid: randomUUID() })
       const y1 = await joinGame(newClient(server), { nickname: 'killer1', uuid: randomUUID() })
 
-      const a1Pos = await unlockProtectionAndSettle(a1)
-      const x1Pos = await unlockProtectionAndSettle(x1)
-      const y1Pos = await unlockProtectionAndSettle(y1)
+      const seam1 = getSafeZoneSeam(a1)
+      const a1Pos = await unlockProtectionAndSettle(seam1, a1)
+      const x1Pos = await unlockProtectionAndSettle(seam1, x1)
+      const y1Pos = await unlockProtectionAndSettle(seam1, y1)
       await waitForDefinedPlayer(x1, x1.sessionId)
       await waitForDefinedPlayer(y1, y1.sessionId)
 
@@ -332,9 +335,10 @@ describe('RQ-81/GA-22: 재접속(UUID 동일·닉네임 변경)에도 킬·데�
       const a2Nickname = await waitForNickname(a2, a2.sessionId)
       expect(a2Nickname).toBe('alice2')
 
-      const a2Pos = await unlockProtectionAndSettle(a2)
-      const x2Pos = await unlockProtectionAndSettle(x2)
-      const y2Pos = await unlockProtectionAndSettle(y2)
+      const seam2 = getSafeZoneSeam(a2)
+      const a2Pos = await unlockProtectionAndSettle(seam2, a2)
+      const x2Pos = await unlockProtectionAndSettle(seam2, x2)
+      const y2Pos = await unlockProtectionAndSettle(seam2, y2)
       await waitForDefinedPlayer(x2, x2.sessionId)
       await waitForDefinedPlayer(y2, y2.sessionId)
 

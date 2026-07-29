@@ -67,3 +67,40 @@ export function nextSpawnIndex(previousIndex: number | undefined, total: number)
   if (previousIndex === undefined) return 0
   return (previousIndex + 1) % total
 }
+
+/**
+ * RQ-31 Safe Zone — 좌표가 스폰 지점 중 **하나라도**의 반경 안에 있는지
+ * 판정하는 순수 함수(ADR-0008: 환경 중립, 결정론 — `Math.random()`·
+ * `Date.now()` 없음).
+ *
+ * **"스폰 지점" 해석(팀리드 지시, `_workspace/RQ-31/01_test-writer_red.md`
+ * §3.5)**: RQ-31 원문은 "자신의 마지막 스폰 지점"인지 "맵의 모든 스폰 지점
+ * 각각"인지 명시하지 않는다. 이 구현은 후자(맵 전체 `SPAWN_POINTS` 각각을
+ * 독립된 Safe Zone으로 본다)를 택했다 — 전자를 택하면 세션별로 "마지막
+ * 배정 스폰 지점"을 별도 상태로 추적해야 하는데(현재 그런 상태가 없다),
+ * 후자는 이 순수 함수 하나로 충분하다. Red 보고서 §3.3(반경-방사 기하
+ * 증명)이 두 해석 모두에서 테스트가 성립함을 이미 증명했으므로 이 선택이
+ * 테스트를 좌우하지 않는다.
+ *
+ * **수평(XZ) 거리만 본다**: `SPAWN_POINTS`는 전부 평지(y=0)이고, Safe
+ * Zone은 스폰 지점을 축으로 한 원통형 구역이라는 통상적 FPS 관례를
+ * 따른다 — 점프로 y가 살짝 뜬 것만으로 보호가 깜빡여서는 안 된다.
+ *
+ * **경계값**: "반경 안"은 `<=`(경계 포함)로 판정한다 — RQ-31 원문
+ * "반경을 벗어나면 즉시 해제"는 반경보다 **커진** 순간의 해제를 규정할 뿐,
+ * 반경과 정확히 같은 지점의 소속을 규정하지 않는다. 경계 자체(정확히
+ * 5.000...m)는 골든 케이스가 시험하지 않는 지점이라(GA-11/GA-19 둘 다
+ * ±0.5m 오프셋만 관측) 이 선택이 결과를 좌우하지 않는다.
+ */
+export function isWithinSafeZone(
+  position: { x: number; z: number },
+  spawnPoints: readonly SpawnPoint[] = SPAWN_POINTS,
+  radiusM: number = WORLD.SAFE_ZONE_RADIUS_M,
+): boolean {
+  for (const point of spawnPoints) {
+    const dx = position.x - point.x
+    const dz = position.z - point.z
+    if (Math.hypot(dx, dz) <= radiusM) return true
+  }
+  return false
+}

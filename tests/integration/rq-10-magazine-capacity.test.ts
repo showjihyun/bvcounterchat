@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-10 탄창 10발·예비 무한 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008:
@@ -60,6 +61,20 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * **제외**: 클라 탄약 HUD(RQ-53), 재장전 애니메이션·사운드, 리스폰 시
  * 탄창 초기화(스펙 침묵 — 이 파일은 리스폰이 개입하지 않는 시간대에서만
  * 관측한다).
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19, `86fddf1`) 이후 두 가지가 새로
+ * 필요해졌다. (1) B의 최초 입장 스폰 보호(RQ-16) 해제를 자기-사격
+ * (`UP_MISS_AIM`)이 아니라 `firedSinceSpawn` 화이트박스 직접 기입으로
+ * 한다 — B는 자기 스폰 지점(Safe Zone 내부, 거리 0)에 있으므로 그 자기
+ * 사격 자체가 이제 GA-19 게이트에 막힌다. (2) **A(이 파일의 실제
+ * 사수)도 자신의 스폰 지점(Safe Zone 내부)에 그대로 있으므로, A의 실제
+ * 조준 사격(양성 대조군·탄창 소모 루프 전부)도 A를 옮기지 않으면 똑같이
+ * 막힌다 — `tests/support/safe-zone.ts`(반경-방사(radial-outward) 기하,
+ * `rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명)의 공용 헬퍼로
+ * A를 자신의 스폰 지점 기준 방사 방향으로 화이트박스 텔레포트해 모든
+ * Safe Zone 밖으로 옮긴다(고정 방향(+X) 실이동은 15개 스폰 지점 중 4곳에서
+ * 다른 스폰 지점의 Safe Zone에 새로 들어가는 것이 실측돼 채택하지 않았다).
  */
 
 const ROOM_NAME = 'game'
@@ -77,7 +92,8 @@ const IMMEDIATE_RETRY_DELAY_MS = 300
 /** "명중하지 않는다"를 확인하는 관찰 창 — 여러 상태 갱신을 거치기 충분한
  * 여유(다른 통합 테스트의 NO_DAMAGE_OBSERVE_MS와 동일 패턴). */
 const BLOCKED_OBSERVE_MS = 400
-/** B의 최초 입장 스폰 보호를 스스로 해제하는 사격이 반영될 시간. */
+/** RQ-31 회귀 대응 — A의 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SELF_FIRE_SETTLE_MS = 300
 /** 재장전(WEAPON.RELOAD_MS=2000ms) 완료를 확실히 넘기는 여유(스케줄링
  * 지터 흡수, `rq-16` PROTECTION_EXPIRE_WAIT_MS 산정과 동일 정신). */
@@ -218,10 +234,17 @@ describe('RQ-10/GA-03: 탄창 10발 소진 후에도 영구 사격 불가 상태
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-        roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제(RQ-16)
+        // RQ-31 회귀 대응(파일 상단 REV) — B의 RQ-16 해제는 화이트박스로
+        // (자기 사격은 B 자신의 Safe Zone에 막힐 수 있다). A(사수)·B(피격자)
+        // 둘 다 Safe Zone 밖으로 옮긴다 — A가 남아 있으면 GA-19가 사격
+        // 자체를 막고, B가 남아 있으면 RQ-16과 무관하게 GA-11(위치 기반
+        // 피해 무효화)이 계속 피해를 무효화한다.
+        const safeZoneSeam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(safeZoneSeam, roomA.sessionId, baselineA)
+        const escapedB = releaseSpawnProtectionAndEscape(safeZoneSeam, roomB.sessionId, baselineB)
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        const aim = aimAtBody(baselineA, baselineB)
+        const aim = aimAtBody(escapedA, escapedB)
 
         // 양성 대조군 1(공허화 방지) — 탄창을 비우기 전, 이 조준 벡터가
         // 실제로 명중함을 먼저 고정한다(탄약 10 → 9).

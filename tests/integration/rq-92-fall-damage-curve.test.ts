@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { FALL_DAMAGE, PLAYER } from '@shared/constants'
+import { releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-92 낙하 데미지 곡선 — 안전 높이 경계(포함)와 중간 초과값 통합 테스트
@@ -88,6 +89,27 @@ import { FALL_DAMAGE, PLAYER } from '@shared/constants'
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존한다
  * (ADR-0008 허용 예외 — 기존 RQ-15/16/18/61 통합 테스트와 동일). 모든
  * 대기에 상한을 강제한다.
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19, `86fddf1`) 이후 위 "자기 사격
+ * 워밍업"이 자신의 스폰 지점(Safe Zone 내부)에서 나가 GA-19에 막힐 수
+ * 있다 — 화이트박스(`FallDamageTestSeam.firedSinceSpawn`)로 대체했다.
+ * **이 시점에는** `trackFallDamage`가 Safe Zone에 합류되지 않아(coder
+ * 결정) 위치는 건드릴 필요가 없었다 — 아래 REV2가 그 전제를 뒤집는다.
+ *
+ * **REV2(Safe Zone·낙하 데미지 합류, 사용자 결정 2026-07-28, 커밋
+ * `f028736`)**: RQ-16("모든 피해" 무효화)과의 자기모순을 없애기 위해
+ * `trackFallDamage`도 `handleFire`와 동일한 OR 합성(RQ-16 시간 보호 OR
+ * RQ-31 위치 보호, 착지 시점 `moveStates` 기준)에 합류했다(상세 근거는
+ * `rq-18-fall-damage.test.ts` 파일 상단 REV6 참고 — 같은 결정, 같은
+ * 근거). 이 파일의 두 케이스 모두 위치를 옮기지 않아, 5m 케이스(초과분
+ * 20 데미지 기대)가 회귀했다 — `tests/support/safe-zone.ts`의
+ * `releaseSpawnProtectionAndEscape`로 점프 **전**(접지 상태, `fallPeakY`
+ * 주입·`jump:true` 전송 이전)에 Safe Zone 밖으로 옮겨 해결한다. 3m
+ * 경계 케이스는 기대 데미지가 원래 0이라 이 회귀와 무관하게 계속
+ * 통과하지만, "Safe Zone이라 무피해"와 "경계값이라 무피해"가 구분되지
+ * 않는 공허화가 생기므로 같은 탈출을 추가해 강화한다(`rq-18`의 GA-44와
+ * 동일 논리) — 단언(`PLAYER.MAX_HP`)은 그대로다.
  */
 
 const ROOM_NAME = 'game'
@@ -96,9 +118,6 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const SNAPSHOT_TIMEOUT_MS = 5_000
-/** 자기 사격(스폰 보호 해제)이 서버에 반영될 시간 — 기존 RQ-15/16/18
- * 파일들과 동일한 값·동일한 근거. */
-const SELF_FIRE_SETTLE_MS = 300
 /** 착지(y가 0으로 복귀) 관측 상한 — `rq-18-fall-damage.test.ts`
  * `LANDING_OBSERVE_TIMEOUT_MS`와 동일 값·동일 근거(실측: g=20에서
  * 약 632ms 소요, 넉넉한 여유). */
@@ -252,15 +271,13 @@ function waitForPlayerCondition(
   )
 }
 
-/** 항상 빗나가는 방향(수직 위) — 자기 자신을 쏘면 최초 입장 스폰 보호가
- * 즉시 해제된다(RQ-16). 기존 RQ-15/16/18 파일들과 동일 상수. */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
-
-/** 화이트박스 접근 대상 계약 — `fallPeakY`·`moveStates` 둘 다
- * `rq-18-fall-damage.test.ts`가 이미 확립한 기존 필드다(신규 계약 아님). */
-interface FallDamageTestSeam {
+/** 화이트박스 접근 대상 계약 — `fallPeakY`는 `rq-18-fall-damage.test.ts`가
+ * 이미 확립한 기존 필드다(신규 계약 아님). `moveStates`·`positionHistory`·
+ * `firedSinceSpawn`은 `tests/support/safe-zone.ts`의 `SafeZoneEscapeSeam`을
+ * 상속해 얻는다(REV2, 파일 상단 참고 — 낙하 데미지도 Safe Zone에 합류해
+ * 이 파일도 `escapeSafeZone`이 필요해졌다). */
+interface FallDamageTestSeam extends SafeZoneEscapeSeam {
   fallPeakY: Map<string, number>
-  moveStates: Map<string, { grounded: boolean }>
 }
 
 function getServerRoom(room: Room): FallDamageTestSeam {
@@ -363,8 +380,12 @@ describe('RQ-92/GA-25: 낙하 데미지 곡선 — 안전 높이 경계(3m, 포�
         const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
         expect(baseline.hp).toBe(PLAYER.MAX_HP)
 
-        room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
-        await sleep(SELF_FIRE_SETTLE_MS)
+        // RQ-31 회귀 대응(REV2) — RQ-16 해제 + Safe Zone 탈출을 한 호출로
+        // 묶는다. 점프 전(접지 상태, 아래 fallPeakY 주입·jump 전송보다
+        // 먼저)에 반드시 해야 한다 — escapeSafeZone이 moveStates.set으로
+        // 위치·속도·grounded를 덮어쓰므로, 이미 공중에 있을 때 부르면
+        // 낙하 물리가 리셋된다(파일 상단 REV2 참고).
+        releaseSpawnProtectionAndEscape(getServerRoom(room), room.sessionId, baseline)
 
         // `SAFE_BOUNDARY_PEAK_M`은 리터럴 3(위 상수 docblock, 평가 minor 1
         // 수정) — `3 === 3`류 항진 단언은 없다. 검출력은 아래 행위 단언
@@ -389,8 +410,10 @@ describe('RQ-92/GA-25: 낙하 데미지 곡선 — 안전 높이 경계(3m, 포�
         const baseline = await waitForPlayerCondition(room, room.sessionId, () => true, '초기 스냅샷', SNAPSHOT_TIMEOUT_MS)
         expect(baseline.hp).toBe(PLAYER.MAX_HP)
 
-        room.send('fire', UP_MISS_AIM) // 최초 입장 스폰 보호(RQ-16) 즉시 해제
-        await sleep(SELF_FIRE_SETTLE_MS)
+        // RQ-31 회귀 대응(REV2) — RQ-16 해제 + Safe Zone 탈출을 한 호출로
+        // 묶는다. 점프 전(접지 상태)에 반드시 해야 한다(파일 상단 REV2
+        // 참고).
+        releaseSpawnProtectionAndEscape(getServerRoom(room), room.sessionId, baseline)
 
         const afterLanding = await jumpAndObserveLanding(room, MID_OVERRIDE_PEAK_M)
 

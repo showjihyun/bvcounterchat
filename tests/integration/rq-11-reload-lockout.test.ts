@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-11 재장전(요청 시 또는 탄창 0 시 2초, 재장전 중 사격 불가) — 서버
@@ -68,6 +69,15 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * then("2초 경과 후에는 정상적으로 사격 가능하다")과 어긋난다. 아래
  * describe (a)에 회귀 가드 `it()` 1건을 순증한다(ADR-0011 §3, 기존 단언
  * 무변경) — 리뷰가 권고한 위치·문구 그대로.
+ *
+ * **REV3(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 A(사수)·
+ * B(피격자) 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면
+ * (1) GA-19가 A의 사격 자체를 막고 (2) B가 Safe Zone 안에 있으면 RQ-16과
+ * 무관하게 GA-11(위치 기반 피해 무효화)이 계속 피해를 무효화한다. 세
+ * `it()` 전부 시작할 때 A·B 둘 다 화이트박스로 Safe Zone 밖으로 옮기고
+ * (반경-방사 기하, `rq-31-safe-zone.test.ts` 참고), B의 RQ-16 해제도 자기
+ * 사격 대신 화이트박스(`firedSinceSpawn`)로 한다.
  */
 
 const ROOM_NAME = 'game'
@@ -84,7 +94,8 @@ const BETWEEN_SHOTS_MS = 300
 const IMMEDIATE_RETRY_DELAY_MS = 300
 /** "명중하지 않는다"를 확인하는 관찰 창. */
 const BLOCKED_OBSERVE_MS = 400
-/** B의 최초 입장 스폰 보호를 스스로 해제하는 사격이 반영될 시간. */
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SELF_FIRE_SETTLE_MS = 300
 /** 명시적 `'reload'` 메시지가 서버에 반영될 시간(로컬 WS라 짧아도 충분하나
  * 여유를 둔다). */
@@ -224,6 +235,7 @@ function aimAtBody(
  * 않는다. */
 const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
+
 describe('RQ-11/GA-04 (a): 명시적 재장전 요청 — 탄창이 남아 있어도 요청만으로 잠기고, 2초 후 정상 사격', () => {
   let server: RunningServer
 
@@ -246,10 +258,14 @@ describe('RQ-11/GA-04 (a): 명시적 재장전 요청 — 탄창이 남아 있�
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-        roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제(RQ-16)
+        // RQ-31 회귀 대응(파일 상단 REV3) — A·B 둘 다 Safe Zone 밖으로
+        // 옮기고, B의 RQ-16 해제는 화이트박스로 한다.
+        const safeZoneSeam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(safeZoneSeam, roomA.sessionId, baselineA)
+        const escapedB = releaseSpawnProtectionAndEscape(safeZoneSeam, roomB.sessionId, baselineB)
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        const aim = aimAtBody(baselineA, baselineB)
+        const aim = aimAtBody(escapedA, escapedB)
 
         // 양성 대조군 1(공허화 방지) — 재장전을 요청하기 전, 이 조준
         // 벡터가 실제로 명중함을 먼저 고정한다(탄창 10 → 9, 아직 가득 차
@@ -319,10 +335,14 @@ describe('RQ-11/GA-04 (a): 명시적 재장전 요청 — 탄창이 남아 있�
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-        roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제(RQ-16)
+        // RQ-31 회귀 대응(파일 상단 REV3) — A·B 둘 다 Safe Zone 밖으로
+        // 옮기고, B의 RQ-16 해제는 화이트박스로 한다.
+        const safeZoneSeam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(safeZoneSeam, roomA.sessionId, baselineA)
+        const escapedB = releaseSpawnProtectionAndEscape(safeZoneSeam, roomB.sessionId, baselineB)
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        const aim = aimAtBody(baselineA, baselineB)
+        const aim = aimAtBody(escapedA, escapedB)
 
         // 양성 대조군(공허화 방지) — 재장전 스팸을 시작하기 전, 이 조준
         // 벡터가 실제로 명중함을 먼저 고정한다.
@@ -402,10 +422,14 @@ describe('RQ-11/GA-04 (b): 탄창이 0이 되면 요청 없이도 자동으로 �
         const baselineB = await waitForPlayerCondition(roomB, roomB.sessionId, () => true, 'B 초기 스냅샷', HP_TIMEOUT_MS)
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-        roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제(RQ-16)
+        // RQ-31 회귀 대응(파일 상단 REV3) — A·B 둘 다 Safe Zone 밖으로
+        // 옮기고, B의 RQ-16 해제는 화이트박스로 한다.
+        const safeZoneSeam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(safeZoneSeam, roomA.sessionId, baselineA)
+        const escapedB = releaseSpawnProtectionAndEscape(safeZoneSeam, roomB.sessionId, baselineB)
         await sleep(SELF_FIRE_SETTLE_MS)
 
-        const aim = aimAtBody(baselineA, baselineB)
+        const aim = aimAtBody(escapedA, escapedB)
 
         // 양성 대조군 1(공허화 방지) — 탄창을 비우기 전, 이 조준 벡터가
         // 실제로 명중함을 먼저 고정한다(탄약 10 → 9).

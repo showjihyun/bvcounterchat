@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { MOVEMENT, NET, PLAYER, WEAPON, WORLD } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * 시신은 총알을 막지 않는다 — 서버 판정 로직(ADR-0011: `src/shared`·서버
@@ -91,6 +92,26 @@ import { MOVEMENT, NET, PLAYER, WEAPON, WORLD } from '@shared/constants'
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트)에 의존(ADR-0008
  * 허용 예외). 이동 목표·시간은 순수 산술로 계산하고(난수 없음), 모든
  * 대기에 `withTimeout()` 상한을 건다.
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 A·B·C 셋
+ * 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면 (1) GA-19가
+ * A의 사격 자체를 막고 (2) B·C가 Safe Zone 안에 있으면 RQ-16과 무관하게
+ * GA-11(위치 기반 피해 무효화)이 계속 피해를 무효화한다. B·C의 RQ-16
+ * 해제는 자기 사격 대신 화이트박스(`firedSinceSpawn`)로 하고, A·B·C
+ * 셋 다 각자의 스폰 지점 기준 방사 방향(`rq-31-safe-zone.test.ts` §반경
+ * -방사 기하)으로 화이트박스 텔레포트해 Safe Zone 밖으로 옮긴다 — 이후
+ * 모든 기하 계산(직선 정렬·수직 거리·조준)은 이 탈출 후 위치를 새
+ * 기준으로 삼는다(원래 스폰 좌표와의 상대 관계가 아니라, 탈출 후 좌표
+ * 자체가 이 파일의 "A·B·C 위치"가 된다 — 테스트 수학이 좌표를
+ * 하드코딩하지 않고 실측값에서 유도하므로 이 치환은 안전하다).
+ * **탈출 오프셋은 다른 파일보다 작게(반경+0.5m=5.5m)** 잡았다 — 이 파일은
+ * C를 A→B 연장선을 따라 **월드 경계 근처**까지 보내는 `maxDistanceWithinBounds`
+ * 계산에 의존하는데, 다른 파일의 큰 오프셋(반경+15m=20m)을 그대로 쓰면
+ * A·B가 스폰 반지름(≈22m)에서 더 밀려나 60×60 월드 경계(절반 30m)를
+ * 벗어날 위험이 있다. 5.5m 오프셋도 §반경-방사 기하의 실측 확인 범위
+ * (0~20m) 안이라 다른 스폰 지점의 Safe Zone에 새로 들어가지 않음은
+ * 동일하게 보장된다.
  */
 
 const ROOM_NAME = 'game'
@@ -103,8 +124,14 @@ const HP_TIMEOUT_MS = 5_000
 const BETWEEN_SHOTS_MS = 300
 /** 이동 정지 후 위치가 안정화될 때까지 기다리는 여유(수 틱, 33ms×n). */
 const SETTLE_MS = 200
-/** 보호 해제 사격이 서버에 반영될 시간(로컬 WS라 짧아도 충분하나 여유를 둔다). */
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const RELEASE_PROTECTION_SETTLE_MS = 300
+/** RQ-31 회귀 대응 — Safe Zone 탈출 오프셋. 이 파일은 C를 월드 경계
+ * 근처까지 보내는 계산에 의존하므로(파일 상단 REV 참고) 다른 파일의
+ * 오프셋(반경+15m)보다 작게(반경+0.5m) 잡아 A·B가 월드 경계를 넘지 않게
+ * 한다. */
+const SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 0.5
 /** C를 A→B 연장선 위로 보낼 때, 월드 경계까지 계산한 최대 거리에 곱하는
  * 안전 계수 — 부동소수점 경계·근사 오차로 경계를 넘지 않도록 여유를 둔다. */
 const FAR_TARGET_SAFETY_FACTOR = 0.9
@@ -200,10 +227,6 @@ function waitForPlayerCondition(
   )
 }
 
-/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
- * 위치와 무관하게 안전하다. 자기 자신을 쏘면 최초 입장 스폰 보호가 즉시
- * 해제된다(RQ-16). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 /** shooter(발 위치)에서 target(발 위치)의 바디 중심을 정확히 조준하는
  * 방향 벡터(정규화) — 다른 RQ-15/16 파일들과 동일한 일반형 패턴. */
@@ -218,6 +241,7 @@ function aimAtBody(
   const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
+
 
 interface Vec2 {
   x: number
@@ -374,16 +398,20 @@ describe('시신은 총알을 막지 않는다 (리뷰 minor-3, 사용자 결정
         expect(baselineB.hp).toBe(PLAYER.MAX_HP)
         expect(baselineC.hp).toBe(PLAYER.MAX_HP)
 
-        // B·C 둘 다 최초 입장 스폰 보호(RQ-16 item C)를 스스로 해제한다 —
-        // B는 곧 죽어야 하고, C는 곧 피해를 받아야 한다.
-        roomB.send('fire', UP_MISS_AIM)
-        roomC.send('fire', UP_MISS_AIM)
+        // RQ-31 회귀 대응(파일 상단 REV) — B·C의 RQ-16 해제는 화이트박스로
+        // 한다(자기 사격은 각자의 Safe Zone에 막힐 수 있다). A·B·C 셋 다
+        // Safe Zone 밖으로 옮긴다 — 이후 모든 기하 계산은 이 탈출 후
+        // 위치를 새 기준으로 삼는다(파일 상단 REV 근거).
+        const seam = getSafeZoneSeam(roomA)
+        const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA, SAFE_ZONE_ESCAPE_OFFSET_M)
+        const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB, SAFE_ZONE_ESCAPE_OFFSET_M)
+        const escapedC = releaseSpawnProtectionAndEscape(seam, roomC.sessionId, baselineC, SAFE_ZONE_ESCAPE_OFFSET_M)
         await sleep(RELEASE_PROTECTION_SETTLE_MS)
 
-        // 음성 대조군(1/2) — C의 **원래** 스폰 위치를 조준해 "장애물 없는
-        // 기준 피해량"을 확보한다(B는 애초에 움직이지 않으므로 이 사격과
-        // 무관 — 일반적으로 A-C 직선과 겹치지 않는다).
-        const aimAtOriginalC = aimAtBody(baselineA, baselineC)
+        // 음성 대조군(1/2) — C의 **탈출 후** 위치를 조준해 "장애물 없는
+        // 기준 피해량"을 확보한다(B는 애초에 다시 움직이지 않으므로 이
+        // 사격과 무관 — 일반적으로 A-C 직선과 겹치지 않는다).
+        const aimAtOriginalC = aimAtBody(escapedA, escapedC)
         roomA.send('fire', aimAtOriginalC)
         const cAfterBaselineShot = await waitForPlayerCondition(
           roomC,
@@ -395,23 +423,24 @@ describe('시신은 총알을 막지 않는다 (리뷰 minor-3, 사용자 결정
         expect(baselineDamage).toBe(WEAPON.DAMAGE_BODY) // 전제 확인 — 바디 명중
 
         // C를 A→B 방향의 연장선을 따라 월드 경계 근처까지 이동시킨다
-        // (파일 상단 "기하 설계" 절 — 오차 증폭 방지). B는 움직이지 않는다.
-        const dirAB = normalize2(sub2(baselineB, baselineA))
-        const maxDist = maxDistanceWithinBounds(baselineA, dirAB, WORLD.SIZE_M / 2)
-        const farTargetForC = add2(baselineA, scale2(dirAB, maxDist * FAR_TARGET_SAFETY_FACTOR))
+        // (파일 상단 "기하 설계" 절 — 오차 증폭 방지). B는 탈출 이후 다시
+        // 움직이지 않는다.
+        const dirAB = normalize2(sub2(escapedB, escapedA))
+        const maxDist = maxDistanceWithinBounds(escapedA, dirAB, WORLD.SIZE_M / 2)
+        const farTargetForC = add2(escapedA, scale2(dirAB, maxDist * FAR_TARGET_SAFETY_FACTOR))
         const cAligned = await moveToward(roomC, cAfterBaselineShot, farTargetForC)
 
-        // 기하 검증 — B(움직이지 않음, 실측 좌표 그대로)가 A-C(정렬 후)
-        // 직선에서 벗어난 수직 거리가 바디 히트박스 반지름
+        // 기하 검증 — B(탈출 이후 다시 움직이지 않음, 실측 좌표 그대로)가
+        // A-C(정렬 후) 직선에서 벗어난 수직 거리가 바디 히트박스 반지름
         // (`DEFAULT_HITBOX.bodyRadiusM`) 안에 있는지 직접 계산해 확인한다
         // — "정렬이 우연이 아니라 기하학적으로 보장된다"는 설계 근거를
         // 실행 시점에 재확인한다.
-        const perpDist = perpendicularDistanceToLine(baselineB, baselineA, cAligned)
+        const perpDist = perpendicularDistanceToLine(escapedB, escapedA, cAligned)
         expect(perpDist).toBeLessThan(DEFAULT_HITBOX.bodyRadiusM) // B가 실제로 A-C 직선에 충분히 가깝다
 
-        // B를 사망시킨다 — B는 움직이지 않았으므로 최초 스냅샷(baselineB)
-        // 좌표가 곧 사망 시점 좌표다(오차 없음).
-        const aimAtB = aimAtBody(baselineA, baselineB)
+        // B를 사망시킨다 — B는 탈출 이후 움직이지 않았으므로 탈출 후
+        // 스냅샷(escapedB) 좌표가 곧 사망 시점 좌표다(오차 없음).
+        const aimAtB = aimAtBody(escapedA, escapedB)
         await killPlayer(roomA, roomB, baselineB.hp, aimAtB)
 
         // rate-limit(ADR-0005, 150ms) 여유 — killPlayer의 마지막(사망 확정)
@@ -428,7 +457,7 @@ describe('시신은 총알을 막지 않는다 (리뷰 minor-3, 사용자 결정
         // 아래 단언이 실패한다(Red). 시신이 후보에서 제외되면 C가
         // baselineDamage와 정확히 같은 피해를(시신 유무와 무관하게
         // 동일하게) 다시 입는다.
-        const aimAtAlignedC = aimAtBody(baselineA, cAligned)
+        const aimAtAlignedC = aimAtBody(escapedA, cAligned)
         roomA.send('fire', aimAtAlignedC)
         const cAfterCorpseShot = await waitForPlayerCondition(
           roomC,

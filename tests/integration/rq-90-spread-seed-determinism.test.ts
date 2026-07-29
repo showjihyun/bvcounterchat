@@ -8,6 +8,7 @@ import { createRng } from '@shared/sim/rng'
 import { type PositionSnapshot } from '@shared/sim/rewind'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-90 탄퍼짐(랜덤 콘) — **시드 결정론** 통합 테스트 (ADR-0008: Colyseus
@@ -220,6 +221,18 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 읽는다(그 자체가 확인 대상이라 이벤트 기반 대기가 부적합 — `rq-12`의
  * "무관한 방향" 테스트와 동일한 필요성). 오프라인 오라클(`classifySpreadSeed`)
  * 은 순수 산술이라 실행마다 항상 같은 답을 낸다(플레이키 아님).
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 사수·피격자
+ * 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면 (1) GA-19가
+ * 사수의 사격 자체를 막고 (2) 피격자가 Safe Zone 안에 있으면 RQ-16과
+ * 무관하게 GA-11이 계속 피해를 무효화한다. 피격자의 RQ-16 해제는 자기
+ * 사격 대신 화이트박스(`firedSinceSpawn`)로 하고, 기존 `teleportPlayer`를
+ * 재사용하는 `escapeSafeZone` 헬퍼로 두 세션 다 각자의 스폰 지점 기준
+ * 방사 방향(`rq-31-safe-zone.test.ts` §반경-방사 기하)으로 Safe Zone
+ * 밖으로 옮긴다. "정규화되지 않은 조준 벡터" 재현 테스트는 B를 A(탈출
+ * 후 위치) 기준 상대 좌표로 재배치하므로 A만 탈출시키면 B도 자연히
+ * Safe Zone 밖이 된다(둘 다 원점에서 스폰 반경보다 훨씬 먼 지점에 놓인다).
  */
 
 const ROOM_NAME = 'game'
@@ -232,11 +245,6 @@ const HP_TIMEOUT_MS = 5_000
 /** 연속 사격 사이 여유(ADR-0005 rate-limit 150ms + 네트워크 왕복 여유를
  * 모두 흡수) — "빗나감" 확인의 정착 대기로도 재사용한다. */
 const SHOT_GAP_MS = 400
-
-/** GA-06/GA-08/`rq-12`와 동일한 근거로 기하학적으로 항상 빗나가는 방향
- * (수직 위) — B가 자기 자신의 최초 입장 스폰 보호를 즉시 해제하는 용도로만
- * 쓴다(RQ-16 "사격하면 즉시 해제"). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 /** 콘 반경 = (바디 반지름의 각반경) × 이 배율 — 테스트 전용 파라미터(밸런싱
  * 값 아님). 스크래치 검증(파일 상단 "오프라인 오라클" 참고)으로 2~5 배율
@@ -487,7 +495,7 @@ function findSeedWithBucket(
  * 우연히 만들 수 없는 정확한 퇴화 기하(사수·피격자가 같은 z, 같은 높이)를
  * 직접 배치하는 데 함께 쓴다 — 둘 다 갱신해야 하는 이유는 아래
  * `teleportPlayer` 코멘트 참고. */
-interface SpreadTestSeam {
+interface SpreadTestSeam extends SafeZoneEscapeSeam<PositionSnapshot> {
   spreadTuningOverride?: { coneRadiusRad: number }
   // `| undefined`를 명시한다(단순 `?:`가 아니라) — `exactOptionalPropertyTypes`
   // 아래서는 `seam.forcedSpreadSeed = undefined`(22z4 회수, 명시 초기화)가
@@ -496,8 +504,6 @@ interface SpreadTestSeam {
   // 옵셔널이 아니라 이 유니언 형태다.
   forcedSpreadSeed?: number | undefined
   magazines: Map<string, number>
-  moveStates: Map<string, { x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean }>
-  positionHistory: Map<string, PositionSnapshot[]>
 }
 
 /** `matchMaker.getLocalRoomById`(`rq-18-fall-damage.test.ts`가 확립한 기법)로
@@ -577,6 +583,23 @@ function teleportPlayer(seam: SpreadTestSeam, sessionId: string, position: { x: 
   seam.positionHistory.delete(sessionId)
 }
 
+/** RQ-31 Safe Zone 회귀 대응 — 세션을 자신의 현재 위치 기준 방사
+ * 방향(원점→현재 위치)으로 밀어내 모든 Safe Zone 밖으로 옮긴다. 좌표
+ * 수학은 `tests/support/safe-zone.ts`의 `computeRadialEscape`에 위임하고
+ * (`rq-31-safe-zone.test.ts` §반경-방사 기하와 동일 증명 — 15개 스폰
+ * 지점×오프셋 0~20m 전수 확인됨), 화이트박스 쓰기는 이 파일의 기존
+ * `teleportPlayer`(위 REV 코멘트 — `moveStates`+`positionHistory` 원자적
+ * 갱신 이력)를 그대로 재사용한다. */
+function escapeSafeZone(
+  seam: SpreadTestSeam,
+  sessionId: string,
+  base: { x: number; z: number },
+): { x: number; y: number; z: number } {
+  const escaped = computeRadialEscape(base)
+  teleportPlayer(seam, sessionId, escaped)
+  return escaped
+}
+
 /**
  * F1 수정(평가 blocker, `_workspace/RQ-90/04_evaluator_report.md` §4) —
  * 서로 다른 시드 12개를 이 고정 순서로 쏘고(그 다음 같은 열을 한 번 더
@@ -609,6 +632,38 @@ function teleportPlayer(seam: SpreadTestSeam, sessionId: string, position: { x: 
  * 변이 검출에 기여하지 않는다 — 검출은 뒤따르는 11개의 miss 시드가 맡는다.
  */
 const F1_SEED_SEQUENCE: readonly number[] = [1, 2, 4, 5, 9, 10, 13, 17, 18, 26, 43, 44]
+
+/** **결합 주의(원장 22y, 리뷰 major 5)**: 위 시드 열은 A·B 사이 실제
+ * `distance`(→ `coneRadiusRad = atan(bodyRadiusM/distance)*
+ * SPREAD_CONE_MULTIPLIER`)에 대해 "정확히 1개 body·11개 miss"가 성립하도록
+ * 골랐다. RQ-31 회귀 대응(`escapeSafeZone`, 이 파일 위쪽)이 A·B를 각자의
+ * 스폰 지점 기준 `tests/support/safe-zone.ts`의
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`만큼 방사 방향으로 밀어내므로, 그 값이
+ * 바뀌면 `distance`가 바뀌고 `coneRadiusRad`도 따라 바뀐다 — **이 시드
+ * 열의 전제가 조용히 깨질 수 있다는 뜻**이다(원장 22y가 이미
+ * `SPAWN_POINTS`·스폰 기하 변경을 트리거로 등재해 뒀다 — 이 오프셋도 같은
+ * 트리거에 속한다).
+ *
+ * **가드의 보호 범위 — 실측(원장 25f 2차 델타 재평가 MI-A)**: 아래
+ * `fireOracleSequenceAndAssert` 호출부의 전제 가드는 분류 결과가 "정확히
+ * 1개 body"가 아니면 던진다. 다만 **이 오프셋에 대해서는 사실상 발화하지
+ * 않는다** — 평가자가 오프셋 0~200m 전 구간을 스윕한 결과 분류가 **완전히
+ * 불변**이었다(항상 시드 1만 body + 11 miss, 가드 발화 0건). 구조적 이유가
+ * 있다: `coneRadiusRad = atan(bodyRadiusM / distance) × 3`이라 **콘 반경과
+ * 표적의 각 크기가 같은 항에서 나와 비율이 항상 정확히 3으로 고정**된다
+ * (각 크기 자체는 거리에 **반비례**한다 — 9.3m에서 0.03236rad, 93.2m에서
+ * 0.00322rad. 불변인 것은 비율이지 각 크기가 아니다).
+ *
+ * **⚠️ 이 불변은 오프셋 축에만 성립한다.** 스폰 **조합**은 여전히 취약하다 —
+ * 리뷰어 실측으로 210쌍 중 **68쌍(32%)에서 가드가 발화**한다. `SPAWN_POINTS`가
+ * 바뀌면 이 시드 열은 재선정이 필요할 수 있다(원장 22y).
+ *
+ * 그리고 가드는 body **개수**만 본다 — **어느 시드가 body인지**도,
+ * 1드로 전진에서 뒤집히는 6개 시드의 성질도 보지 않는다. 즉 이 가드를
+ * "오프셋 변경이 조용히 통과하지 못한다"의 보장으로 읽지 마라.
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`이나 `SPAWN_POINTS`를 바꾸는 PR은
+ * **가드에 기대지 말고** 시드 열의 검출력을 직접 재확인해야 한다
+ * (`tests/support/safe-zone.ts`의 같은 상수 코멘트도 참고). */
 
 /**
  * `F1_SEED_SEQUENCE`를 고정 순서로 한 번(pass) 쏘고, 매 발의 관측 버킷이
@@ -675,20 +730,25 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      // RQ-16: B 자신의 최초 입장 스폰 보호를 즉시 해제(`rq-12`와 동일 패턴)
-      // — 해제하지 않으면 아래 사격이 전부 무효화되어 스프레드 여부와
-      // 무관하게 hp가 그대로일 것이다(공허함의 또 다른 경로).
-      roomB.send('fire', UP_MISS_AIM)
+      // RQ-31 회귀 대응(파일 상단 REV) — B의 RQ-16 해제는 화이트박스로
+      // (자기 사격은 자신의 Safe Zone에 막힐 수 있다). A·B 둘 다 Safe
+      // Zone 밖으로 옮긴다 — 그러지 않으면 A의 사격 자체가 GA-19에 막히고
+      // (사수 고정), B가 Safe Zone 안에 있으면 RQ-16과 무관하게 GA-11이
+      // 계속 피해를 무효화한다(피격자 고정). 이후 모든 기하 계산(원점·
+      // 조준·거리·콘 반경)은 이 탈출 후 위치를 기준으로 한다.
+      const seam = getServerRoom(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
       await sleep(SHOT_GAP_MS)
 
-      const origin = eyeOrigin({ x: baselineA.x, y: baselineA.y, z: baselineA.z }, DEFAULT_HITBOX.eyeHeightM)
-      const targetFoot: Vec3 = { x: baselineB.x, y: baselineB.y, z: baselineB.z }
-      const { aim, distance } = aimAtBodyWithDistance(baselineA, baselineB)
+      const origin = eyeOrigin({ x: escapedA.x, y: escapedA.y, z: escapedA.z }, DEFAULT_HITBOX.eyeHeightM)
+      const targetFoot: Vec3 = { x: escapedB.x, y: escapedB.y, z: escapedB.z }
+      const { aim, distance } = aimAtBodyWithDistance(escapedA, escapedB)
 
       const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
       const seedMiss = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', SEARCH_LIMIT)
 
-      const seam = getServerRoom(roomA)
       seam.spreadTuningOverride = { coneRadiusRad }
       // F1 수정 — 오라클 열이 A에게 26발(12*2 + (B) 1 + (C) 1)을 요구한다.
       // RQ-10/11(탄창 10발·재장전 2초)이 이 파일의 관심사를 가리지 않도록
@@ -781,11 +841,17 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      // RQ-16: B 자신의 최초 입장 스폰 보호를 즉시 해제.
-      roomB.send('fire', UP_MISS_AIM)
+      // RQ-31 회귀 대응(파일 상단 REV) — B의 RQ-16 해제는 화이트박스로.
+      // A는 Safe Zone 밖으로 옮긴다(그러지 않으면 A의 사격 자체가 GA-19에
+      // 막힌다) — 아래 (1)에서 B를 A 기준 상대 위치에 재배치하므로, A를
+      // 먼저 옮기면 B도 자동으로 스폰 지점들에서 멀어져 Safe Zone 밖이
+      // 된다(둘 다 원점에서 ~42m 근방 — 15개 스폰 지점은 전부 ~22m 반경
+      // 안에 있어 여유가 크다).
+      const seam = getServerRoom(roomA)
+      seam.firedSinceSpawn.set(roomB.sessionId, true)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
       await sleep(SHOT_GAP_MS)
 
-      const seam = getServerRoom(roomA)
       // 이 `it()`은 이전 `it()`이 룸에 남긴 상태(`spreadTuningOverride`·
       // `forcedSpreadSeed`)에 기대지 않는다 — 자기 완결적으로 명시한다
       // (22z4 회수, 재리뷰 minor N-3: 이전 버전은 `forcedSpreadSeed`를
@@ -794,20 +860,20 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       seam.spreadTuningOverride = { coneRadiusRad: 0 } // (1)은 출하 기본값(반경 0)에서도 재현된다.
       seam.forcedSpreadSeed = undefined // 22z4 — 이전 `it()`의 값을 물려받지 않도록 명시 초기화(이후 각 발 앞에서 다시 확정한다)
 
-      // --- (1) NaN 회귀 — 화이트박스로 B를 A와 정확히 같은 z·같은 높이,
-      // +X로 `DEGENERATE_DISTANCE`만큼 떨어진 지점에 배치한다(자연 스폰
-      // 좌표는 이 정확한 퇴화 조건을 우연히 만족하지 않는다). `teleportPlayer`
-      // 가 `moveStates`와 `positionHistory`(RQ-64 되감기 버퍼)를 함께
-      // 갱신하므로(코멘트 참고) `handleFire`의 대상 포즈 조회가 텔레포트
-      // 이전의 stale 스냅샷이 아니라 방금 세팅한 위치를 즉시 쓴다 — 틱
-      // 경과를 기다릴 필요가 없다.
-      teleportPlayer(seam, roomB.sessionId, { x: baselineA.x + DEGENERATE_DISTANCE, y: baselineA.y, z: baselineA.z })
+      // --- (1) NaN 회귀 — 화이트박스로 B를 A(탈출 후 위치)와 정확히 같은
+      // z·같은 높이, +X로 `DEGENERATE_DISTANCE`만큼 떨어진 지점에 배치한다
+      // (자연 스폰 좌표는 이 정확한 퇴화 조건을 우연히 만족하지 않는다).
+      // `teleportPlayer`가 `moveStates`와 `positionHistory`(RQ-64 되감기
+      // 버퍼)를 함께 갱신하므로(코멘트 참고) `handleFire`의 대상 포즈
+      // 조회가 텔레포트 이전의 stale 스냅샷이 아니라 방금 세팅한 위치를
+      // 즉시 쓴다 — 틱 경과를 기다릴 필요가 없다.
+      teleportPlayer(seam, roomB.sessionId, { x: escapedA.x + DEGENERATE_DISTANCE, y: escapedA.y, z: escapedA.z })
 
       // 사전 확인(오프라인, 네트워크 없음) — 이 기하에서 "정규화된" 방향은
       // 실제로 헤드에 명중해야 한다(그렇지 않다면 아래 실패가 이 blocker가
       // 아니라 테스트 기하 자체의 결함일 수 있다).
-      const origin1 = eyeOrigin({ x: baselineA.x, y: baselineA.y, z: baselineA.z }, DEFAULT_HITBOX.eyeHeightM)
-      const targetFoot1: Vec3 = { x: baselineA.x + DEGENERATE_DISTANCE, y: baselineA.y, z: baselineA.z }
+      const origin1 = eyeOrigin({ x: escapedA.x, y: escapedA.y, z: escapedA.z }, DEFAULT_HITBOX.eyeHeightM)
+      const targetFoot1: Vec3 = { x: escapedA.x + DEGENERATE_DISTANCE, y: escapedA.y, z: escapedA.z }
       const normalizedDegenerateAim: Vec3 = { x: 1, y: 0, z: 0 }
       const sanityResult = raycastHitbox({ origin: origin1, direction: normalizedDegenerateAim }, { position: targetFoot1 }, DEFAULT_HITBOX)
       if (!sanityResult.hit || sanityResult.region !== 'head') {
@@ -944,19 +1010,24 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       const baselineD = await waitForDefinedPlayer(roomD, roomD.sessionId)
       expect(baselineD.hp).toBe(PLAYER.MAX_HP)
 
-      // RQ-16: D 자신의 최초 입장 스폰 보호를 즉시 해제(`rq-12`·위 describe와 동일 패턴).
-      roomD.send('fire', UP_MISS_AIM)
+      // RQ-31 회귀 대응(파일 상단 REV) — D의 RQ-16 해제는 화이트박스로.
+      // C·D 둘 다 Safe Zone 밖으로 옮긴다 — 그러지 않으면 C의 사격 자체가
+      // GA-19에 막히고, D가 Safe Zone 안에 있으면 RQ-16과 무관하게 GA-11이
+      // 계속 피해를 무효화한다.
+      const seam = getServerRoom(roomC)
+      seam.firedSinceSpawn.set(roomD.sessionId, true)
+      const escapedC = escapeSafeZone(seam, roomC.sessionId, baselineC)
+      const escapedD = escapeSafeZone(seam, roomD.sessionId, baselineD)
       await sleep(SHOT_GAP_MS)
 
-      const seam = getServerRoom(roomC)
       // 이 it()이 쏘는 6발(3 바디 + 3 미스)은 기본 탄창(10발)으로도
       // 충분하지만, 재장전(RQ-11) 타이밍을 이 테스트의 관심사에서 완전히
       // 배제하기 위해 명시적으로 채운다(위 describe의 F1 수정과 동일 근거).
       seam.magazines.set(roomC.sessionId, AMPLE_MAGAZINE)
 
-      const origin = eyeOrigin({ x: baselineC.x, y: baselineC.y, z: baselineC.z }, DEFAULT_HITBOX.eyeHeightM)
-      const targetFoot: Vec3 = { x: baselineD.x, y: baselineD.y, z: baselineD.z }
-      const { aim, distance } = aimAtBodyWithDistance(baselineC, baselineD)
+      const origin = eyeOrigin({ x: escapedC.x, y: escapedC.y, z: escapedC.z }, DEFAULT_HITBOX.eyeHeightM)
+      const targetFoot: Vec3 = { x: escapedD.x, y: escapedD.y, z: escapedD.z }
+      const { aim, distance } = aimAtBodyWithDistance(escapedC, escapedD)
       // GA-49 given: "탄퍼짐 콘 반경은 0이 아닌 값" — 반경 0이면 크기가
       // 결과에 전혀 드러나지 않아 이 골든이 공허해진다(위 describe와 동일
       // 근거로 `spreadTuningOverride`를 쓴다. 출하 기본값은 불변).

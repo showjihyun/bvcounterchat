@@ -5,6 +5,7 @@ import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER } from '@shared/constants'
+import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-61 서버 권위(Server Authoritative) — 위치 참칭 거부, 통합 테스트
@@ -120,6 +121,17 @@ import { PLAYER } from '@shared/constants'
  * 경과를 `PLAYER.RESPAWN_MS`(3000ms)보다 한참 작게(약 1.5~2초) 설계했고,
  * 관측 시점마다 `hp === 0`을 재확인해 리스폰이 끼어들지 않았음을 실측으로도
  * 확인한다(고정 슬립만으로 가정하지 않는다).
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 원장 20f
+ * 확장(`killVictim` 사용 케이스)의 A·B 둘 다 각자의 스폰 지점(Safe Zone
+ * 내부)에 그대로 있으면 (1) GA-19가 A의 킬 시퀀스 사격 자체를 막고 (2)
+ * B가 Safe Zone 안에 있으면 RQ-16과 무관하게 GA-11이 계속 피해를
+ * 무효화한다. `killVictim` 시작 시 A·B 둘 다 화이트박스로 Safe Zone
+ * 밖으로 옮기고(반경-방사 기하, `rq-31-safe-zone.test.ts` 참고), B의
+ * RQ-16 해제도 자기 사격 대신 화이트박스(`firedSinceSpawn`)로 한다 —
+ * 이 파일의 앞 두 `it()`(GA-15 본문·F1 수정)는 hitscan을 쓰지 않으므로
+ * 영향받지 않는다.
  */
 
 const ROOM_NAME = 'game'
@@ -147,15 +159,11 @@ const SPOOFED_COORD = 9999
  * 실행해 확인했다(`03_evaluator_report.md` §6). */
 const IN_MAP_SPOOF = { x: 12.5, y: 1.5, z: -12.5 }
 
-/** GA-06/GA-08/`rq-14`/`rq-15`와 동일한 근거로 기하학적으로 항상 빗나가는
- * 방향(수직 위) — 원장 20f 확장이 B를 사망시키기 전, B 자신의 최초 입장
- * 스폰 보호(RQ-16)를 즉시 해제하는 용도로만 쓴다. */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 /** 연속 사격 사이의 여유(원장 20f) — ADR-0005 rate-limit(150ms)을 명백히
  * 초과한다(`rq-14`/`rq-15`의 `BETWEEN_SHOTS_MS`와 동일 값·동일 근거). */
 const BETWEEN_SHOTS_MS = 300
-/** B의 자기-빗나감 사격(스폰 보호 해제)이 서버에 반영될 시간(원장 20f,
- * `rq-15`의 `RELEASE_PROTECTION_SETTLE_MS`와 동일 값·동일 근거). */
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const RELEASE_PROTECTION_SETTLE_MS = 300
 /** 시신의 참칭 'move' 수신 확인 이후, 여러 서버 틱(`NET.TICK_MS`≈33ms)이
  * 지날 정착 대기(원장 20f) — C1류 회귀(시신 분기에서 return 전에 위치를
@@ -235,7 +243,7 @@ interface PositionSnapshot {
  * `x`·`y`·`z`·`hp`·`lastProcessedInputSeq`는 이미 `Player` 스키마에 있고,
  * `pendingSeqs`는 `AfkTestSeam`(`rq-43-afk-kick.test.ts`)이 이미 이 정확한
  * 이름으로 화이트박스 접근하는 기존 private 필드다). */
-interface PositionTestSeam {
+interface PositionTestSeam extends SafeZoneEscapeSeam {
   state: {
     players: {
       get: (sessionId: string) =>
@@ -430,6 +438,10 @@ function aimAtBody(
  * `rq-14-death-kill-credit.test.ts`)이 이미 고정했다, 이 헬퍼는 "죽여서
  * 사망 상태를 준비"만 한다. B 자신의 최초 입장 스폰 보호(RQ-16)를 먼저
  * 자기-빗나감 사격으로 즉시 해제한다(`rq-14`/`rq-15`와 동일 패턴).
+ * **REV(RQ-31 회귀 대응)**: 화이트박스(`firedSinceSpawn`)로 해제한다 —
+ * 자기 사격은 B 자신의 Safe Zone(거리 0)에 막힐 수 있다. **호출자가 이미
+ * A·B를 Safe Zone 밖으로 옮겨 뒀다는 전제**다(이 함수는 위치를 건드리지
+ * 않는다).
  */
 async function killVictim(
   seam: PositionTestSeam,
@@ -437,8 +449,7 @@ async function killVictim(
   roomB: Room,
   aim: { dirX: number; dirY: number; dirZ: number },
 ): Promise<PositionSnapshot> {
-  roomB.send('fire', UP_MISS_AIM) // 자신의 최초 입장 스폰 보호를 즉시 해제
-  await sleep(RELEASE_PROTECTION_SETTLE_MS)
+  seam.firedSinceSpawn.set(roomB.sessionId, true)
 
   let previousHp: number = PLAYER.MAX_HP
   const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다) — GA-08 근거
@@ -658,7 +669,14 @@ describe('RQ-61/GA-15: 위치 참칭 — 서버 자체 상태와 다른 플레�
       )
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      const aim = aimAtBody(baselineA, baselineB)
+      // RQ-31 회귀 대응 — A·B 둘 다 Safe Zone 밖으로 옮긴다. 그러지 않으면
+      // A의 킬 시퀀스 사격 자체가 GA-19에 막히고, B가 Safe Zone 안에
+      // 있으면 RQ-16과 무관하게 GA-11이 계속 피해를 무효화한다.
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      const escapedB = escapeSafeZone(seam, roomB.sessionId, baselineB)
+      await sleep(RELEASE_PROTECTION_SETTLE_MS)
+
+      const aim = aimAtBody(escapedA, escapedB)
       const atDeathServer = await killVictim(seam, roomA, roomB, aim)
       expect(atDeathServer.hp).toBe(0) // 재확인 1/3 — 사망 직후(서버 상태)
 

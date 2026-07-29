@@ -1,7 +1,7 @@
 import type { Client } from 'colyseus'
 import { Room } from 'colyseus'
 import { GameState, Player, Spectator } from '@shared/schema/GameState'
-import { CAPACITY, NET, PLAYER, UI, WEAPON } from '@shared/constants'
+import { CAPACITY, NET, PLAYER, UI, WEAPON, WORLD } from '@shared/constants'
 import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
@@ -17,7 +17,7 @@ import {
   type Ray,
 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
-import { SPAWN_POINTS, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
+import { SPAWN_POINTS, isWithinSafeZone, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
 import {
   RESPAWN_TICKS,
   SPAWN_PROTECTION_TICKS,
@@ -570,6 +570,18 @@ export class GameRoom extends Room<GameState> {
     const shooterState = this.moveStates.get(shooterId)
     if (!shooterState) return
 
+    // RQ-31: Safe Zone(스폰 지점 반경 5m) 내부에서는 사격이 불가능하다(무기
+    // 비활성화 — 세이프존을 엄폐물 삼은 스폰 캠핑 방지). 사수 자신의 현재
+    // 위치(`moveStates`, RQ-61 서버 권위 — 클라 payload가 아니다)로 판정한다.
+    // rate-limit·탄약 게이트(위)를 이미 통과했더라도 여기서 걸리면 요청을
+    // 완전히 무시한다 — **탄약 소모(아래 `consumeRound`)와 `firedSinceSpawn`
+    // 갱신 이전**에 게이트를 둔 이유는, "발사 자체가 일어나지 않았다"(RQ-31
+    // 원문)를 관측 가능한 부작용 전체(HP·탄약 둘 다)로 성립시키기 위해서다
+    // (GA-19). `WORLD.SAFE_ZONE_ALLOWS_FIRING`을 상수로 참조해(리터럴 `false`
+    // 복제 금지, ADR-0010) 나중에 이 값이 뒤집혀도 게이트 자체는 그대로
+    // 재사용된다.
+    if (!WORLD.SAFE_ZONE_ALLOWS_FIRING && isWithinSafeZone(shooterState)) return
+
     // RQ-16: 사격 행위 자체(명중 여부 무관)로 사수 자신의 스폰 보호를
     // 즉시 해제한다.
     this.firedSinceSpawn.set(shooterId, true)
@@ -660,9 +672,26 @@ export class GameRoom extends Room<GameState> {
 
     const victimSpawnedAt = this.spawnedAtTick.get(closest.id)
     const victimFired = this.firedSinceSpawn.get(closest.id) ?? false
-    const isProtected =
+    const isSpawnTimeProtected =
       victimSpawnedAt !== undefined &&
       isSpawnProtected(victimSpawnedAt, this.state.tick, SPAWN_PROTECTION_TICKS, victimFired)
+    // RQ-31: 위치 기반 보호(Safe Zone) — RQ-16(시간 기반, 위)과 OR로
+    // 합성한다. 둘은 서로 다른 축의 독립된 무효화 조건이다 — RQ-16은 스폰
+    // 직후 한동안(시간), RQ-31은 스폰 지점 반경 안에 있는 동안(위치) 무효화
+    // 한다. 어느 한쪽만 참이어도 피해는 전액 무효화된다(피해가 "이중으로"
+    // 줄어드는 개념이 아니라 애초에 적용되지 않는 것이므로 OR가 자연스러운
+    // 합성이다). 피격자의 위치는 **되감기 이전** 현재 위치(`moveStates`)로
+    // 판정한다 — RQ-64 되감기는 "레이가 실제로 맞았는가"를 보정하는
+    // 지연 보상일 뿐, Safe Zone 소속(RQ-31 원문 "반경을 벗어나면 즉시
+    // 해제")까지 과거 시점으로 되돌릴 근거가 없다. `moveStates`가 없으면
+    // (이 지점에 도달했다는 것은 위 candidates 구성에서 targetState가
+    // 존재했다는 뜻이라 이론상 발생하지 않는다) 스키마 좌표로 폴백한다.
+    // `trackFallDamage`(아래, RQ-18)도 동일한 OR 합성을 쓴다 — 피해원이
+    // hitscan이든 낙하든 RQ-16·RQ-31 보호는 대칭이어야 한다(사용자 결정
+    // 2026-07-28, 그쪽 docblock 참고).
+    const victimCurrentState = this.moveStates.get(closest.id)
+    const isSafeZoneProtected = isWithinSafeZone(victimCurrentState ?? { x: victim.x, z: victim.z })
+    const isProtected = isSpawnTimeProtected || isSafeZoneProtected
 
     const outcome = applyDamageWithProtection(victim.hp, damageForRegion(closest.result.region), isProtected)
     victim.hp = outcome.hp
@@ -751,10 +780,28 @@ export class GameRoom extends Room<GameState> {
    *    게이트는 `handleFire`가 피격자에게 쓰는 것과 동일한 지점
    *    (`spawnedAtTick`/`firedSinceSpawn`)을 재사용한다 — RQ-16이 명시한
    *    "그 플레이어가 받는 **모든 피해**"에 낙하가 포함되므로 스펙 침묵이
-   *    아니라 문면 이행이다. 사망 시 가해자가
-   *    없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬 카운트
-   *    미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든 사망이든)
-   *    `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
+   *    아니라 문면 이행이다. **RQ-31(Safe Zone)도 동일한 이유로 여기
+   *    합류한다(사용자 결정, 2026-07-28)** — RQ-31 원문 "Safe Zone 내부의
+   *    플레이어가 받는 피해를 무효화해야 한다" 역시 피해원을 hitscan으로
+   *    한정하지 않는다. RQ-16과 여기서 갈리면(하나는 낙하 포함, 하나는
+   *    제외) "스폰 3.000초까지는 세이프존 안에서 낙하 무피해, 3.001초부터는
+   *    같은 자리에서 피해가 든다"는 자기모순이 생긴다 — 어떤 스펙 문장도
+   *    그 비대칭을 규정하지 않는다. 위치는 `handleFire`의 피격자 판정과
+   *    동일 기준(착지 시점의 현재 `moveStates`, 즉 이 함수의 `next`)으로
+   *    판정한다(원장 25h). 이 게이트가 처음 배선됐을 때는 `rq-18-fall-damage
+   *    .test.ts`/`rq-92-fall-damage-curve.test.ts`가 스폰 지점 반경 안에서
+   *    착지하는 옛 시나리오 그대로라 일시적으로 깨졌었다 — 골든이 이
+   *    합류를 금지해서가 아니라 그 두 파일이 (다른 20개 통합 테스트와
+   *    마찬가지로) 아직 Safe Zone 밖으로 옮겨지지 **않았던** 시점의 상태였다.
+   *    그 뒤 `dfd63e7`이 두 파일에 방사 탈출(escapeSafeZone)을 적용해
+   *    낙하 시나리오를 Safe Zone 밖에서 벌어지도록 옮겼고, 지금은 둘 다
+   *    Green이다(`rq-18-fall-damage.test.ts`·
+   *    `rq-92-fall-damage-curve.test.ts` 전부 통과). **건수는 적지 않는다** —
+   *    주석에 박은 수치는 다음 커밋에서 낡는다(이 저장소에서 두 번째
+   *    재발. 실제로 `9ff5321`이 곧바로 rq-18에 `it()`을 더해 7→8이 됐다).
+   *    사망 시 가해자가 없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬
+   *    카운트 미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든
+   *    사망이든) `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.
    * 3. 그 외(계속 접지 상태)는 아무 것도 하지 않는다.
    */
   private trackFallDamage(sessionId: string, player: Player, previous: MoveState, next: MoveState, currentTick: number): void {
@@ -776,7 +823,12 @@ export class GameRoom extends Room<GameState> {
     if (damage > 0) {
       const spawnedAt = this.spawnedAtTick.get(sessionId)
       const fired = this.firedSinceSpawn.get(sessionId) ?? false
-      const isProtected = spawnedAt !== undefined && isSpawnProtected(spawnedAt, currentTick, SPAWN_PROTECTION_TICKS, fired)
+      const isSpawnTimeProtected = spawnedAt !== undefined && isSpawnProtected(spawnedAt, currentTick, SPAWN_PROTECTION_TICKS, fired)
+      // RQ-31: `handleFire`의 피격자 보호와 동일한 OR 합성(그쪽 주석·위
+      // docblock 참고, 사용자 결정 2026-07-28) — 착지 위치(`next`, 이 틱에서
+      // 막 확정된 실제 위치)로 Safe Zone 소속을 판정한다.
+      const isSafeZoneProtected = isWithinSafeZone(next)
+      const isProtected = isSpawnTimeProtected || isSafeZoneProtected
 
       const outcome = applyDamageWithProtection(player.hp, damage, isProtected)
       player.hp = outcome.hp

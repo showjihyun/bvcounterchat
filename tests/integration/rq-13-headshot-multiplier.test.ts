@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { buildServer } from '@server/index'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { escapeSafeZone, getSafeZoneSeam, releaseSpawnProtectionAndEscape } from '../support/safe-zone'
 
 /**
  * RQ-13 헤드샷 배율 — 서버 권위(RQ-61) 통합 테스트 (ADR-0008: Colyseus
@@ -41,6 +42,16 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 스스로(빗나가는 방향으로) 한 발 쏴 보호를 즉시 해제하고, `aimAt`이
  * A의 실제 위치를 읽어 상대 오프셋을 계산하도록 일반화했다. 단언(HP
  * 감소량 50) 자체는 손대지 않았다.
+ *
+ * **REV2(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 B의 RQ-16
+ * 해제 자기 사격은 B 자신의 Safe Zone(거리 0)에 막힐 수 있어
+ * 화이트박스(`firedSinceSpawn`)로 대체한다. A도 이 파일 전체에서 한 번도
+ * 움직이지 않아 A 자신의 스폰 지점(Safe Zone 내부)에 그대로 있다 — GA-19가
+ * A의 사격 자체를 막는다. 기존 `travelAndSettle`(고정 +X, 900ms≈5.4m)은
+ * 15개 스폰 지점 중 4개에서 다른 스폰 지점의 Safe Zone에 새로 들어가는
+ * 것이 실측됐다(`rq-31-safe-zone.test.ts` §반경-방사 기하 참고) — B의
+ * 이동도 반경-방사 화이트박스 텔레포트로 대체한다.
  */
 
 const ROOM_NAME = 'game'
@@ -49,13 +60,10 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const HP_TIMEOUT_MS = 5_000
-const TRAVEL_MS = 900
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SETTLE_MS = 200
 
-/** GA-06/GA-08과 동일한 근거로 기하학적으로 항상 빗나가는 방향(수직 위) —
- * 위치와 무관하게 안전하다. REV: B가 이 방향으로 자기 자신을 쏘면 자신의
- * 스폰 보호가 즉시 해제된다(RQ-16). */
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -166,15 +174,6 @@ function waitForHpCondition(
   )
 }
 
-async function travelAndSettle(mover: Room): Promise<PlayerFields> {
-  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
-  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
-  await sleep(SETTLE_MS)
-  const settled = readPlayer(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
-  return settled
-}
 
 /** shooter(발 위치)에서 target(발 위치)의 verticalCenterM 높이를 정확히
  * 조준하는 방향 벡터(정규화)를 계산한다. REV: A가 더 이상 원점에 고정되지
@@ -212,9 +211,13 @@ describe('RQ-13/GA-07: 머리 명중은 바디 데미지의 정확히 2배(50)�
       const baselineB = await waitForDefinedPlayer(roomB, roomB.sessionId)
       expect(baselineB.hp).toBe(PLAYER.MAX_HP)
 
-      roomB.send('fire', UP_MISS_AIM) // REV: 자신의 최초 입장 스폰 보호를 즉시 해제(item C)
-      const settledB = await travelAndSettle(roomB) // 1100ms 경과 — 위 해제 사격이 반영되기 충분하다
-      const aim = aimAt(baselineA, settledB, DEFAULT_HITBOX.headCenterM)
+      // RQ-31 회귀 대응(파일 상단 REV2) — B의 RQ-16 해제는 화이트박스로,
+      // A·B 둘 다 Safe Zone 밖으로 옮긴다(모든 스폰 지점은 y=0 평지).
+      const seam = getSafeZoneSeam(roomA)
+      const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+      const escapedB = releaseSpawnProtectionAndEscape(seam, roomB.sessionId, baselineB)
+      await sleep(SETTLE_MS)
+      const aim = aimAt(escapedA, escapedB, DEFAULT_HITBOX.headCenterM)
       roomA.send('fire', aim)
 
       const afterShot = await waitForHpCondition(

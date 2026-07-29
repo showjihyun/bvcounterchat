@@ -9,6 +9,7 @@ import { buildServer } from '@server/index'
 import { getStats, openStatsDb, type StatsDb } from '@server/persistence/statsDb'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import { getSafeZoneSeam, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * RQ-81 통계 절반(B계층 — SQLite 영속 + 익명 UUID 키) — 서버 권위(RQ-61)
@@ -44,6 +45,16 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * `undefined`/0을 반환) 우연히 통과한다 — 그래서 이 파일은 UUID-A의 행이
  * **실제로 0이 아닌 값**을 갖는 것부터 먼저 확인한 뒤에만 UUID-B의 격리를
  * 단언한다.
+ *
+ * **REV(RQ-31 Safe Zone 회귀 대응, `_workspace/RQ-31/03_test-writer_regression
+ * .md`)**: RQ-31 Safe Zone 배선(GA-19·GA-11, `86fddf1`) 이후 사수·피격자
+ * 둘 다 각자의 스폰 지점(Safe Zone 내부, 거리 0)에 그대로 있으면 킬 시퀀스
+ * 자체가 성립하지 않는다(사수는 사격이 막히고, 피격자는 피해가 무효화된다).
+ * 기존 `unlockProtectionAndSettle`(자기 사격 + 고정 +X 실이동)을 화이트박스
+ * Safe Zone 탈출(`firedSinceSpawn` 직접 기입 + 반경-방사 텔레포트,
+ * `rq-31-safe-zone.test.ts` §반경-방사 기하)로 대체했다 — 고정 +X 실이동은
+ * 15개 스폰 지점 중 4개에서 다른 스폰 지점의 Safe Zone에 새로 들어가는
+ * 것이 실측됐다.
  */
 
 const ROOM_NAME = 'game'
@@ -52,11 +63,10 @@ const CLOSE_TIMEOUT_MS = 5_000
 const JOIN_TIMEOUT_MS = 5_000
 const LEAVE_TIMEOUT_MS = 5_000
 const STATE_TIMEOUT_MS = 5_000
-const TRAVEL_MS = 900
+/** RQ-31 회귀 대응 — 화이트박스 Safe Zone 탈출 텔레포트가 스키마
+ * (`player.x/y/z`)에 정착할 시간(서버 틱 ≈33ms의 몇 배 여유). */
 const SETTLE_MS = 200
 const BETWEEN_SHOTS_MS = 300
-
-const UP_MISS_AIM = { dirX: 0, dirY: 1, dirZ: 0 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -189,19 +199,16 @@ function waitForNickname(room: Room, sessionId: string): Promise<string> {
   )
 }
 
-async function travelAndSettle(mover: Room): Promise<PlayerFields> {
-  mover.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
-  await sleep(TRAVEL_MS)
-  mover.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+/** RQ-31 회귀 대응 — `room`의 RQ-16 최초 입장 보호를 화이트박스로 즉시
+ * 해제하고(자기 사격은 자신의 Safe Zone에 막힐 수 있다), Safe Zone 밖으로
+ * 텔레포트한다(`unlockProtectionAndSettle`의 대체 — 공용 헬퍼
+ * `tests/support/safe-zone.ts`에 위임하고, 이 파일의 `PlayerFields`(hp
+ * 포함) 반환 형태에 맞춰 hp를 채워 넣는다). */
+async function unlockProtectionAndSettle(seam: SafeZoneEscapeSeam, room: Room): Promise<PlayerFields> {
+  const baseline = await waitForDefinedPlayer(room, room.sessionId)
+  const escaped = { ...releaseSpawnProtectionAndEscape(seam, room.sessionId, baseline), hp: PLAYER.MAX_HP }
   await sleep(SETTLE_MS)
-  const settled = readPlayer(mover, mover.sessionId)
-  if (!settled) throw new Error('travelAndSettle: 이동 후 위치 관측 실패')
-  return settled
-}
-
-async function unlockProtectionAndSettle(room: Room): Promise<PlayerFields> {
-  room.send('fire', UP_MISS_AIM)
-  return travelAndSettle(room)
+  return escaped
 }
 
 function aimAtBody(shooter: { x: number; z: number }, target: { x: number; z: number }): { dirX: number; dirY: number; dirZ: number } {
@@ -251,8 +258,9 @@ describe('RQ-81/GA-23: 다른 UUID가 같은 닉네임을 써도 통계 행은 �
       const bobA = await joinGame(newClient(server), { nickname: 'bob', uuid: uuidA })
       const victim1 = await joinGame(newClient(server), { nickname: 'victim1', uuid: randomUUID() })
 
-      const bobAPos = await unlockProtectionAndSettle(bobA)
-      const victim1Pos = await unlockProtectionAndSettle(victim1)
+      const seam1 = getSafeZoneSeam(bobA)
+      const bobAPos = await unlockProtectionAndSettle(seam1, bobA)
+      const victim1Pos = await unlockProtectionAndSettle(seam1, victim1)
       await waitForDefinedPlayer(victim1, victim1.sessionId)
 
       await killWithBodyshots(bobA, victim1, bobAPos, victim1Pos)
@@ -285,8 +293,9 @@ describe('RQ-81/GA-23: 다른 UUID가 같은 닉네임을 써도 통계 행은 �
         expect(uuidBStatsBeforePlay.deaths).toBe(0)
       }
 
-      const bobBPos = await unlockProtectionAndSettle(bobB)
-      const victim2Pos = await unlockProtectionAndSettle(victim2)
+      const seam2 = getSafeZoneSeam(bobB)
+      const bobBPos = await unlockProtectionAndSettle(seam2, bobB)
+      const victim2Pos = await unlockProtectionAndSettle(seam2, victim2)
       await waitForDefinedPlayer(victim2, victim2.sessionId)
 
       await killWithBodyshots(bobB, victim2, bobBPos, victim2Pos)
