@@ -83,9 +83,9 @@ describe('공유 상수 — 스펙 확정값 (RQ-03/60/64/90/92)', () => {
     expect(FALL_DAMAGE.INSTANT_DEATH_HEIGHT_M).toBeNull()
   })
 
-  it('RQ-30/31: 60×60m 맵, Safe Zone 반경 5m, 내부 사격 불가', () => {
+  it('RQ-30/31: 60×60m 맵, Safe Zone 반경 4m, 내부 사격 불가', () => {
     expect(WORLD.SIZE_M).toBe(60)
-    expect(WORLD.SAFE_ZONE_RADIUS_M).toBe(5)
+    expect(WORLD.SAFE_ZONE_RADIUS_M).toBe(4)
     expect(WORLD.SAFE_ZONE_ALLOWS_FIRING).toBe(false)
   })
 

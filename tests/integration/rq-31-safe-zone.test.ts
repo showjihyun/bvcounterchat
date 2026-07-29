@@ -12,7 +12,7 @@ import { PLAYER, WORLD } from '@shared/constants'
  *
  * RQ-31 전문(`harness/specs/requirements.md`): "스폰 구역은 Safe Zone이어야
  * 하며, 시스템은 Safe Zone 내부의 플레이어가 받는 피해를 무효화해야 한다.
- * Safe Zone은 스폰 지점 반경 5m이며, 플레이어가 반경을 벗어나면 즉시 보호가
+ * Safe Zone은 스폰 지점 반경 4m이며, 플레이어가 반경을 벗어나면 즉시 보호가
  * 해제되어야 한다."
  *
  * 매핑된 골든 케이스 **GA-11**(`verify` 필드가 이 파일 경로를 정확히 지정):
@@ -87,13 +87,13 @@ import { PLAYER, WORLD } from '@shared/constants'
  * 별도 파일의 리터럴에 맡긴다(원장 21b 교훈)**: `INSIDE_BOUNDARY_OFFSET_M`
  * ·`OUTSIDE_BOUNDARY_OFFSET_M`은 `WORLD.SAFE_ZONE_RADIUS_M`(상수)에서
  * ±0.5m로 유도한다 — 상수가 바뀌면 경계 테스트도 함께 따라간다. 반경
- * 값이 정확히 5m라는 사실 자체을 리터럴로 고정하는 단언은
+ * 값이 정확히 4m라는 사실 자체을 리터럴로 고정하는 단언은
  * `tests/unit/shared-constants.test.ts:88`(`expect(WORLD
- * .SAFE_ZONE_RADIUS_M).toBe(5)`)가 이미 담당한다 — 이 파일에서 중복하지
+ * .SAFE_ZONE_RADIUS_M).toBe(4)`)가 이미 담당한다 — 이 파일에서 중복하지
  * 않는다.
  *
  * **"스폰 지점"의 해석(스펙 문면 그대로, 단일 해석에 의존하지 않음)**:
- * RQ-31 원문은 "Safe Zone은 스폰 지점 반경 5m"라고만 하고 "자신의 마지막
+ * RQ-31 원문은 "Safe Zone은 스폰 지점 반경 4m"라고만 하고 "자신의 마지막
  * 스폰 지점"인지 "맵의 모든 스폰 지점 각각"인지 명시하지 않는다. 이 파일은
  * 둘 중 어느 쪽으로 구현되어도 성립하도록 설계했다 — "내부" 관측은 B
  * 자신의 방금 배정된 스폰 지점(거리 0)이라 두 해석 모두에서 "Safe Zone
@@ -320,7 +320,7 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
-describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 5m 내부 피해 무효화 + 경계 즉시 해제', () => {
+describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 4m 내부 피해 무효화 + 경계 즉시 해제', () => {
   let server: RunningServer
 
   beforeAll(async () => {
@@ -332,7 +332,7 @@ describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 5m 내부 피해 무�
   })
 
   it(
-    'RQ-31/GA-11: B가 Safe Zone(자신의 스폰 지점 반경 5m) 내부에 있으면 공격을 받아도 HP가 감소하지 않고, 경계(반경 ±0.5m) 안쪽은 계속 무효화되다가 바깥쪽에서는 즉시 정상 피해가 든다',
+    'RQ-31/GA-11: B가 Safe Zone(자신의 스폰 지점 반경 4m) 내부에 있으면 공격을 받아도 HP가 감소하지 않고, 경계(반경 ±0.5m) 안쪽은 계속 무효화되다가 바깥쪽에서는 즉시 정상 피해가 든다',
     async () => {
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))
