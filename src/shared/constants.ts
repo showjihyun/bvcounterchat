@@ -117,8 +117,13 @@ export const FALL_DAMAGE = {
 export const WORLD = {
   /** 플레이 면적 한 변(m) — 60×60m 소형 (RQ-30) */
   SIZE_M: 60,
-  /** Safe Zone 반경(m). 이탈 즉시 보호 해제 (RQ-31) */
-  SAFE_ZONE_RADIUS_M: 5,
+  /** Safe Zone 반경(m). 이탈 즉시 보호 해제 (RQ-31 v1.5 — 5m→4m 개정.
+   * 스폰 15개·배치 반지름 22m 기준 모든 쌍의 최소 거리가 8.602325m라
+   * 겹치지 않으려면 반경 ≤ 4.3011m — **버림한** 상한이 4.3011625m이고
+   * (참값 4.3011626335…) 상한은
+   * **버림**해야 안전하다(올리면 그 사이 값이 문면 조건을 만족하면서 실제로
+   * 겹친다). 4m는 임계에서 0.30m 여유) */
+  SAFE_ZONE_RADIUS_M: 4,
   /** Safe Zone 내부 사격 불가 (RQ-31) */
   SAFE_ZONE_ALLOWS_FIRING: false,
 } as const

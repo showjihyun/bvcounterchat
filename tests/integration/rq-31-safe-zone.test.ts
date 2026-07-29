@@ -12,7 +12,7 @@ import { PLAYER, WORLD } from '@shared/constants'
  *
  * RQ-31 전문(`harness/specs/requirements.md`): "스폰 구역은 Safe Zone이어야
  * 하며, 시스템은 Safe Zone 내부의 플레이어가 받는 피해를 무효화해야 한다.
- * Safe Zone은 스폰 지점 반경 5m이며, 플레이어가 반경을 벗어나면 즉시 보호가
+ * Safe Zone은 스폰 지점 반경 4m이며, 플레이어가 반경을 벗어나면 즉시 보호가
  * 해제되어야 한다."
  *
  * 매핑된 골든 케이스 **GA-11**(`verify` 필드가 이 파일 경로를 정확히 지정):
@@ -20,11 +20,12 @@ import { PLAYER, WORLD } from '@shared/constants'
  * - when: Safe Zone 내부의 B가 다른 플레이어의 공격을 받음.
  * - then: 피해가 무효화되어 B의 HP가 감소하지 않는다.
  *
- * **실측 상태(원장 25f)**: `WORLD.SAFE_ZONE_RADIUS_M`(5)·
- * `WORLD.SAFE_ZONE_ALLOWS_FIRING`(false) 상수는 이미 있으나(`constants.ts`),
- * `GameRoom`에 `SAFE_ZONE` 참조가 0건 — 피해 무효화가 전혀 구현되지 않았다.
- * 이 파일은 **Red**여야 한다(오늘 실행하면 아래 (1)(2) 단언이 실패한다 —
- * 현재는 Safe Zone 안에서도 정상 피해가 들어간다).
+ * **최초 작성 시점의 실측 상태(원장 25f)**: `WORLD.SAFE_ZONE_RADIUS_M`(당시 5)·
+ * `WORLD.SAFE_ZONE_ALLOWS_FIRING`(false) 상수는 이미 있었으나(`constants.ts`),
+ * `GameRoom`에 `SAFE_ZONE` 참조가 0건이라 피해 무효화가 구현되지 않았고 이
+ * 파일은 **Red**였다(그때 실행하면 아래 (1)(2) 단언이 실패했다). **지금은
+ * 구현이 있어 Green이며 반경도 v1.5에서 4m로 개정됐다**(원장 26s) — 이
+ * 단락은 그 Red 시점을 남기는 이력이다.
  *
  * **RQ-16과의 경계(공허함 함정 회피, team-lead 지시)**: RQ-16(스폰 후 3초
  * 무적)은 **시간 기반**이고 이 RQ-31 Safe Zone은 **위치 기반**이다. 이
@@ -77,7 +78,9 @@ import { PLAYER, WORLD } from '@shared/constants'
  * 2R(1-cosθ)>0이고 r이 커질수록 더 커진다). 이 저장소의 실제 15개
  * `SPAWN_POINTS`(반지름≈22m, 등각 24°)로 오프셋 0~20m 전 구간을 실측
  * 스크립트로 직접 확인했다 — 어느 지점에서 출발해도 "다른 스폰 지점과의
- * 거리"가 5m 아래로 내려가지 않는다(스폰 지점이 나중에 바뀌어도 이 증명은
+ * 거리"가 5m 아래로 내려가지 않는다(이 5m는 **반경이 아니라 반경과 무관한
+ * 실측 하한**이다 — 반경 5m 시절에 측정했고, 반경이 4m로 낮아진 지금은
+ * 여유가 오히려 커졌다. 스폰 지점이 나중에 바뀌어도 이 증명은
  * 일반적인 원 배치라면 그대로 성립한다). 그래서 "방사 방향으로 충분히
  * 미는" 것만으로 **어느 스폰 지점을 배정받았는지 몰라도** "모든 Safe
  * Zone 밖"을 구성할 수 있다 — 맵 중심 좌표를 별도로 가정하거나 계산할
@@ -87,18 +90,19 @@ import { PLAYER, WORLD } from '@shared/constants'
  * 별도 파일의 리터럴에 맡긴다(원장 21b 교훈)**: `INSIDE_BOUNDARY_OFFSET_M`
  * ·`OUTSIDE_BOUNDARY_OFFSET_M`은 `WORLD.SAFE_ZONE_RADIUS_M`(상수)에서
  * ±0.5m로 유도한다 — 상수가 바뀌면 경계 테스트도 함께 따라간다. 반경
- * 값이 정확히 5m라는 사실 자체을 리터럴로 고정하는 단언은
+ * 값이 정확히 4m라는 사실 자체을 리터럴로 고정하는 단언은
  * `tests/unit/shared-constants.test.ts:88`(`expect(WORLD
- * .SAFE_ZONE_RADIUS_M).toBe(5)`)가 이미 담당한다 — 이 파일에서 중복하지
+ * .SAFE_ZONE_RADIUS_M).toBe(4)`)가 이미 담당한다 — 이 파일에서 중복하지
  * 않는다.
  *
  * **"스폰 지점"의 해석(스펙 문면 그대로, 단일 해석에 의존하지 않음)**:
- * RQ-31 원문은 "Safe Zone은 스폰 지점 반경 5m"라고만 하고 "자신의 마지막
+ * RQ-31 원문은 "Safe Zone은 스폰 지점 반경 4m"라고만 하고 "자신의 마지막
  * 스폰 지점"인지 "맵의 모든 스폰 지점 각각"인지 명시하지 않는다. 이 파일은
  * 둘 중 어느 쪽으로 구현되어도 성립하도록 설계했다 — "내부" 관측은 B
  * 자신의 방금 배정된 스폰 지점(거리 0)이라 두 해석 모두에서 "Safe Zone
  * 내부"이고, "외부" 관측(A의 위치, 양성 대조군의 B 위치)은 **모든** 스폰
- * 지점으로부터 5m를 초과하는 좌표라 두 해석 모두에서 "Safe Zone 밖"이다.
+ * 지점으로부터 4m를 초과하는 좌표라 두 해석 모두에서 "Safe Zone 밖"이다
+ * (양성 대조군 B는 `OUTSIDE_BOUNDARY_OFFSET_M` = 반경 + 0.5 = 4.5m).
  *
  * **대기 술어**: 무효화(음성) 관측은 "일정 시간 뒤에도 값이 그대로"이므로
  * 조건 대기가 아니라 고정 관찰창(`NO_DAMAGE_OBSERVE_MS`) 뒤 스냅샷이다
@@ -320,7 +324,7 @@ function aimAtBody(
   return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
 }
 
-describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 5m 내부 피해 무효화 + 경계 즉시 해제', () => {
+describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 4m 내부 피해 무효화 + 경계 즉시 해제', () => {
   let server: RunningServer
 
   beforeAll(async () => {
@@ -332,7 +336,7 @@ describe('RQ-31/GA-11: Safe Zone — 스폰 지점 반경 5m 내부 피해 무�
   })
 
   it(
-    'RQ-31/GA-11: B가 Safe Zone(자신의 스폰 지점 반경 5m) 내부에 있으면 공격을 받아도 HP가 감소하지 않고, 경계(반경 ±0.5m) 안쪽은 계속 무효화되다가 바깥쪽에서는 즉시 정상 피해가 든다',
+    'RQ-31/GA-11: B가 Safe Zone(자신의 스폰 지점 반경 4m) 내부에 있으면 공격을 받아도 HP가 감소하지 않고, 경계(반경 ±0.5m) 안쪽은 계속 무효화되다가 바깥쪽에서는 즉시 정상 피해가 든다',
     async () => {
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))

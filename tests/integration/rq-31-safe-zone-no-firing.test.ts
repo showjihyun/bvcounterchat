@@ -14,7 +14,7 @@ import { PLAYER, WEAPON, WORLD } from '@shared/constants'
  * 한다(무기 비활성화 — 세이프존을 엄폐물 삼은 스폰 캠핑 방지)."
  *
  * 매핑된 골든 케이스 **GA-19**(`verify` 필드가 이 파일 경로를 정확히 지정):
- * - given: 플레이어가 Safe Zone(스폰 지점 반경 5m) 내부에 위치.
+ * - given: 플레이어가 Safe Zone(스폰 지점 반경 4m) 내부에 위치.
  * - when: Safe Zone 내부에서 사격을 시도.
  * - then: 무기가 비활성화되어 발사되지 않는다 — Safe Zone을 엄폐물 삼은
  *   스폰 캠핑이 불가능하다.
@@ -285,7 +285,7 @@ describe('RQ-31/GA-19: Safe Zone — 내부 사격 불가(무기 비활성화) +
   })
 
   it(
-    'RQ-31/GA-19: A가 Safe Zone(자신의 스폰 지점 반경 5m) 내부에서 사격을 시도하면 무기가 비활성화되어 발사되지 않고(HP·탄약 불변), 경계(반경 ±0.5m) 바깥에서는 즉시 정상 발사된다',
+    'RQ-31/GA-19: A가 Safe Zone(자신의 스폰 지점 반경 4m) 내부에서 사격을 시도하면 무기가 비활성화되어 발사되지 않고(HP·탄약 불변), 경계(반경 ±0.5m) 바깥에서는 즉시 정상 발사된다',
     async () => {
       const roomA = await joinGame(newClient(server))
       const roomB = await joinGame(newClient(server))

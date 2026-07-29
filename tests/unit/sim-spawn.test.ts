@@ -9,7 +9,7 @@ import { WORLD } from '@shared/constants'
  *
  * **이번 라운드의 스코프(team-lead 지시, RQ-15/16 원장)**: RQ-31 전체가 아니라
  * "14~16개 지점 배치 + 직전 사용 지점을 회피하는 순환 로테이션"이라는 **선택
- * 규칙**만 지금 구현한다. Safe Zone(반경 5m 피해 무효·사격 불가, GA-11·GA-19)과
+ * 규칙**만 지금 구현한다. Safe Zone(반경 4m 피해 무효·사격 불가, GA-11·GA-19)과
  * 실제 맵 좌표는 범위 밖 — 좌표는 60×60 WORLD 위에 절차적으로 배치한 **잠정값**
  * 이며 맵 단계(8)가 교체한다. 이 파일은 좌표의 정확한 값을 검증하지 않고
  * (값 발명 금지 — ADR-0005 §결과와 동일 원칙), **관측 가능한 구조적 계약**만
@@ -81,6 +81,48 @@ describe('RQ-31(선택 규칙) — SPAWN_POINTS 구성', () => {
       expect(seen.has(key)).toBe(false)
       seen.add(key)
     }
+  })
+
+  /**
+   * GA-51 비겹침 절(원장 26s 복원 대상, RQ-31 v1.5 "Safe Zone은 서로 겹치지
+   * 않는다") — **모든 두 스폰 지점** 쌍의 중심 간 거리가 Safe Zone 반경의
+   * 2배(지름)를 **초과**해야 한다. 좌표가 아니라 반경(`WORLD.SAFE_ZONE_RADIUS_M`)
+   * 쪽만 상수를 참조한다 — 거리 임계(실측 8.602325m/2 = 4.30116m, 원장 26s)는
+   * 여기서 하드코딩하지 않고 실제 `SPAWN_POINTS` 좌표에서 매번 계산한다.
+   *
+   * `>`이지 `>=`가 아니다: 골든 문면이 "겹치지도 **접하지도** 않는다"이기
+   * 때문이다. 반경 5m 시절에는 정확히 10.00m(=2×5m)로 접하는 쌍이 실재해
+   * (`[7](-22,5)` ↔ `[8](-22,-5)`) 이 경계 취급이 결과를 갈랐다.
+   * **r=4인 현재는 접하는 쌍이 없어 `>=`로 바꿔도 결과가 같다** — 그래도
+   * 스펙(RQ-31 v1.5)과 골든 GA-51이 "접하지도 않아야"를 요구하므로 `>`를
+   * 유지한다. 결과가 같다는 것이 근거를 없애지 않는다.
+   *
+   * 인접 쌍(원형 배치의 옆자리)만 보지 않는다 — 배치가 원이 아닌 임의
+   * 좌표로 바뀌면 "인접"의 정의 자체가 무너지므로 **가능한 모든 조합**
+   * (15개면 105쌍)을 순회한다.
+   */
+  it('임의의 두 스폰 지점 Safe Zone은 서로 겹치지도 접하지도 않는다(GA-51 비겹침 절, 원장 26s) — 모든 쌍의 중심 간 거리 > 2 × SAFE_ZONE_RADIUS_M', () => {
+    const minSeparationM = 2 * WORLD.SAFE_ZONE_RADIUS_M
+    const violations: string[] = []
+    for (let i = 0; i < SPAWN_POINTS.length; i += 1) {
+      const a = SPAWN_POINTS[i]
+      if (!a) throw new Error('테스트 전제 위반 — SPAWN_POINTS 인덱스 범위 밖')
+      for (let j = i + 1; j < SPAWN_POINTS.length; j += 1) {
+        const b = SPAWN_POINTS[j]
+        if (!b) throw new Error('테스트 전제 위반 — SPAWN_POINTS 인덱스 범위 밖')
+        const distance = Math.hypot(a.x - b.x, a.z - b.z)
+        if (!(distance > minSeparationM)) {
+          violations.push(
+            `[${i}](${a.x},${a.z}) ↔ [${j}](${b.x},${b.z}) 거리 ${distance.toFixed(4)}m ≤ 임계(2×반경) ${minSeparationM}m`,
+          )
+        }
+      }
+    }
+    const totalPairs = (SPAWN_POINTS.length * (SPAWN_POINTS.length - 1)) / 2
+    expect(
+      violations,
+      `Safe Zone이 겹치거나 접하는 쌍 ${violations.length}/${totalPairs}건 (반경 ${WORLD.SAFE_ZONE_RADIUS_M}m):\n${violations.join('\n')}`,
+    ).toEqual([])
   })
 })
 
