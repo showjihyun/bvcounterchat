@@ -202,5 +202,11 @@ if __name__ == "__main__":
         run_selftest()
     elif len(sys.argv) > 1 and sys.argv[1] == "--check-paths":
         run_check_paths(sys.argv[2:])
+    elif len(sys.argv) > 1:
+        # 알 수 없는 모드를 조용히 hook 모드로 흘리면 오타 하나가 게이트를
+        # 무력화한다(`--selftst` 같은 것). 기존 두 훅과 같이 exit 64로 죽는다.
+        _force_utf8()
+        sys.stderr.write("알 수 없는 모드: %s\n" % sys.argv[1])
+        sys.exit(64)
     else:
         run_hook()
