@@ -570,7 +570,7 @@ export class GameRoom extends Room<GameState> {
     const shooterState = this.moveStates.get(shooterId)
     if (!shooterState) return
 
-    // RQ-31: Safe Zone(스폰 지점 반경 5m) 내부에서는 사격이 불가능하다(무기
+    // RQ-31: Safe Zone(스폰 지점 반경 4m, v1.5) 내부에서는 사격이 불가능하다(무기
     // 비활성화 — 세이프존을 엄폐물 삼은 스폰 캠핑 방지). 사수 자신의 현재
     // 위치(`moveStates`, RQ-61 서버 권위 — 클라 payload가 아니다)로 판정한다.
     // rate-limit·탄약 게이트(위)를 이미 통과했더라도 여기서 걸리면 요청을
