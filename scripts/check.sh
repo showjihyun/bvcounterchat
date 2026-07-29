@@ -54,6 +54,11 @@ python .claude/hooks/gate_spec_freeze.py --check
 # 호출을 막을 뿐, PR 시점엔 관여하지 않는다) --check-paths 대응물은 없다 —
 # --selftest만 여기서 돈다.
 python .claude/hooks/gate_coder_test_write.py --selftest
+python .claude/hooks/gate_map_asset_provenance.py --selftest
+# 맵 에셋 출처 게이트는 위 둘과 달리 `--check-paths`가 있고 **CI 게이트이기도** 하다.
+# 여기서 함께 돌린다 — check.sh가 로컬·CI 단일 진입점이라는 원칙(ci.yml)을 지키려면
+# CI에만 있는 검증 단계를 만들면 안 된다. 실측: 전 파일 검사가 즉시 끝난다.
+git ls-files -z | xargs -0 python .claude/hooks/gate_map_asset_provenance.py --check-paths
 
 npx eslint .
 npx tsc --noEmit

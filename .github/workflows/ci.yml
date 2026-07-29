@@ -38,6 +38,12 @@ jobs:
         run: |
           python .claude/hooks/gate_spec_freeze.py --selftest
           python .claude/hooks/gate_coder_test_write.py --selftest
+          python .claude/hooks/gate_map_asset_provenance.py --selftest
+
+      - name: 맵 에셋 출처 게이트 (RQ-30 · ADR-0007 결정 1)
+        # 커밋된 전 파일의 **경로와 내용**을 훑는다. PreToolUse 훅은 쓰기 **전**이라
+        # 파일이 없어 내용 검사가 성립하지 않는다 — 내용 그물은 여기가 유일하다.
+        run: git ls-files -z | xargs -0 python .claude/hooks/gate_map_asset_provenance.py --check-paths
 
       # requirements.md에 🟡 PENDING이 남아 있는데 구현(src/tests 등)이
       # 변경됐으면 머지를 막는다. 판정 로직은 hook과 동일한 스크립트를 쓴다
