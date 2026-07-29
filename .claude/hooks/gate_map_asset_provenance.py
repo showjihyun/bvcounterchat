@@ -16,6 +16,8 @@ when이 비어 버린다. 부재는 실행 시점이 아니라 **커밋 시점�
     - 원본을 보고 **다시 모델링**한 지오메트리(리토폴로지)
     - 스크린샷을 **트레이싱**해 그린 텍스처
     - 이름을 바꾸고 재저장해 해시가 달라진 파일
+    - **새 파일의 내용** — PreToolUse는 쓰기 **전**이라 파일이 아직 없다.
+      내용 검사는 `--check-paths`(CI, 커밋된 파일 대상)에서만 실효가 있다.
   즉 **통과가 곧 결백의 증명이 아니다.** 그 판단은 사람이 하고, ADR-0007
   결정 1이 그 규범을 소유한다. 이 게이트는 "누가 실수로 원본 파일을
   드래그해 넣는 것"을 막는 마지막 방어선일 뿐이다.
@@ -35,7 +37,22 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+def _force_utf8() -> None:
+    """stdout·stderr를 UTF-8로 고정 — `gate_spec_freeze.py`와 동일한 이유.
+
+    Windows 한국어 로케일의 기본 콘솔 인코딩은 cp949라서 한글이나 em-dash(—)를
+    그대로 출력하면 UnicodeEncodeError로 프로세스가 죽는다. 게이트가 스펙과
+    무관한 이유로 죽으면 CI는 그것을 "게이트 실패"로 보고하고, 사람은 원인을
+    찾다가 게이트를 꺼버린다.
+
+    이 저장소는 이 결함을 이미 이름 붙여 고쳐 뒀는데 이 훅이 처음 작성될 때
+    그것을 복사하지 않아 재발했다(원장 26r 리뷰 blocker B4).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass  # 재설정 실패해도 메시지는 내보낸다
 
 # 파일 경로·이름에서 원본 반입을 시사하는 패턴.
 # 소문자로 정규화한 전체 경로에 대해 검사한다.
@@ -85,6 +102,7 @@ def scan_path(path_str: str) -> list[str]:
 
 
 def _block(path_str: str, hits: list[str]) -> None:
+    _force_utf8()
     lines = [
         "",
         "🚫 맵 에셋 출처 게이트 — 차단됨",
@@ -108,8 +126,11 @@ def _block(path_str: str, hits: list[str]) -> None:
 
 
 def run_hook() -> None:
+    # stdin을 **바이트로** 읽어 UTF-8로 명시 디코딩한다(기존 훅과 동일).
+    # `json.load(sys.stdin)`은 cp949 텍스트 스트림을 쓰고, `except ValueError`가
+    # UnicodeDecodeError(ValueError의 하위 클래스)를 **삼켜** 조용히 통과시킨다.
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)  # 입력을 못 읽으면 통과시킨다 — 게이트가 작업을 막지 않는다.
 
@@ -125,6 +146,7 @@ def run_hook() -> None:
 
 
 def run_check_paths(paths: list[str]) -> None:
+    _force_utf8()
     bad = False
     for path_str in paths:
         hits = scan_path(path_str)
@@ -144,6 +166,7 @@ def run_selftest() -> None:
 
     통과 케이스가 없으면 "전부 막는 게이트"가 되어도 알 수 없다.
     """
+    _force_utf8()
     must_block = [
         "assets/maps/de_dust2.glb",
         "assets/maps/Dust2_layout.gltf",

@@ -54,6 +54,7 @@ python .claude/hooks/gate_spec_freeze.py --check
 # 호출을 막을 뿐, PR 시점엔 관여하지 않는다) --check-paths 대응물은 없다 —
 # --selftest만 여기서 돈다.
 python .claude/hooks/gate_coder_test_write.py --selftest
+python .claude/hooks/gate_map_asset_provenance.py --selftest
 
 npx eslint .
 npx tsc --noEmit
