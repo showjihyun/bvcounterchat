@@ -795,8 +795,10 @@ export class GameRoom extends Room<GameState> {
    *    마찬가지로) 아직 Safe Zone 밖으로 옮겨지지 **않았던** 시점의 상태였다.
    *    그 뒤 `dfd63e7`이 두 파일에 방사 탈출(escapeSafeZone)을 적용해
    *    낙하 시나리오를 Safe Zone 밖에서 벌어지도록 옮겼고, 지금은 둘 다
-   *    Green이다(2026-07-29 재확인: `rq-18-fall-damage.test.ts`·
-   *    `rq-92-fall-damage-curve.test.ts` 2 files·7 tests 전부 통과).
+   *    Green이다(`rq-18-fall-damage.test.ts`·
+   *    `rq-92-fall-damage-curve.test.ts` 전부 통과). **건수는 적지 않는다** —
+   *    주석에 박은 수치는 다음 커밋에서 낡는다(이 저장소에서 두 번째
+   *    재발. 실제로 `9ff5321`이 곧바로 rq-18에 `it()`을 더해 7→8이 됐다).
    *    사망 시 가해자가 없으므로 `registerDeath`를 `killerId` 없이 호출한다(킬
    *    카운트 미증가, `diedAtTick`만 갱신). 처리 후에는 항상(생존이든
    *    사망이든) `fallPeakY`를 삭제해 다음 공중 구간을 위해 초기화한다.

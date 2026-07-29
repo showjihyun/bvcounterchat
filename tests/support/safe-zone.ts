@@ -110,8 +110,11 @@ export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> 
  * 때문에, 이 값을 바꾸면 그 거리가 바뀌고 시드 열의 분류 결과("정확히
  * 1개 body·나머지 miss")가 깨질 수 있다. 이 값(또는 `SPAWN_POINTS`)을
  * 바꾸는 PR은 `rq-90-spread-seed-determinism.test.ts`를 반드시 재실행해야
- * 한다 — 깨지면 그 파일의 실측 전제 가드가 조용히 넘어가지 않고 명확한
- * 에러로 던진다(`F1_SEED_SEQUENCE` 선언부 코멘트도 참고). */
+ * 한다. **그 파일의 전제 가드에 기대지 마라** — 가드는 body 개수만 보고,
+ * 오프셋 0~200m 스윕에서 분류가 완전히 불변이라 발화 자체가 0건이었다
+ * (원장 25f 2차 델타 재평가 MI-A. 표적의 각 크기가 거리에 불변이기
+ * 때문이다). 시드 열의 검출력을 직접 재확인해야 한다
+ * (`F1_SEED_SEQUENCE` 선언부 코멘트도 참고). */
 export const DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 15
 
 /** `base`(자신의 스폰 지점 또는 현재 위치) 기준 방사 방향 단위 벡터. 이

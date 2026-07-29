@@ -642,14 +642,22 @@ const F1_SEED_SEQUENCE: readonly number[] = [1, 2, 4, 5, 9, 10, 13, 17, 18, 26, 
  * 바뀌면 `distance`가 바뀌고 `coneRadiusRad`도 따라 바뀐다 — **이 시드
  * 열의 전제가 조용히 깨질 수 있다는 뜻**이다(원장 22y가 이미
  * `SPAWN_POINTS`·스폰 기하 변경을 트리거로 등재해 뒀다 — 이 오프셋도 같은
- * 트리거에 속한다). 다행히 조용히 통과하지는 않는다 — 아래
- * `fireOracleSequenceAndAssert` 호출부의 실측 전제 가드(`RQ-90 F1 시퀀스
- * 전제 위반 ...`, `expectedBuckets` 계산 직후)가 분류 결과가 "정확히 1개
- * body"가 아니면 즉시 명확한 에러로 던진다. `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`
- * 를 바꾸는 PR은 이 파일을 반드시 재실행해 그 가드가 던지는지 확인해야
- * 한다(안 던지면 운 좋게 여전히 성립한다는 뜻이지 검증됐다는 뜻은
- * 아니다 — 필요하면 시드 열을 재선정한다, `tests/support/safe-zone.ts`의
- * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M` 코멘트도 참고). */
+ * 트리거에 속한다).
+ *
+ * **가드의 보호 범위 — 실측(원장 25f 2차 델타 재평가 MI-A)**: 아래
+ * `fireOracleSequenceAndAssert` 호출부의 전제 가드는 분류 결과가 "정확히
+ * 1개 body"가 아니면 던진다. 다만 **이 오프셋에 대해서는 사실상 발화하지
+ * 않는다** — 평가자가 오프셋 0~200m 전 구간을 스윕한 결과 분류가 **완전히
+ * 불변**이었다(항상 시드 1만 body + 11 miss, 가드 발화 0건). 구조적 이유가
+ * 있다: `coneRadiusRad = atan(bodyRadiusM / distance) × 3`이라 표적의 각
+ * 크기가 **거리에 불변**이다.
+ *
+ * 그리고 가드는 body **개수**만 본다 — **어느 시드가 body인지**도,
+ * 1드로 전진에서 뒤집히는 6개 시드의 성질도 보지 않는다. 즉 이 가드를
+ * "오프셋 변경이 조용히 통과하지 못한다"의 보장으로 읽지 마라.
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`이나 `SPAWN_POINTS`를 바꾸는 PR은
+ * **가드에 기대지 말고** 시드 열의 검출력을 직접 재확인해야 한다
+ * (`tests/support/safe-zone.ts`의 같은 상수 코멘트도 참고). */
 
 /**
  * `F1_SEED_SEQUENCE`를 고정 순서로 한 번(pass) 쏘고, 매 발의 관측 버킷이
