@@ -8,9 +8,13 @@
 > 위임하며 표를 복제하지 않는다.
 >
 > 아래 표의 상태는 **지금 실제로 존재하는 것만** ✅로 표기한다.
-> 아래 Sensors 표에 ✅는 8행이지만, **기계가 머지를 막는 것은 3개**다 —
-> 스펙 동결 게이트 · lint/typecheck · 단위·통합 테스트. 테스트-코드 동행 검사는
+> 아래 Sensors 표에 ✅는 **12행**이지만, **기계가 머지를 막는 것은 5개**다 —
+> 스펙 동결 게이트 · lint/typecheck · 단위·통합 테스트 · **맵 에셋 출처 게이트** ·
+> **원장 표 무결성 게이트**. 테스트-코드 동행 검사는
 > 경고일 뿐이고, evaluator·PR 리뷰 게이트·트랙 B rubric은 규율로 지켜진다.
+> (2026-07-30 정정 — 앞서 "✅ 8행 / 막는 것 3개"라고 적혀 있었으나 실측 10행이었고
+> 맵 에셋 출처 게이트가 등재 누락이었다. 세는 기준을 함께 두어도 숫자는 낡는다는
+> 사례이며, 이 문서가 스스로 "Sensor 현황의 정본"이라 선언하므로 무게가 있다.)
 > coder tests/ 기존 단언 접촉 차단 게이트(17f)는 이 셋과 다른 층위다 —
 > **세션 중 특정 역할(coder)의 Write/Edit/MultiEdit 툴 호출 중 ADR-0011이
 > 금지한 부분(기존 단언 접촉)만** 막을 뿐, PR·머지 시점에 걸리는 게이트가
@@ -37,6 +41,8 @@
 | 트래젝토리 로그 | Comp | 세션 종료(Stop) | hook (.claude/hooks) | ⬜미구축 |
 | 스펙 동결 게이트 (🟡 존재 시 구현 차단) | Comp | 구현 파일 수정 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_spec_freeze.py` exit 2 + `.github/workflows/ci.yml` | ✅ **2026-07-21 구축.** 판정 로직은 스크립트 1개에 있고 hook·CI가 **같은 코드**를 호출한다 — 로컬과 CI가 다르게 판정하는 게이트는 신뢰를 잃으므로 정규식을 CI에 따로 두지 않았다. `--selftest`가 게이트 자신을 검증하며 CI 첫 스텝으로 돈다. 차단 대상 디렉토리는 스크립트 상단 `BLOCKED_TOP_DIRS` — ADR-0010으로 레이아웃이 확정되어 **갱신 불요**로 판정됐다(`progress.md` 18). CI는 활성 상태이며 PR #1~#3이 그 위에서 돌았다. ⚠️ 레이아웃을 바꾸는 ADR은 반드시 이 집합의 갱신을 동반해야 한다 |
 | coder tests/ 기존 단언 접촉 차단 게이트 | Comp | Write/Edit/MultiEdit 직전(PreToolUse), coder 역할 한정 | `.claude/hooks/gate_coder_test_write.py` exit 2 | ✅ **2026-07-26 구축, 같은 날 델타 리뷰 blocker로 범위 재작업.** stdin JSON의 `agent_type` 필드(Claude Code 2.1.220 실측)로 coder만 식별한다. **1차 버전은 coder의 tests/ 쓰기 전체를 막아 ADR-0011 결정 3(test-after 영역의 coder 순증 허용)과 충돌했다** — coder가 신규 테스트 파일을 만드는 표준 경로(원장 22b)의 첫 Write에서 파이프라인이 죽는 blocker였다. **재작업**: `Write`+신규 파일(미존재 경로)=허용, `Write`+기존 파일 덮어쓰기=차단, `Edit`/`MultiEdit`=`old_string`이 `new_string`에 그대로 포함되는 "순수 삽입"만 허용, 그 외(기존 단언 치환·삭제)는 차단. `agent_type`이 `"coder"`가 아니면(test-writer·evaluator·reviewer·메인 세션) 무조건 fail-open. 라이브 6케이스로 확인: coder 신규 파일 Write 허용/coder 기존 파일 Write 차단/coder 순수 삽입 Edit 허용/coder 치환 Edit 차단/test-writer 통과/evaluator 통과. `--selftest` 내장(CI·`check.sh` 양쪽에 배선 — major 2 대응). ⚠️ **matcher가 Write\|Edit\|MultiEdit뿐이라 Bash 경유 쓰기는 못 막는다** — 그 경로는 기존 evaluator 사후 diff 검출(SHA 사슬)이 계속 담당. ⚠️ `MultiEdit`의 실제 payload 형태(`edits` 배열)는 라이브로 확인하지 못했다(이 Claude Code 버전은 MultiEdit을 permission 엔진이 "알려진 툴 아님"으로 취급 — 17g 조사) — 형태가 예상과 다르면 fail-open |
+| 맵 에셋 출처 게이트 (Dust2 원본 반입 차단) | Comp | 파일 쓰기 직전(PreToolUse) + PR(CI fail) | `.claude/hooks/gate_map_asset_provenance.py` exit 2 + `ci.yml`·`check.sh`의 `--check-paths` | ✅ **2026-07-29 구축(PR #37, 원장 26r).** 두 층이다 — 훅이 **쓰기 전 경로**를, CI·`check.sh`의 `--check-paths`가 **커밋된 파일의 내용까지** 훑는다(훅만으로는 파일이 아직 없어 내용 검사가 성립하지 않는다). selftest 내장(차단 5·허용 5) — 작성 중 그 selftest가 정규식 결함을 실제로 잡았다. ⚠️ **이 게이트는 실수·부주의만 막는다** — 리토폴로지·트레이싱·재저장은 원리적으로 검출 불가이며 **통과가 결백의 증명이 아니다**(훅 docblock에 명시). 등재 누락이었다가 2026-07-30에 추가됐다 |
+| 원장 표 무결성 게이트 (열 수·집계 오염 차단) | Comp | 원장 수정 직전(PreToolUse) + `check.sh`·PR(CI fail) | `.claude/hooks/gate_ledger_table.py` exit 2 + `--check` | ✅ **2026-07-30 구축(원장 26ag).** 이월을 원장으로 몰아주는 정책의 안전성은 원장 무결성에 정비례하는데(ADR-0012) **표가 깨져도 아무것도 실패하지 않았다** — 7행이 깨진 채 CI를 통과했고 그중 `26l`은 ⬜ 집계를 97로 만들었다(참값 98). **이스케이프-인식 분할**로 센다 — naive 파이프 분할은 정상 4행을 오탐하며, 그 오탐이 이 결함의 최초 진단을 틀리게 만들었다. 부족·초과를 나눠 보고하고 상태 열 앞 파이프를 별도 검사한다(집계 오염 경로는 필드 수만으로 안 드러난다). 훅은 **코드 스팬 안 맨 파이프만** 본다 — 정상 셀 경계 파이프는 백틱 밖이라 오탐이 없다. selftest 차단 6·허용 8(허용에 "이스케이프 파이프가 상태 열 뒤" 형태를 넣어 오탐 회귀를 못박았다). ⚠️ **열 수와 상태 열 위치만** 본다 — 셀 내용의 정확성(수치가 최신인가)은 보지 않는다 |
 | 골든 정답 수정 승인 게이트 | Comp | harness/evals/golden/** Edit·Write 시 | permissions (ask) | 🟡 **부분 구축(2026-07-26)** — `permissions.ask`에 `Edit(./harness/evals/golden/**)` 1건(라이브 실측: Edit 규칙이 Write까지 커버, `evals/README.md` 참고). `Edit`·`Write`·`MultiEdit` 툴 경로만 막고 **`Bash` 경유 쓰기는 못 막는다** — Bash heredoc·리다이렉트로 골든 파일을 고치면 이 표를 그대로 통과한다. 완전 강제(✅)로 올리려면 Bash까지 보는 별도 장치(hook)가 필요 — 등재: `progress.md` 17g |
 | 파일 수정 후 빠른 검사 | Comp | 수정 직후(PostToolUse) | hook → `scripts/check.sh --fast` | ⬜미구축 — **스크립트는 있으나 호출자가 없다.** `.claude/settings.json`에 PostToolUse hook 미등록 |
 | lint / typecheck | Comp | 로컬 `npm run check` + CI | eslint + `tsc --noEmit` | ✅ **2026-07-21 구축.** `scripts/check.sh`가 로컬·CI 공통 진입점. `src/shared` 전용 규칙(환경 중립·결정론)도 lint로 강제 |
