@@ -147,13 +147,19 @@ def code_span_pipe_hits(text: str) -> tuple[list[str], list[str]]:
     return hits, odd_backtick
 
 
-def check_text(text: str) -> tuple[list[str], list[str]]:
+def check_text(text: str, ledger_mode: bool = True) -> tuple[list[str], list[str]]:
     """원장 본문의 표 구조를 검사해 (위반, 경고) 목록을 낸다.
 
     표 판정은 **일반적**이다 — 비파이프 행 뒤 첫 파이프 행을 헤더로 보고, 기대
     열 수를 그 헤더에서 읽는다. 헤더 이름을 센티넬로 쓰면 헤더를 굵게 바꾸는
     것만으로 표 전체가 검사에서 빠지면서 "위반 0건"이 출력된다(리뷰 major 2).
-    상태 열 검사만 원장 6열 규약(`순번` 헤더)에 한정한다.
+
+    `ledger_mode`가 참이면 **표마다** 헤더 첫 칸이 `순번`인지 요구한다. 원장의
+    표 3개는 전부 `순번` 헤더이고 상태 열 검사가 그 규약에 의존하므로, 어느 한
+    표의 헤더가 바뀌면 그 표에서 검사가 조용히 꺼진다. 파일 단위로 "`순번` 표가
+    하나라도 있는가"만 보면 **대형 표 하나만 개명해도 나머지 둘이 카운터를 채워
+    rc=0이 된다** — 델타 재평가가 140행 표로 실측한 구멍이다(major 1).
+    거짓이면 그 요구를 끄고 표 구조만 본다(원장이 아닌 파일에 쓸 때 — 원장 26al).
     """
     violations: list[str] = []
     warnings: list[str] = []
@@ -161,9 +167,12 @@ def check_text(text: str) -> tuple[list[str], list[str]]:
     awaiting_separator = False
     is_ledger_shape = False
     tables = 0
-    ledger_tables = 0
 
-    for lineno, raw in enumerate(text.split("\n"), 1):
+    for lineno, line in enumerate(text.split("\n"), 1):
+        # GFM은 표 행에 최대 3칸 들여쓰기를 허용한다. 들여쓴 행을 표 밖으로 보면
+        # 표 상태가 초기화돼 이후 행에 **틀린 진단**이 나온다(델타 재평가 minor 5).
+        stripped = line.lstrip(" ")
+        raw = stripped if len(line) - len(stripped) <= 3 else line
         if not raw.startswith("|"):
             # 표가 끝났다. 다음 표는 자기 헤더에서 열 수를 다시 읽어야 한다 —
             # 초기화하지 않으면 열 구성이 다른 새 표가 직전 표의 열 수로
@@ -190,8 +199,15 @@ def check_text(text: str) -> tuple[list[str], list[str]]:
             expected = len(cells)
             awaiting_separator = True
             is_ledger_shape = len(cells) > 1 and cells[1] == LEDGER_HEADER
-            if is_ledger_shape:
-                ledger_tables += 1
+            if ledger_mode and not is_ledger_shape:
+                # 표마다 요구한다 — 파일 단위로 세면 대형 표 하나만 개명해도
+                # 나머지 표가 카운터를 채워 무성 통과한다(델타 재평가 major 1).
+                head = cells[1] if len(cells) > 1 else ""
+                violations.append(
+                    f"  {lineno}행: 원장 표의 헤더 첫 칸이 `{LEDGER_HEADER}`가 아니다"
+                    f"({head!r}) — 이 표에서 상태 열 검사(집계 오염 탐지)가 "
+                    f"조용히 꺼진다"
+                )
             continue
 
         if awaiting_separator:
@@ -241,8 +257,15 @@ def check_text(text: str) -> tuple[list[str], list[str]]:
             )
 
         # 위치가 맞아도 어휘가 어긋나면 정확 일치로 세는 사람이 놓친다.
+        # **빈 칸도 위반이다** — GFM은 정상 렌더하므로 눈에 안 보이는데 집계에서만
+        # 조용히 빠진다. `26l`과 같은 실패 모드다(델타 재평가 minor 3).
         status = cells[STATUS_INDEX] if len(cells) > STATUS_INDEX else ""
-        if status and not status.startswith(STATUS_TOKENS):
+        if not status:
+            violations.append(
+                f"  {lineno}행 [{row_id}] 상태 열이 비어 있다 — 렌더는 정상이지만 "
+                f"⬜/✅ 집계에서 조용히 빠진다"
+            )
+        elif not status.startswith(STATUS_TOKENS):
             violations.append(
                 f"  {lineno}행 [{row_id}] 상태 열이 알 수 없는 값이다: {status!r} — "
                 f"{'·'.join(STATUS_TOKENS)} 중 하나로 시작해야 한다"
@@ -253,17 +276,10 @@ def check_text(text: str) -> tuple[list[str], list[str]]:
         violations.append(
             "  파일 끝: 헤더 다음 행이 구분선이 아니다 — GFM은 이 표를 렌더하지 않는다"
         )
-    if tables == 0:
+    if tables == 0 and ledger_mode:
         violations.append(
             "  표를 하나도 찾지 못했다 — 원장에는 표가 있어야 한다. "
             "검사가 조용히 아무것도 하지 않는 상태이므로 위반으로 보고한다"
-        )
-    elif ledger_tables == 0:
-        # 표 구조 검사는 헤더 이름에 무관하지만 **상태 열 검사는** `순번` 규약에
-        # 의존한다. 헤더를 바꾸면 그 검사가 조용히 꺼지므로 위반으로 보고한다.
-        violations.append(
-            f"  `{LEDGER_HEADER}` 헤더 표를 찾지 못했다 — 상태 열 검사가 조용히 "
-            f"꺼진 상태다(집계 오염을 못 잡는다). 헤더 첫 칸을 확인하라"
         )
 
     return violations, warnings
@@ -399,8 +415,16 @@ def run_selftest() -> int:
         ("헤더 이름이 바뀌어도 파손 데이터 행을 잡는다",
          "| **순번** | 작업 | 관련 | 상태 | 참조 | 비고 |\n" + sep
          + "\n| 22h | **제목** | RQ-43 | ⬜ | 비고가 밀렸다 |"),
+        # 델타 재평가 major 1 — 파손 없이 헤더만 개명하면 상태 열 검사가 조용히
+        # 꺼진다. 표가 여럿일 때 **다른 표가 카운터를 채워** 무성 통과하던 구멍이다.
+        ("표 하나만 헤더 개명(파손 없음 — 다른 표가 정상이어도 잡아야 한다)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
+         + "| No | 작업 | 관련 | 상태 | 참조 | 비고 |\n" + sep
+         + "\n| 2 | **c** | RQ-02 | ⬜ | `g` | d |"),
         ("상태 열 어휘가 알 수 없는 값",
          table("| 9z | **제목** | RQ-01 | 진행중 | `파일` | 비고 |")),
+        ("상태 열이 빈 칸(렌더는 정상, 집계에서만 빠진다)",
+         table("| 9y | **제목** | RQ-01 |  | `파일` | 비고 |")),
         ("표가 하나도 없다(검사가 무성 통과하지 않는다)", "표가 없는 산문뿐이다\n"),
     ]
 
@@ -418,12 +442,19 @@ def run_selftest() -> int:
         ("표가 여러 개(같은 열 수)",
          table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
          + table("| 2 | **c** | RQ-02 | ⬜ | `g` | d |")),
-        ("열 구성이 다른 두 번째 표(changelog 형태 — 오탐 금지)",
-         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
-         + "| 날짜 | 변경 내용 | 대상 | 사유 |\n|---|---|---|---|\n"
-         + "| 2026-07-30 | **x** | `f` | y |"),
         ("정렬 표기 구분선",
          header + "\n|:---|:---:|---:|---|---|---|\n| 1 | **a** | RQ-01 | ✅ | `f` | b |"),
+        ("3칸 이하 들여쓴 표 행(GFM 허용 — 오탐 금지)",
+         "  " + header + "\n  " + sep + "\n  | 1 | **a** | RQ-01 | ✅ | `f` | b |"),
+    ]
+
+    # `ledger_mode=False`로만 통과해야 하는 것 — 원장이 아닌 파일을 검사할 때의
+    # 형태다(원장 26al의 커버리지 확장이 이 모드를 쓴다).
+    must_pass_generic = [
+        ("열 구성이 다른 표만 있는 파일(changelog 형태 — 오탐 금지)",
+         "| 날짜 | 변경 내용 | 대상 | 사유 |\n|---|---|---|---|\n"
+         + "| 2026-07-30 | **x** | `f` | y |"),
+        ("표가 없는 파일(evals/README 형태)", "표가 없는 산문뿐이다\n"),
     ]
 
     failed = []
@@ -435,6 +466,10 @@ def run_selftest() -> int:
         violations, _ = check_text(text)
         if violations:
             failed.append(f"오탐 — {name}: {violations}")
+    for name, text in must_pass_generic:
+        violations, _ = check_text(text, ledger_mode=False)
+        if violations:
+            failed.append(f"오탐(generic) — {name}: {violations}")
 
     hook_block = [
         ("코드 스팬 안 맨 파이프", "`a || b`"),
@@ -484,7 +519,8 @@ def run_selftest() -> int:
         return 1
     print("[원장 표 게이트 selftest] 통과 — 차단 %d건·허용 %d건·경로 %d건 확인."
           % (len(must_block) + len(hook_block),
-             len(must_pass) + len(hook_pass), len(path_cases)))
+             len(must_pass) + len(must_pass_generic) + len(hook_pass),
+             len(path_cases)))
     return 0
 
 
