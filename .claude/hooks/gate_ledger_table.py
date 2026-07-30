@@ -47,6 +47,12 @@ GitHub 실제 렌더러(`api.github.com/markdown`, `mode: gfm`)로 실측한 결
 
   - **표 구조만** 본다. 셀 내용의 정확성(수치가 최신인가, 트리거가 유효한가)은
     보지 않는다 — 그것은 사람과 리뷰의 몫이다.
+  - **코드 스팬 안의 `&#124;`는 검출하지 않는다.** 오류 메시지가 그 표기를
+    권하지 않는다고 안내하면서도 잡지는 않는다 — 검출을 넣었더니 **원장이 그
+    엔티티를 정당하게 서술하는 문장**(거짓 처방을 설명하는 대목)에서 오탐이
+    났다. 되돌린 사유는 원장 26ag에 있다.
+  - **선행 파이프 없는 표 행·코드 펜스**를 인식하지 못한다(원장 26al로 이월 —
+    현재 원장에 각각 0행이라 무증상이다).
   - **`harness/progress.md` 한 파일만** 본다. 같은 표 구조의 다른 하네스 문서
     (`changelog.md` 등)는 무검출이다(원장 26al로 이월).
 
@@ -81,8 +87,11 @@ STATUS_TOKENS = ("⬜", "✅", "🔄", "⛔", "🟡")
 # 원장 표(6열)에서 상태 열의 인덱스. CELL_SPLIT 결과는
 # ['', 순번, 작업, 관련RQ, 상태, 참조파일, 비고, ''] 로 8필드다.
 STATUS_INDEX = 4
-# 이 인덱스 규약이 성립하는 표를 식별하는 헤더 첫 칸.
+# 이 인덱스 규약이 성립하는 표를 식별하는 헤더 첫 칸과 상태 칸.
 LEDGER_HEADER = "순번"
+STATUS_HEADER = "상태"
+# 원장 규약 표의 필드 수(6열 + 앞뒤 빈 필드).
+LEDGER_FIELDS = 8
 HTML_PIPE_ENTITY = "&#124;"
 
 
@@ -147,19 +156,29 @@ def code_span_pipe_hits(text: str) -> tuple[list[str], list[str]]:
     return hits, odd_backtick
 
 
-def check_text(text: str, ledger_mode: bool = True) -> tuple[list[str], list[str]]:
+def check_text(
+    text: str, ledger_mode: bool = True, stats: dict | None = None
+) -> tuple[list[str], list[str]]:
     """원장 본문의 표 구조를 검사해 (위반, 경고) 목록을 낸다.
 
     표 판정은 **일반적**이다 — 비파이프 행 뒤 첫 파이프 행을 헤더로 보고, 기대
     열 수를 그 헤더에서 읽는다. 헤더 이름을 센티넬로 쓰면 헤더를 굵게 바꾸는
     것만으로 표 전체가 검사에서 빠지면서 "위반 0건"이 출력된다(리뷰 major 2).
 
-    `ledger_mode`가 참이면 **표마다** 헤더 첫 칸이 `순번`인지 요구한다. 원장의
-    표 3개는 전부 `순번` 헤더이고 상태 열 검사가 그 규약에 의존하므로, 어느 한
-    표의 헤더가 바뀌면 그 표에서 검사가 조용히 꺼진다. 파일 단위로 "`순번` 표가
-    하나라도 있는가"만 보면 **대형 표 하나만 개명해도 나머지 둘이 카운터를 채워
-    rc=0이 된다** — 델타 재평가가 140행 표로 실측한 구멍이다(major 1).
+    `ledger_mode`가 참이면 **표마다** 원장 규약을 요구한다 — 상태 열 검사가
+    `STATUS_INDEX` 위치 규약에 의존하므로 두 방향을 함께 본다:
+
+      - `순번` 헤더 표인데 `STATUS_INDEX` 칸이 `상태`가 아니면 위반. 열을 하나
+        끼워 넣는 것만으로 검사 3종이 **조용히 다른 열로 옮겨간다**(2회차 minor 2).
+      - `LEDGER_FIELDS`(원장 6열) 표인데 `순번` 헤더가 아니면 위반. 파일 단위로
+        "`순번` 표가 하나라도 있는가"만 보면 **대형 표 하나만 개명해도 나머지
+        표가 카운터를 채워 rc=0이 된다**(1회차 major 1, 140행 표로 실측).
+
+    열 구성이 다른 부록 표(4열 changelog 형태 등)는 이 요구에서 제외한다 — GFM은
+    정상 렌더하므로 요구하면 오탐이다(2회차 minor 1).
+
     거짓이면 그 요구를 끄고 표 구조만 본다(원장이 아닌 파일에 쓸 때 — 원장 26al).
+    `stats`를 주면 검사한 표 수를 담아 돌려준다.
     """
     violations: list[str] = []
     warnings: list[str] = []
@@ -167,12 +186,27 @@ def check_text(text: str, ledger_mode: bool = True) -> tuple[list[str], list[str
     awaiting_separator = False
     is_ledger_shape = False
     tables = 0
+    ledger_tables = 0
 
     for lineno, line in enumerate(text.split("\n"), 1):
         # GFM은 표 행에 최대 3칸 들여쓰기를 허용한다. 들여쓴 행을 표 밖으로 보면
-        # 표 상태가 초기화돼 이후 행에 **틀린 진단**이 나온다(델타 재평가 minor 5).
-        stripped = line.lstrip(" ")
-        raw = stripped if len(line) - len(stripped) <= 3 else line
+        # 표 상태가 초기화돼 이후 행에 **틀린 진단**이 나온다(1회차 minor 5).
+        stripped = line.lstrip(" \t")
+        indent = len(line) - len(stripped)
+        over_indented = stripped.startswith("|") and (
+            "\t" in line[:indent] or indent >= 4
+        )
+        if over_indented:
+            # GFM은 4칸 이상(또는 탭) 들여쓴 행을 코드 블록으로 읽어 **실제로 행을
+            # 잃는다** — 차단은 정당하다. 그러나 표 상태를 끊으면 이후 행에 위반이
+            # 쏟아지고 첫 메시지가 원인을 잘못 지목한다(2회차 minor 3, 실측 94건).
+            # 전용 메시지 하나만 내고 표 검사는 그대로 이어 간다.
+            violations.append(
+                f"  {lineno}행: 표 행이 4칸 이상(또는 탭) 들여쓰여 있다 — "
+                f"GFM이 코드 블록으로 읽어 이 행과 이후 표를 버린다"
+            )
+            continue
+        raw = stripped if indent <= 3 else line
         if not raw.startswith("|"):
             # 표가 끝났다. 다음 표는 자기 헤더에서 열 수를 다시 읽어야 한다 —
             # 초기화하지 않으면 열 구성이 다른 새 표가 직전 표의 열 수로
@@ -198,15 +232,30 @@ def check_text(text: str, ledger_mode: bool = True) -> tuple[list[str], list[str
             tables += 1
             expected = len(cells)
             awaiting_separator = True
-            is_ledger_shape = len(cells) > 1 and cells[1] == LEDGER_HEADER
-            if ledger_mode and not is_ledger_shape:
-                # 표마다 요구한다 — 파일 단위로 세면 대형 표 하나만 개명해도
-                # 나머지 표가 카운터를 채워 무성 통과한다(델타 재평가 major 1).
-                head = cells[1] if len(cells) > 1 else ""
+            first = cells[1] if len(cells) > 1 else ""
+            status_head = cells[STATUS_INDEX] if len(cells) > STATUS_INDEX else ""
+            # 상태 열 검사는 위치 규약(`STATUS_INDEX`)에 의존한다. 헤더에서
+            # 그 자리가 `상태`인지 대조하지 않으면, 열을 하나 끼워 넣는 것만으로
+            # 검사 3종이 조용히 **다른 열로 옮겨간다**(델타 재평가 2회차 minor 2 —
+            # 1회차 major 1과 같은 결함 계열의 인접 파라미터다).
+            is_ledger_shape = first == LEDGER_HEADER and status_head == STATUS_HEADER
+            if is_ledger_shape:
+                ledger_tables += 1
+            if ledger_mode and first == LEDGER_HEADER and not is_ledger_shape:
                 violations.append(
-                    f"  {lineno}행: 원장 표의 헤더 첫 칸이 `{LEDGER_HEADER}`가 아니다"
-                    f"({head!r}) — 이 표에서 상태 열 검사(집계 오염 탐지)가 "
-                    f"조용히 꺼진다"
+                    f"  {lineno}행: `{LEDGER_HEADER}` 표인데 {STATUS_INDEX}번째 칸이 "
+                    f"`{STATUS_HEADER}`가 아니다({status_head!r}) — 상태 열 검사 3종이 "
+                    f"조용히 다른 열로 옮겨간다"
+                )
+            elif ledger_mode and first != LEDGER_HEADER and len(cells) == LEDGER_FIELDS:
+                # 원장 규약(6열=8필드) 표는 `순번` 헤더여야 한다. 표마다 요구한다 —
+                # 파일 단위로 세면 대형 표 하나만 개명해도 나머지 표가 카운터를
+                # 채워 무성 통과한다(1회차 major 1). 열 구성이 다른 부록 표는
+                # 이 요구에서 제외한다(2회차 minor 1 — GFM은 정상 렌더한다).
+                violations.append(
+                    f"  {lineno}행: 원장 규약 표({LEDGER_FIELDS}필드)인데 헤더 첫 칸이 "
+                    f"`{LEDGER_HEADER}`가 아니다({first!r}) — 이 표에서 상태 열 검사"
+                    f"(집계 오염 탐지)가 조용히 꺼진다"
                 )
             continue
 
@@ -276,6 +325,10 @@ def check_text(text: str, ledger_mode: bool = True) -> tuple[list[str], list[str
         violations.append(
             "  파일 끝: 헤더 다음 행이 구분선이 아니다 — GFM은 이 표를 렌더하지 않는다"
         )
+    if stats is not None:
+        stats["tables"] = tables
+        stats["ledger_tables"] = ledger_tables
+
     if tables == 0 and ledger_mode:
         violations.append(
             "  표를 하나도 찾지 못했다 — 원장에는 표가 있어야 한다. "
@@ -290,7 +343,8 @@ def run_check(ledger: Path = LEDGER) -> int:
         _stderr(f"[원장 표 게이트] 원장을 찾을 수 없다: {ledger}")
         return 1
     text = ledger.read_text(encoding="utf-8")
-    violations, warnings = check_text(text)
+    stats: dict = {}
+    violations, warnings = check_text(text, stats=stats)
     span_hits, odd_backtick = code_span_pipe_hits(text)
     for line in odd_backtick:
         warnings.append(f"  백틱이 홀수인 행 — 코드 스팬 짝짓기를 신뢰할 수 없다: {line}")
@@ -309,8 +363,10 @@ def run_check(ledger: Path = LEDGER) -> int:
         )
         return 1
     # 몇 개를 봤는지 함께 찍는다 — 침묵을 커버리지로 오해하지 않도록.
-    tables = sum(1 for line in text.split("\n") if line.startswith("| 순번 "))
-    print(f"[원장 표 게이트] 위반 0건 (원장 표 {tables}개 검사).")
+    # 계수는 `check_text`가 **실제로 검사한 것**을 그대로 받는다. 별도 방법으로
+    # 세면 들여쓴 표를 놓쳐 실제보다 적게 찍힌다(2회차 minor 6).
+    print("[원장 표 게이트] 위반 0건 (표 %d개 · 원장 규약 표 %d개 검사)."
+          % (stats.get("tables", 0), stats.get("ledger_tables", 0)))
     return 0
 
 
@@ -375,8 +431,8 @@ def _is_ledger_path(path_str: str) -> bool:
     접미사 일치(`endswith`)를 쓰면 프로젝트 밖의 동명 파일이나
     `xharness/progress.md`도 걸린다(리뷰 minor 7).
     """
-    if not path_str:
-        return False
+    if not isinstance(path_str, str) or not path_str:
+        return False  # payload가 문자열이 아닐 때 AttributeError로 죽지 않는다
     p = Path(path_str.replace("\\", "/"))
     try:
         rel = p.resolve().relative_to(ROOT) if p.is_absolute() else p
@@ -421,6 +477,17 @@ def run_selftest() -> int:
          table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
          + "| No | 작업 | 관련 | 상태 | 참조 | 비고 |\n" + sep
          + "\n| 2 | **c** | RQ-02 | ⬜ | `g` | d |"),
+        # 2회차 minor 2 — 열을 끼워 상태 열을 밀면 검사 3종이 다른 열로 옮겨간다.
+        ("`순번` 표에 열을 끼워 상태 열이 밀렸다",
+         "| 순번 | 분류 | 작업 | 관련 | 상태 | 참조 | 비고 |\n|---|---|---|---|---|---|---|\n"
+         + "| 1 | x | **a** | RQ-01 | ✅ | `f` | b |"),
+        # 2회차 minor 3 — GFM이 코드 블록으로 읽어 실제로 행을 잃는다.
+        ("표 행이 4칸 들여쓰여 있다",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |")
+         + "\n    | 2 | **c** | RQ-02 | ⬜ | `g` | d |"),
+        ("표 행이 탭으로 들여쓰여 있다",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |")
+         + "\n\t| 2 | **c** | RQ-02 | ⬜ | `g` | d |"),
         ("상태 열 어휘가 알 수 없는 값",
          table("| 9z | **제목** | RQ-01 | 진행중 | `파일` | 비고 |")),
         ("상태 열이 빈 칸(렌더는 정상, 집계에서만 빠진다)",
@@ -446,6 +513,10 @@ def run_selftest() -> int:
          header + "\n|:---|:---:|---:|---|---|---|\n| 1 | **a** | RQ-01 | ✅ | `f` | b |"),
         ("3칸 이하 들여쓴 표 행(GFM 허용 — 오탐 금지)",
          "  " + header + "\n  " + sep + "\n  | 1 | **a** | RQ-01 | ✅ | `f` | b |"),
+        # 2회차 minor 1 — 원장 안의 열 구성이 다른 부록 표. GFM은 정상 렌더한다.
+        ("원장에 열 구성이 다른 부록 표(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
+         + "| 날짜 | 내용 |\n|---|---|\n| 2026-07-30 | x |"),
     ]
 
     # `ledger_mode=False`로만 통과해야 하는 것 — 원장이 아닌 파일을 검사할 때의
