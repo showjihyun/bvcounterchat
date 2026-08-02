@@ -60,6 +60,12 @@ python .claude/hooks/gate_map_asset_provenance.py --selftest
 # CI에만 있는 검증 단계를 만들면 안 된다. 실측: 전 파일 검사가 즉시 끝난다.
 git ls-files -z | xargs -0 python .claude/hooks/gate_map_asset_provenance.py --check-paths
 
+# 원장 표 무결성 — 표가 깨져도 아무것도 실패하지 않던 구멍을 막는다(원장 26ag).
+# 이월을 원장으로 몰아주는 정책의 안전성은 원장 무결성에 정비례하므로(ADR-0012),
+# 표가 깨지면 ⬜/✅ 집계가 조용히 틀어지고 재검토 임계가 잘못 발화한다.
+python .claude/hooks/gate_ledger_table.py --selftest
+python .claude/hooks/gate_ledger_table.py --check
+
 npx eslint .
 npx tsc --noEmit
 

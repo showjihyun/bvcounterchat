@@ -25,6 +25,10 @@
           {
             "type": "command",
             "command": "python .claude/hooks/gate_map_asset_provenance.py"
+          },
+          {
+            "type": "command",
+            "command": "python .claude/hooks/gate_ledger_table.py"
           }
         ]
       }

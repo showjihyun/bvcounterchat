@@ -39,6 +39,7 @@ jobs:
           python .claude/hooks/gate_spec_freeze.py --selftest
           python .claude/hooks/gate_coder_test_write.py --selftest
           python .claude/hooks/gate_map_asset_provenance.py --selftest
+          python .claude/hooks/gate_ledger_table.py --selftest
 
       - name: 맵 에셋 출처 게이트 (RQ-30 · ADR-0007 결정 1)
         # 커밋된 전 파일의 **경로와 내용**을 훑는다. PreToolUse 훅은 쓰기 **전**이라
