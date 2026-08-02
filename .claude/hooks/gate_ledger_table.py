@@ -51,19 +51,56 @@ GitHub 실제 렌더러(`api.github.com/markdown`, `mode: gfm`)로 실측한 결
     권하지 않는다고 안내하면서도 잡지는 않는다 — 검출을 넣었더니 **원장이 그
     엔티티를 정당하게 서술하는 문장**(거짓 처방을 설명하는 대목)에서 오탐이
     났다. 되돌린 사유는 원장 26ag에 있다.
-  - **선행 파이프 없는 표 행·코드 펜스**를 인식하지 못한다(원장 26al로 이월 —
-    현재 원장에 각각 0행이라 무증상이다).
-  - **`harness/progress.md` 한 파일만** 본다. 같은 표 구조의 다른 하네스 문서
-    (`changelog.md` 등)는 무검출이다(원장 26al로 이월).
+  - **원장 파일 안의 6열 비원장 부록 표를 오탐한다**(원장 26al ③). 개명된 원장
+    표를 잡으려고 필드 수를 세는 트레이드오프의 이면이다 — 원장에 우연히 6열인
+    부록 표가 생기면 "`순번` 헤더가 아니다"로 막힌다. 현재 그런 표는 0개다.
+    막히면 그 표의 열 수를 바꾸거나 `순번` 규약을 따르면 된다.
+  - **블록쿼트(`>`) 안의 표는 보지 않는다.** `specs/requirements.md`의 개정 이력
+    표가 그 형태다 — 검사 대상 목록에는 있으나 이 파일에서 검출되는 표는 0개다.
+  - **훅의 Edit·MultiEdit 조각 검사는 선행 파이프로 시작하는 줄만 본다.**
+    표 행 **중간을 자른** 편집(원장 행은 2천 자를 넘어 실제 편집이 대부분 이 형태다)은
+    훅을 통과한다. 조각에는 표 문맥이 없어 생긴 트레이드오프이며, 반대 방향(문맥
+    없이 전부 검사)은 산문 오탐으로 편집을 막는다 — 실제로 그 오탐이 리뷰
+    blocker였다.
+
+    **이 미탐의 크기를 축소해 적지 않는다**(독립 평가 Q2 지적). 놓치는 형태는
+    가정이 아니라 **이 저장소가 실제로 겪은 두 가지**다 — 원장 `28a`·`22f`를
+    깨뜨린 "비고 셀 일부만 치환하는 Edit", 그리고 2026-07-29 사고 형태(절댓값
+    기호를 코드 스팬에)를 줄 중간에 쓴 것. `origin/main` 훅은 둘 다 막았고 지금은
+    통과한다(평가자가 두 리비전에 같은 payload를 먹여 실측).
+
+    **보상 층은 `--check`이고 그것으로 충분하지 않다.** `check.sh`·CI가 잡으므로
+    파손이 `main`에 도달하지는 않지만, `check.sh`의 게이트 절은 `--fast` 조기
+    종료 **뒤**에 있어 **저장마다 도는 `--fast` 경로는 게이트를 돌리지 않는다**.
+    즉 손실이 사라진 것이 아니라 "편집 시점 → 커밋·CI 시점"으로 **이동**했다.
+    (원장 26ar로 이월 — 수정안은 조각을 파일에 메모리 적용한 뒤 `check_text`를
+    돌려 표 문맥을 복원하는 것이다)
 
 실행 모드
 ---------
   (stdin에 JSON)   PreToolUse hook. exit 2 = 도구 호출 차단.
-                   원장 경로일 때만 동작한다. 전문을 받는 Write는 표 구조까지,
-                   조각만 받는 Edit는 **코드 스팬 안의 파이프**만 본다
-                   (정상 셀 경계 파이프는 백틱 밖이라 오탐이 없다).
-  --check          원장 전체 검사. 위반이 있으면 exit 1.
+                   검사 대상 경로일 때만 동작한다. 전문을 받는 Write는 표 구조까지,
+                   조각만 받는 Edit는 **선행 파이프로 시작하는 줄의** 코드 스팬 안
+                   파이프만 본다(표 문맥이 없어 그 줄로만 판정한다 — 위 「한계」 참조).
+  --check          검사 대상 전체 검사. 위반이 있으면 exit 1.
   --selftest       내장 검증. 게이트 자체가 고장 났는지 확인한다.
+
+## 무엇을 검사하는가 — 한 파일에서 `harness/**/*.md` 전체로 (원장 26al)
+
+이 게이트는 처음에 `harness/progress.md` 하나만 봤다. 그런데 **같은 결함이 다른
+하네스 문서에도 있었다** — `changelog.md`에 원장 `28a`를 깨뜨린 것과 동일한 semver
+인용·동일한 맨 파이프가 있어 초과 2셀이 버려지고 있었다(PR #39가 그 1건은
+고쳤지만 게이트는 여전히 그 파일을 보지 않았다).
+
+커버리지를 `harness/**/*.md`로 넓히자 **즉시 실파손 1건이 더 나왔다**:
+`adr/0004-physics-collision.md`의 RQ-92 **확정값 표**에서 "공중 가속" 행이 두 줄로
+쪼개져 뒷문장이 `항목` 칸으로 렌더되고 있었다. 하필 RQ-21·22 이동 라운드가 읽을
+표다. **손으로 관리하는 파일 목록이 아니라 글로브**를 쓰는 이유가 이것이다 —
+목록이 드리프트하는 것이 26al이 지적한 병 그 자체다.
+
+원장 규약(상태 열 검사·최소 표 수)은 `harness/progress.md`에만 적용한다
+(`ledger_mode`). 다른 문서는 표 구조만 본다 — 열 구성이 파일마다 다르고, 표가
+아예 없는 파일(`evals/README.md`)도 목록에 들어오기 때문이다.
 """
 import json
 import re
@@ -72,9 +109,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 LEDGER = ROOT / "harness" / "progress.md"
+# 검사 대상. 손으로 적은 목록은 드리프트한다 — 그것이 26al이 지적한 병이라
+# 글로브를 쓴다. 원장 규약은 `LEDGER`에만 적용한다(`ledger_mode`).
+GATED_GLOB = "harness/**/*.md"
+# 원장이 가져야 하는 최소 원장 규약 표 수(현재 3: 하네스 구축·Deep Interview·로드맵).
+# **개명과 열 수 변경을 함께** 하면 `순번` 검사도 `LEDGER_FIELDS` 검사도 빠져나가
+# 상태 열 검사 3종이 무성으로 꺼진다(원장 26al ④). 그 경로를 이 최소치가 막는다.
+MIN_LEDGER_TABLES = 3
 
 # 이스케이프되지 않은 파이프만 셀 구분자로 인정한다.
 CELL_SPLIT = re.compile(r"(?<!\\)\|")
+# 코드 펜스. 펜스 안의 파이프를 표 행으로 오판하지 않기 위해 상태를 추적한다
+# (원장 26al ②). 여는 펜스와 같은 문자·같은 길이 이상이어야 닫힌다.
+FENCE = re.compile(r"^(`{3,}|~{3,})")
 # 백틱 코드 스팬. **DOTALL을 쓰지 않는다** — 미닫힌 백틱 하나가 행 경계를 넘어
 # 짝지어져 셀 경계 파이프를 스팬 안으로 삼키면, GFM은 정상 렌더하는데 훅이
 # "코드 스팬 안에 파이프가 있다"는 없는 원인으로 편집을 막는다(리뷰 minor 5).
@@ -157,7 +204,10 @@ def code_span_pipe_hits(text: str) -> tuple[list[str], list[str]]:
 
 
 def check_text(
-    text: str, ledger_mode: bool = True, stats: dict | None = None
+    text: str,
+    ledger_mode: bool = True,
+    stats: dict | None = None,
+    min_ledger_tables: int = 0,
 ) -> tuple[list[str], list[str]]:
     """원장 본문의 표 구조를 검사해 (위반, 경고) 목록을 낸다.
 
@@ -179,6 +229,25 @@ def check_text(
 
     거짓이면 그 요구를 끄고 표 구조만 본다(원장이 아닌 파일에 쓸 때 — 원장 26al).
     `stats`를 주면 검사한 표 수를 담아 돌려준다.
+
+    ## 표 행을 무엇으로 보는가 (원장 26al ①②⑤)
+
+    GFM은 `| a | b |`뿐 아니라 **선행 파이프 없는** `a | b`도 표 행으로 받고, 표는
+    빈 줄에서 끝난다. `startswith("|")`만 보면 두 경로를 놓친다:
+
+      - **헤더에 선행 파이프가 없는 표** — 다음 줄이 구분선이면 표다. 앞을 내다봐서
+        잡는다.
+      - **표 안의 선행 파이프 없는 행** — GFM이 그 줄을 행으로 흡수한다. 실측:
+        `adr/0004`의 "공중 가속" 행이 두 줄로 쪼개져 뒷문장이 `항목` 칸으로
+        렌더되고 있었다.
+
+    다만 **파이프가 하나도 없는 줄은 표를 끝낸 것으로 본다.** GFM은 그것도 1셀 행으로
+    흡수하지만, 그렇게 보면 표 바로 뒤 산문 한 줄마다 "열 수 부족"이 쏟아진다 —
+    오탐이 CI를 막는 방향이라 미탐보다 나쁘다. 좁은 쪽을 택하고 selftest로 못박는다.
+
+    코드 펜스(```) 안은 표가 아니다 — 펜스를 추적해 건너뛴다(②). 구분선이 깨져
+    표가 렌더되지 않을 때는 **그 표를 통째로 건너뛴다**(⑤) — 이어서 검사하면
+    데이터 행을 헤더로 오진하며 진단 수백 건이 쏟아져 첫 메시지가 묻힌다.
     """
     violations: list[str] = []
     warnings: list[str] = []
@@ -187,8 +256,49 @@ def check_text(
     is_ledger_shape = False
     tables = 0
     ledger_tables = 0
+    fence: str | None = None
+    skipping = False  # 구분선 파손 뒤 그 표를 건너뛰는 중
 
-    for lineno, line in enumerate(text.split("\n"), 1):
+    lines = text.split("\n")
+
+    def is_separator_line(nxt: str) -> bool:
+        """구분선인가. **선행 파이프 없는 형태(`---|---`)도 인정한다** — 이 판정은
+        헤더 앞을 내다보는 데만 쓰이므로 두 형태를 모두 받아야 한다."""
+        s = nxt.lstrip(" \t")
+        if not s or CELL_SPLIT.search(s) is None:
+            return False
+        inner = [c for c in split_cells(s) if c]
+        return bool(inner) and all(SEPARATOR_CELL.match(c) for c in inner)
+
+    for lineno, line in enumerate(lines, 1):
+        # 코드 펜스 안은 마크다운이 아니다 — 파이프가 있어도 표 행이 아니다.
+        m_fence = FENCE.match(line.lstrip(" \t"))
+        if m_fence:
+            token = m_fence.group(1)
+            if fence is None:
+                # **여는 토큰을 통째로 저장한다.** 문자만 저장하면 ````markdown 으로
+                # 연 펜스가 안쪽 ``` 에 닫혀 그 뒤를 마크다운으로 읽는다(리뷰 major —
+                # 주석이 "같은 문자·같은 길이 이상"을 계약으로 선언했는데 구현이
+                # 문자만 봤다). 표 마크업 규약을 문서화하는 하네스라 마크다운-속-
+                # 마크다운 예시가 자연스럽게 등장한다.
+                fence = token
+                expected = None
+                awaiting_separator = False
+                is_ledger_shape = False
+                skipping = False
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+
+        if skipping:
+            # 파손된 표를 건너뛰는 중. 빈 줄이나 파이프 없는 줄에서 해제한다.
+            if not line.strip() or CELL_SPLIT.search(line) is None:
+                skipping = False
+            else:
+                continue
+
         # GFM은 표 행에 최대 3칸 들여쓰기를 허용한다. 들여쓴 행을 표 밖으로 보면
         # 표 상태가 초기화돼 이후 행에 **틀린 진단**이 나온다(1회차 minor 5).
         stripped = line.lstrip(" \t")
@@ -207,7 +317,37 @@ def check_text(
             )
             continue
         raw = stripped if indent <= 3 else line
+        has_pipe = CELL_SPLIT.search(raw) is not None
         if not raw.startswith("|"):
+            # 선행 파이프가 없어도 GFM은 표 행으로 받는다(원장 26al ①). 두 경로를
+            # 각각 **전용 진단**으로 처리한다 — 열 수 비교로 흘려보내면 필드 수
+            # 규약(선행·후행 빈 필드)이 달라 틀린 수치를 찍는다.
+            if expected is not None and raw.strip() and has_pipe:
+                # 표 안의 선행 파이프 없는 행. GFM이 **별개 행으로 흡수**하므로
+                # 이 줄이 첫 칸으로 밀린다. 실측: `adr/0004`의 "공중 가속" 행이
+                # 두 줄로 쪼개져 뒷문장이 `항목` 칸으로 렌더되고 있었다.
+                violations.append(
+                    f"  {lineno}행: 표 안에 선행 파이프 없는 행이 있다 — GFM이 "
+                    f"별개 행으로 흡수해 이 줄이 **첫 칸으로 밀린다**. 앞 행의 "
+                    f"이어짐으로 의도했다면 한 줄로 합쳐라: {raw.strip()[:50]!r}"
+                )
+                continue
+            if (
+                expected is None
+                and raw.strip()
+                and has_pipe
+                and lineno < len(lines)
+                and is_separator_line(lines[lineno])
+            ):
+                # 선행 파이프 없는 헤더. GFM은 정상 렌더하므로 **막지 않는다** —
+                # 다만 이 저장소의 표는 전부 선행 파이프 규약이라 열 수 비교가
+                # 그 형태를 전제한다. 그 표는 통째로 건너뛴다(틀린 진단 방지).
+                warnings.append(
+                    f"  {lineno}행: 표 헤더에 선행 파이프가 없다 — 렌더는 정상이나 "
+                    f"이 게이트의 열 수 검사는 이 표를 건너뛴다"
+                )
+                skipping = True
+                continue
             # 표가 끝났다. 다음 표는 자기 헤더에서 열 수를 다시 읽어야 한다 —
             # 초기화하지 않으면 열 구성이 다른 새 표가 직전 표의 열 수로
             # 판정돼 틀린 진단으로 CI를 막는다(리뷰 major 2).
@@ -219,13 +359,33 @@ def check_text(
             expected = None
             awaiting_separator = False
             is_ledger_shape = False
-            if "|" in raw:
+            # **원장에서만** 알린다. 원장은 거의 전부가 표라 표 밖 파이프가
+            # 의심스럽지만, 일반 하네스 문서에서는 산문·블록쿼트·코드 스팬 사이의
+            # 파이프가 정상이다 — 커버리지를 넓히자 이 경고만 12건이 나왔다
+            # (`requirements.md`의 블록쿼트 개정 이력 표 9건 등). 소음은 게이트를
+            # 꺼지게 만드는 가장 흔한 경로다.
+            if ledger_mode and "|" in raw:
                 warnings.append(
                     f"  {lineno}행: 표 밖에 파이프가 있다 — 표 판정 전제가 흔들릴 수 있다"
                 )
             continue
 
         cells = split_cells(raw)
+
+        # 코드 스팬 안의 맨 파이프는 **표 행에서만** 결함이다. 산문·블록쿼트의
+        # `a || b`는 GFM이 정상 렌더한다 — 파일 전체를 훑던 이전 방식은 커버리지를
+        # `harness/**`로 넓히자마자 오탐을 냈다(실측: `infra/worker-crash-rca.md:12`의
+        # 블록쿼트 semver 인용). 표 문맥으로 한정한다.
+        span_hits, odd = code_span_pipe_hits(raw)
+        if span_hits:
+            violations.append(
+                f"  {lineno}행: 코드 스팬 안에 맨 파이프가 있다 — GFM이 셀 경계로 "
+                f"읽어 이 행이 잘린다: {', '.join(span_hits[:3])}"
+            )
+        for bad in odd:
+            warnings.append(
+                f"  {lineno}행: 백틱이 홀수다 — 코드 스팬 짝짓기를 신뢰할 수 없다: {bad}"
+            )
 
         if expected is None:
             # 표의 첫 파이프 행 = 헤더.
@@ -261,30 +421,42 @@ def check_text(
 
         if awaiting_separator:
             awaiting_separator = False
+            # 구분선이 깨지면 GFM은 이 표를 렌더하지 않는다. 이어서 검사하면
+            # 데이터 행을 헤더로 오진하며 진단이 쏟아져 **첫 메시지가 묻힌다**
+            # (원장 26al ⑤ — 실측 138건). 원인을 한 번만 말하고 표를 건너뛴다.
             if not is_separator_row(cells):
                 violations.append(
                     f"  {lineno}행: 헤더 다음 행이 구분선이 아니다 — "
-                    f"GFM은 이 표를 **아예 렌더하지 않는다**(단락이 된다)"
+                    f"GFM은 이 표를 **아예 렌더하지 않는다**(단락이 된다). "
+                    f"이 표의 나머지 행은 건너뛴다"
                 )
                 expected = None
                 is_ledger_shape = False
+                skipping = True
             elif len(cells) != expected:
                 violations.append(
                     f"  {lineno}행: 구분선 열 수가 헤더와 다르다 — "
                     f"{len(cells)}개(헤더 {expected}개). "
-                    f"GFM은 이 표를 **아예 렌더하지 않는다**"
+                    f"GFM은 이 표를 **아예 렌더하지 않는다**. "
+                    f"이 표의 나머지 행은 건너뛴다"
                 )
+                expected = None
+                is_ledger_shape = False
+                skipping = True
             continue
 
         row_id = cells[1] if len(cells) > 1 else "?"
 
         if len(cells) != expected:
             kind = "부족" if len(cells) < expected else "초과"
-            fix = (
-                "참조 파일 열이 빠졌는지 확인하라(빈 칸이라도 파이프는 있어야 한다)"
-                if kind == "부족"
-                else "셀 안의 파이프 앞에 백슬래시 하나를 붙여라"
-            )
+            if kind == "초과":
+                fix = "셀 안의 파이프 앞에 백슬래시 하나를 붙여라"
+            elif ledger_mode:
+                fix = "참조 파일 열이 빠졌는지 확인하라(빈 칸이라도 파이프는 있어야 한다)"
+            else:
+                # 원장 밖 문서는 열 구성이 파일마다 다르다 — 원장 전용 조언을
+                # 그대로 내면 틀린 곳을 가리킨다(`adr/0004`에 "참조 파일 열"은 없다).
+                fix = "빈 칸이라도 파이프는 있어야 한다. 셀이 두 줄로 쪼개졌는지 확인하라"
             violations.append(
                 f"  {lineno}행 [{row_id}] 열 수 {kind} — {len(cells)}개"
                 f"(기대 {expected}개). {fix}"
@@ -329,6 +501,17 @@ def check_text(
         stats["tables"] = tables
         stats["ledger_tables"] = ledger_tables
 
+    if ledger_mode and min_ledger_tables and ledger_tables < min_ledger_tables:
+        # **개명과 열 수 변경을 함께** 하면 `순번` 검사도 `LEDGER_FIELDS` 검사도
+        # 빠져나가 상태 열 검사 3종이 조용히 꺼진다(원장 26al ④). 사고성 편집으로는
+        # 도달하지 않지만(138행 전부를 고쳐야 한다) 그 경로가 열려 있는 것 자체가
+        # 문제다 — 최소 개수로 막는다.
+        violations.append(
+            f"  원장 규약 표가 {ledger_tables}개뿐이다(최소 {min_ledger_tables}개). "
+            f"헤더 개명·열 수 변경으로 상태 열 검사가 조용히 꺼지지 않았는지 확인하라 "
+            f"— 표를 정당하게 줄였다면 `MIN_LEDGER_TABLES`를 함께 낮춰라"
+        )
+
     if tables == 0 and ledger_mode:
         violations.append(
             "  표를 하나도 찾지 못했다 — 원장에는 표가 있어야 한다. "
@@ -338,40 +521,76 @@ def check_text(
     return violations, warnings
 
 
-def run_check(ledger: Path = LEDGER) -> int:
-    if not ledger.exists():
-        _stderr(f"[원장 표 게이트] 원장을 찾을 수 없다: {ledger}")
+def gated_files() -> list[Path]:
+    """검사 대상. 원장이 목록에 없으면(파일 부재) 그것부터 실패시킨다."""
+    return sorted(ROOT.glob(GATED_GLOB))
+
+
+def run_check() -> int:
+    if not LEDGER.exists():
+        _stderr(f"[원장 표 게이트] 원장을 찾을 수 없다: {LEDGER}")
         return 1
-    text = ledger.read_text(encoding="utf-8")
-    stats: dict = {}
-    violations, warnings = check_text(text, stats=stats)
-    span_hits, odd_backtick = code_span_pipe_hits(text)
-    for line in odd_backtick:
-        warnings.append(f"  백틱이 홀수인 행 — 코드 스팬 짝짓기를 신뢰할 수 없다: {line}")
-    for warn in warnings:
-        print(f"[원장 표 게이트] 경고:\n{warn}")
-    if span_hits:
-        sample = ", ".join(span_hits[:3]) + ("..." if len(span_hits) > 3 else "")
-        violations.append(f"  코드 스팬 안에 맨 파이프가 있다: {sample}")
-    if violations:
+
+    all_violations: list[str] = []
+    files = gated_files()
+    total_tables = 0
+    total_ledger_tables = 0
+
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        # 원장 규약(상태 열·최소 표 수)은 원장에만. 다른 문서는 열 구성이 다르고
+        # 표가 아예 없는 파일도 있어 표 구조만 본다(원장 26al).
+        ledger_mode = path.resolve() == LEDGER.resolve()
+        stats: dict = {}
+        violations, warnings = check_text(
+            path.read_text(encoding="utf-8"),
+            ledger_mode=ledger_mode,
+            stats=stats,
+            min_ledger_tables=MIN_LEDGER_TABLES if ledger_mode else 0,
+        )
+        total_tables += stats.get("tables", 0)
+        total_ledger_tables += stats.get("ledger_tables", 0)
+        for warn in warnings:
+            print(f"[원장 표 게이트] 경고 {rel}:\n{warn}")
+        all_violations.extend(f"  {rel} {v.strip()}" for v in violations)
+
+    if all_violations:
         _stderr(
             "[원장 표 게이트] 표 무결성 위반 %d건:\n%s\n"
             "파이프를 셀 안에 넣으려면 **백슬래시 하나**를 앞에 붙인다 — "
             "이중 백슬래시는 코드 스팬 안에서 백슬래시가 노출되고, "
             "`%s`는 코드 스팬 안에서 디코딩되지 않는다(2026-07-30 실측)."
-            % (len(violations), "\n".join(violations), HTML_PIPE_ENTITY)
+            % (len(all_violations), "\n".join(all_violations), HTML_PIPE_ENTITY)
         )
         return 1
     # 몇 개를 봤는지 함께 찍는다 — 침묵을 커버리지로 오해하지 않도록.
     # 계수는 `check_text`가 **실제로 검사한 것**을 그대로 받는다. 별도 방법으로
     # 세면 들여쓴 표를 놓쳐 실제보다 적게 찍힌다(2회차 minor 6).
-    print("[원장 표 게이트] 위반 0건 (표 %d개 · 원장 규약 표 %d개 검사)."
-          % (stats.get("tables", 0), stats.get("ledger_tables", 0)))
+    print("[원장 표 게이트] 위반 0건 (파일 %d개 · 표 %d개 · 원장 규약 표 %d개 검사)."
+          % (len(files), total_tables, total_ledger_tables))
     return 0
 
 
+def fragment_hits(fragments: list[str]) -> list[str]:
+    """편집 조각에서 **표 행의** 코드 스팬 맨 파이프만 뽑는다.
+
+    조각에는 표 문맥이 없으므로 선행 파이프로만 판정한다. 이 함수가 따로 있는
+    이유는 selftest가 훅 경로를 실제로 검사하기 위해서다 — 이전에는 selftest가
+    `code_span_pipe_hits`만 직접 불러 **훅이 그것을 어떤 범위에 적용하는지**를
+    검사하지 않았고, 그 틈으로 산문 오탐 회귀가 통과했다(리뷰 blocker).
+    """
+    hits: list[str] = []
+    for text in fragments:
+        for line in text.split("\n"):
+            if not line.lstrip(" \t").startswith("|"):
+                continue  # 표 행이 아니다 — 산문의 `a || b`는 GFM이 정상 렌더한다
+            found, _odd = code_span_pipe_hits(line)
+            hits.extend(found)
+    return hits
+
+
 def run_hook() -> int:
-    """PreToolUse hook. 원장을 쓰는 도구 호출을 검사한다."""
+    """PreToolUse hook. 하네스 문서를 쓰는 도구 호출을 검사한다."""
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError, ValueError):
@@ -383,7 +602,8 @@ def run_hook() -> int:
     if not isinstance(tool_input, dict):
         return 0
     file_path = (tool_input.get("file_path") or tool_input.get("path") or "")
-    if not _is_ledger_path(file_path):
+    rel = _gated_path(file_path)
+    if rel is None:
         return 0
 
     problems: list[str] = []
@@ -392,29 +612,40 @@ def run_hook() -> int:
     # 형태가 편집 시점에 통과하던 구멍). Edit 조각에는 적용하지 않는다.
     content = tool_input.get("content")
     if isinstance(content, str):
-        violations, _ = check_text(content)
+        violations, _ = check_text(content, ledger_mode=(rel == "harness/progress.md"))
         problems.extend(violations)
 
-    fragments = [content] if isinstance(content, str) else []
+    # **조각 검사도 표 행에만 적용한다.** `content`는 위에서 `check_text`가 이미
+    # 표 문맥으로 검사했으므로 여기 넣지 않는다 — 넣으면 이중 검사이고 그중 넓은
+    # 쪽이 오탐원이 된다.
+    #
+    # 커버리지가 `harness/**/*.md`로 넓어지면서 이 경로가 **표와 무관한 산문**까지
+    # 검사해 실제로 오탐을 냈다(리뷰 blocker, 실측): `infra/worker-crash-rca.md:12`의
+    # 블록쿼트 `` >   `"^20.19.0 || ^22.13.0"` `` 를 담은 편집이 exit 2로 막혔고,
+    # 그 파일을 **한 글자도 바꾸지 않은 Write**도 막혔다. 같은 파일에 `--check`는
+    # 위반 0건을 낸다 — 두 경로가 서로 반대 판정을 냈다. `origin/main`에서는
+    # rc=0이므로 이 확장이 만든 회귀다.
+    #
+    # 조각에는 표 문맥이 없으므로 **선행 파이프로만** 판정한다. 줄 중간을 자른
+    # 편집은 놓치지만 그쪽은 **미탐 방향**이라 오탐보다 낫다 — 훅은 편집을 막으므로
+    # 오탐 비용이 크다는 것이 이 파일의 일관된 원칙이다.
+    fragments: list[str] = []
     if isinstance(tool_input.get("new_string"), str):
         fragments.append(tool_input["new_string"])
     for edit in tool_input.get("edits") or []:
         if isinstance(edit, dict) and isinstance(edit.get("new_string"), str):
             fragments.append(edit["new_string"])
 
-    hits: list[str] = []
-    for text in fragments:
-        found, _odd = code_span_pipe_hits(text)
-        hits.extend(found)
+    hits = fragment_hits(fragments)
     if hits:
         sample = ", ".join(hits[:3]) + ("..." if len(hits) > 3 else "")
-        problems.append(f"  코드 스팬 안의 맨 파이프: {sample}")
+        problems.append(f"  표 행의 코드 스팬 안 맨 파이프: {sample}")
 
     if not problems:
         return 0
 
     _stderr(
-        "[원장 표 게이트] 원장 표를 깨뜨리는 편집이다:\n%s\n"
+        "[원장 표 게이트] 하네스 문서의 표를 깨뜨리는 편집이다:\n%s\n"
         "GFM은 셀 경계 파이프로 읽어 그 행의 비고를 **잘라 버린다** "
         "(원장 28a·22f가 실제로 그렇게 깨져 있었다).\n"
         "해결: 파이프 앞에 **백슬래시 하나**를 붙여라. 이중 백슬래시는 코드 스팬 "
@@ -425,20 +656,28 @@ def run_hook() -> int:
     return 2
 
 
-def _is_ledger_path(path_str: str) -> bool:
-    """이 경로가 원장인가. 기존 두 훅과 같은 형태로 정규화한다.
+def _gated_path(path_str: str) -> str | None:
+    """검사 대상이면 저장소 상대 경로를, 아니면 None. 기존 훅과 같게 정규화한다.
 
     접미사 일치(`endswith`)를 쓰면 프로젝트 밖의 동명 파일이나
     `xharness/progress.md`도 걸린다(리뷰 minor 7).
     """
     if not isinstance(path_str, str) or not path_str:
-        return False  # payload가 문자열이 아닐 때 AttributeError로 죽지 않는다
+        return None  # payload가 문자열이 아닐 때 AttributeError로 죽지 않는다
     p = Path(path_str.replace("\\", "/"))
     try:
         rel = p.resolve().relative_to(ROOT) if p.is_absolute() else p
     except (ValueError, OSError):
-        return False  # 프로젝트 밖 경로는 이 게이트의 관할이 아니다
-    return rel.as_posix() == "harness/progress.md"
+        return None  # 프로젝트 밖 경로는 이 게이트의 관할이 아니다
+    posix = rel.as_posix()
+    if not posix.startswith("harness/") or not posix.endswith(".md"):
+        return None
+    return posix
+
+
+def _is_ledger_path(path_str: str) -> bool:
+    """원장 자신인가. 원장 규약(상태 열·최소 표 수)은 여기에만 적용된다."""
+    return _gated_path(path_str) == "harness/progress.md"
 
 
 def run_selftest() -> int:
@@ -493,6 +732,14 @@ def run_selftest() -> int:
         ("상태 열이 빈 칸(렌더는 정상, 집계에서만 빠진다)",
          table("| 9y | **제목** | RQ-01 |  | `파일` | 비고 |")),
         ("표가 하나도 없다(검사가 무성 통과하지 않는다)", "표가 없는 산문뿐이다\n"),
+        # 26al ① — GFM이 별개 행으로 흡수해 뒷문장이 첫 칸으로 밀린다.
+        # 실측: `adr/0004`의 "공중 가속" 행이 이 형태로 깨져 있었다.
+        ("표 안의 선행 파이프 없는 행(두 줄로 쪼개진 셀)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | 공중에서는 점프")
+         + "\n  이함 시점의 수평 관성만 유지 |"),
+        # 26al ⑤ — 코드 스팬 안 맨 파이프는 표 행에서 잡는다.
+        ("표 행의 코드 스팬 안 맨 파이프",
+         table("| 28a | **제목** | RQ-04 | ✅ | `브랜치` | `a || b` 이다 |")),
     ]
 
     must_pass = [
@@ -517,6 +764,27 @@ def run_selftest() -> int:
         ("원장에 열 구성이 다른 부록 표(오탐 금지)",
          table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n산문\n\n"
          + "| 날짜 | 내용 |\n|---|---|\n| 2026-07-30 | x |"),
+        # 26al ② — 코드 펜스 안의 파이프는 표가 아니다. 펜스 안에 일부러
+        # 깨진 표를 넣어 둔다 — 인식하면 위반 0건, 못 하면 쏟아진다.
+        ("코드 펜스 안의 표 형태(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
+         + "```\n| 깨진 | 표 |\n| 열 수가 | 안 맞는다 | 더 |\n```\n"),
+        ("물결 펜스도 인식한다(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
+         + "~~~\n| 깨진 | 표 | 더 |\n~~~\n"),
+        # 리뷰 major — 4백틱으로 연 펜스가 안쪽 3백틱에 닫히면 그 뒤를 마크다운으로
+        # 읽는다. 마크다운 예시를 감싸는 표준 형태라 하네스 문서에 자연히 등장한다.
+        ("4백틱 펜스는 3백틱으로 닫히지 않는다(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
+         + "````markdown\n```\n| 깨진 | 표 | 더 |\n```\n````\n"),
+        # 26al — 산문·블록쿼트의 코드 스팬은 표 행이 아니다. 파일 전체를 훑던
+        # 이전 방식이 커버리지 확장 직후 낸 오탐이다(`infra/worker-crash-rca.md:12`).
+        ("블록쿼트 산문의 코드 스팬 맨 파이프(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
+         + '>   `"^20.19.0 || ^22.13.0"` + `check.sh` 런타임 가드다.\n'),
+        ("표 밖 산문의 코드 스팬 맨 파이프(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |")
+         + "\n\nengines는 `^20.19.0 || ^22.13.0` 이다.\n"),
     ]
 
     # `ledger_mode=False`로만 통과해야 하는 것 — 원장이 아닌 파일을 검사할 때의
@@ -541,6 +809,47 @@ def run_selftest() -> int:
         violations, _ = check_text(text, ledger_mode=False)
         if violations:
             failed.append(f"오탐(generic) — {name}: {violations}")
+
+    # 26al ④ — 개명과 열 수 변경을 함께 하면 두 검사를 모두 빠져나간다.
+    # 최소 개수가 그 경로를 막는지 확인한다.
+    renamed_and_reshaped = (
+        "| No | 작업 | 관련 | 진행 | 참조 | 비고 | 부기 |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| 1 | **a** | RQ-01 | ✅ | `f` | b | c |"
+    )
+    v_min, _ = check_text(renamed_and_reshaped, min_ledger_tables=3)
+    if not any("원장 규약 표가" in v for v in v_min):
+        failed.append("최소 표 수 — 개명+열 수 변경이 두 검사를 빠져나가는데 막지 못했다")
+    v_nomin, _ = check_text(renamed_and_reshaped)
+    if any("원장 규약 표가" in v for v in v_nomin):
+        failed.append("최소 표 수 — 임계 0일 때 발화하면 안 된다")
+    v_ok, _ = check_text(
+        "\n\n".join(table(f"| {i} | **a** | RQ-01 | ✅ | `f` | b |") for i in range(3)),
+        min_ledger_tables=3,
+    )
+    if any("원장 규약 표가" in v for v in v_ok):
+        failed.append(f"최소 표 수 — 원장 규약 표 3개인데 오탐: {v_ok}")
+
+    # 26al ⑤ — 구분선이 깨지면 그 표를 건너뛴다. 이어서 검사하면 데이터 행을
+    # 헤더로 오진하며 진단이 쏟아져 첫 메시지가 묻힌다(실측 138건).
+    broken_sep = header + "\n|---|---|---|\n" + "\n".join(
+        f"| {i} | **a** | RQ-01 | ✅ | `f` | b |" for i in range(30)
+    )
+    v_cascade, _ = check_text(broken_sep)
+    if len(v_cascade) != 1:
+        failed.append(
+            f"구분선 파손 — 진단이 1건이어야 하는데 {len(v_cascade)}건이다(소음): "
+            f"{v_cascade[:3]}"
+        )
+    elif "구분선 열 수가 헤더와 다르다" not in v_cascade[0]:
+        failed.append(f"구분선 파손 — 첫 진단이 원인을 지목하지 않는다: {v_cascade[0]}")
+
+    # 건너뛰기가 **다음 표까지 삼키지 않는지**. 삼키면 이후 파손이 무검출이 된다.
+    v_resume, _ = check_text(
+        broken_sep + "\n\n산문\n\n" + table("| 9 | **a** | RQ-01 | ⬜ | `f` |")
+    )
+    if not any("열 수 부족" in v for v in v_resume):
+        failed.append(f"구분선 파손 — 건너뛰기가 다음 표까지 삼켰다: {v_resume}")
 
     hook_block = [
         ("코드 스팬 안 맨 파이프", "`a || b`"),
@@ -571,26 +880,75 @@ def run_selftest() -> int:
     if not odd:
         failed.append("미닫힌 백틱을 별도 진단으로 알리지 않는다")
 
-    # 경로 판정 — 프로젝트 밖 동명 파일을 관할로 착각하지 않는다.
-    path_cases = [
-        (str(ROOT / "harness" / "progress.md"), True),
-        ("harness/progress.md", True),
-        (r"harness\progress.md", True),
-        ("xharness/progress.md", False),
-        ("harness/changelog.md", False),
-        ("", False),
+    # **훅 조각 경로(`fragment_hits`)** — 위 hook_block/hook_pass는
+    # `code_span_pipe_hits`를 직접 부르므로 "훅이 그것을 **어떤 범위에** 적용하는가"를
+    # 검사하지 않았고, 그 틈으로 산문 오탐 회귀가 통과했다(리뷰 blocker).
+    # 커버리지가 `harness/**/*.md`로 넓어진 뒤 실제로 라이브 오탐이었다.
+    fragment_cases = [
+        # (이름, 조각, 차단해야 하는가)
+        ("표 행 조각의 코드 스팬 맨 파이프",
+         "| 28a | **x** | RQ-04 | ✅ | `f` | `a || b` 이다 |", True),
+        ("들여쓴 표 행 조각도 본다",
+         "  | 28a | **x** | RQ-04 | ✅ | `f` | `a || b` |", True),
+        ("블록쿼트 산문 조각(실측 오탐원 — infra/worker-crash-rca.md:12)",
+         '>   `"^20.19.0 || ^22.13.0"` + `check.sh` 런타임 가드다.', False),
+        ("평범한 산문 조각",
+         "engines는 `^20.19.0 || ^22.13.0` 이다.", False),
+        ("리스트 항목 조각",
+         "- `a || b` 형태는 정상이다", False),
+        ("여러 줄 조각 — 표 행만 잡고 산문은 흘린다",
+         "산문에 `a || b`\n| 1 | **x** | RQ | ✅ | `f` | `c || d` |", True),
     ]
-    for path, expected in path_cases:
-        if _is_ledger_path(path) != expected:
-            failed.append(f"경로 판정 — {path!r}: expected {expected}")
+    for name, frag, should_block in fragment_cases:
+        got = bool(fragment_hits([frag]))
+        if got != should_block:
+            failed.append(
+                "훅 조각 — %s: %s (기대 %s)"
+                % (name, "차단" if got else "통과", "차단" if should_block else "통과")
+            )
+    # 여러 줄 조각에서 **산문 쪽 히트가 섞이지 않는지**까지 본다.
+    mixed = fragment_hits(["산문에 `a || b`\n| 1 | **x** | RQ | ✅ | `f` | `c || d` |"])
+    if any("a || b" in h for h in mixed):
+        failed.append("훅 조각 — 산문 줄의 히트가 섞였다: %r" % mixed)
+
+    # 경로 판정 — 프로젝트 밖 동명 파일을 관할로 착각하지 않는다.
+    # 커버리지가 `harness/**/*.md`로 넓어졌으므로 두 판정을 나눠 검사한다:
+    # `_gated_path`(검사 대상인가)와 `_is_ledger_path`(원장 규약을 적용하는가).
+    path_cases = [
+        (str(ROOT / "harness" / "progress.md"), True, True),
+        ("harness/progress.md", True, True),
+        (r"harness\progress.md", True, True),
+        ("harness/changelog.md", True, False),
+        ("harness/adr/0004-physics-collision.md", True, False),
+        ("harness/evals/README.md", True, False),
+        ("xharness/progress.md", False, False),
+        ("src/shared/constants.ts", False, False),
+        ("harness/evals/golden/track-a-product.jsonl", False, False),
+        ("README.md", False, False),
+        ("", False, False),
+    ]
+    for path, gated, is_ledger in path_cases:
+        if (_gated_path(path) is not None) != gated:
+            failed.append(f"경로 판정(검사 대상) — {path!r}: expected {gated}")
+        if _is_ledger_path(path) != is_ledger:
+            failed.append(f"경로 판정(원장) — {path!r}: expected {is_ledger}")
+
+    # 글로브가 실제로 원장을 잡는가 — 목록이 비면 검사가 조용히 아무것도 안 한다.
+    files = gated_files()
+    if LEDGER not in files:
+        failed.append("검사 대상 글로브가 원장을 잡지 못한다")
+    if len(files) < 2:
+        failed.append(f"검사 대상이 {len(files)}개뿐이다 — 글로브가 좁아졌는지 확인하라")
 
     if failed:
         _stderr("[원장 표 게이트 selftest] 실패 %d건:\n  %s"
                 % (len(failed), "\n  ".join(failed)))
         return 1
     print("[원장 표 게이트 selftest] 통과 — 차단 %d건·허용 %d건·경로 %d건 확인."
-          % (len(must_block) + len(hook_block),
-             len(must_pass) + len(must_pass_generic) + len(hook_pass),
+          % (len(must_block) + len(hook_block)
+             + sum(1 for _, _, b in fragment_cases if b),
+             len(must_pass) + len(must_pass_generic) + len(hook_pass)
+             + sum(1 for _, _, b in fragment_cases if not b),
              len(path_cases)))
     return 0
 

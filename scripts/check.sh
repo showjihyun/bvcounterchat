@@ -66,6 +66,26 @@ git ls-files -z | xargs -0 python .claude/hooks/gate_map_asset_provenance.py --c
 python .claude/hooks/gate_ledger_table.py --selftest
 python .claude/hooks/gate_ledger_table.py --check
 
+# 스펙 미러 — 문서가 인용한 수치가 정본과 어긋나는 것을 막는다(원장 26af).
+# `check.sh`가 이것을 보지 못하던 동안 승인 ADR-0007의 "확정값" 표와 `status: done`
+# 골든 GA-19가 개정 전 반경 5m를 주장한 채로 exit 0을 냈다 — **통과하는 테스트가
+# 틀린 정답지를 만족시키는** 상태다. 잡은 것은 사람 눈이었고, 원장 26af는 그때
+# 이미 ⬜로 등재돼 있었는데도 트리거가 발화하지 않았다.
+# PreToolUse 훅으로는 두지 않는다 — 편집 중에는 스펙을 먼저 고치고 미러를 뒤에
+# 고치는 것이 정상이라 훅으로 막으면 개정 작업 자체가 불가능해진다.
+python .claude/hooks/gate_spec_mirror.py --selftest
+python .claude/hooks/gate_spec_mirror.py --check
+
+# 트리거 발화 검출기 — **경고만 낸다(항상 exit 0)**. ADR-0012 조건 1이 이월 행에
+# 착수 트리거를 요구하지만 그것을 발화시키는 것이 사람의 기억뿐이라, 이 저장소에서
+# 트리거가 **세 번** 조용히 미발화했다(원장 26af·26x·26ae/26ak). 변경 경로와 이어진
+# ⬜ 행을 알려 준다. 실패로 만들지 않는 이유: 참조 파일 일치는 트리거 발화의 근사일
+# 뿐이라 소음이 필연이고, 실패하는 소음 게이트는 꺼진다.
+python .claude/hooks/gate_trigger_due.py --selftest
+{ git diff --name-only HEAD 2>/dev/null;
+  git ls-files --others --exclude-standard; } \
+  | sort -u | python .claude/hooks/gate_trigger_due.py --check-paths
+
 npx eslint .
 npx tsc --noEmit
 
