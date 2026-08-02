@@ -40,6 +40,17 @@ jobs:
           python .claude/hooks/gate_coder_test_write.py --selftest
           python .claude/hooks/gate_map_asset_provenance.py --selftest
           python .claude/hooks/gate_ledger_table.py --selftest
+          python .claude/hooks/gate_spec_mirror.py --selftest
+          python .claude/hooks/gate_trigger_due.py --selftest
+
+      # 이월 행의 착수 트리거가 왔는지 알린다 — **경고만, 머지를 막지 않는다**.
+      # check.sh는 로컬 작업분(`git diff HEAD` + untracked)을 보지만 PR에서
+      # 의미 있는 집합은 base와의 three-dot diff다. 같은 스크립트에 경로만 달리
+      # 넣는다(gate_spec_freeze의 --check/--check-paths와 같은 형태).
+      - name: 트리거 발화 검출기 (원장 26af·26x — 경고)
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | python .claude/hooks/gate_trigger_due.py --check-paths
 
       - name: 맵 에셋 출처 게이트 (RQ-30 · ADR-0007 결정 1)
         # 커밋된 전 파일의 **경로와 내용**을 훑는다. PreToolUse 훅은 쓰기 **전**이라
