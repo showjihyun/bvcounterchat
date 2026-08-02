@@ -190,7 +190,18 @@ export class GameRoom extends Room<GameState> {
    */
   private readonly moveStates = new Map<string, MoveState>()
   /** 플레이어별 가장 최근 'move' 입력 — 다음 입력이 올 때까지 유지하며
-   * 매 틱 시뮬레이션에 반영한다(실시간 FPS 이동 입력의 표준 모델). */
+   * 매 틱 시뮬레이션에 반영한다(실시간 FPS 이동 입력의 표준 모델).
+   *
+   * **원장 22f 수정**: 연속값(`dirX`·`dirZ`·`mode`)은 여전히 "마지막
+   * 값"으로 덮어쓰지만, 엣지 트리거인 `jump`만은 예외다 — `'move'`
+   * 핸들러가 새 입력을 이 맵에 반영할 때 직전에 남아 있던 `jump`와
+   * OR(합집합)하고, `stepPlayerMovement`가 매 틱 이 값을 읽은 뒤 그것이
+   * 참이면(공중 상태라 물리가 실제로 참조하지 않는 틱이어도) 무조건
+   * `false`로 되돌린다(`stepPlayerMovement`의 리셋 지점 주석 참고 —
+   * "실제 소비 여부"가 아니라 "읽은 값이 참이었는가"만 본다). 33ms 틱
+   * 경계 안에 `jump:true`→`jump:false`가 연속 도착해도(짧은 키다운~키업)
+   * 틱 루프가 그 사이 어느 한 시점의 값만 읽어 점프를 통째로 놓치던
+   * 결함의 수정이다(`tests/integration/22f-jump-input-loss.test.ts`). */
   private readonly pendingInputs = new Map<string, MoveInput>()
   /** 플레이어별 가장 최근 수신 입력 시퀀스 번호(RQ-62, ADR-0003) —
    * `pendingInputs`와 동일한 "최근 수신값을 다음 갱신까지 유지" 모델이다
@@ -401,7 +412,23 @@ export class GameRoom extends Room<GameState> {
 
       // AFK 판정과 무관하게 pendingInputs는 항상 갱신한다 — RQ-62 예측·
       // 이동 시뮬레이션은 유휴 입력(정지 상태)도 다음 틱에 반영해야 한다.
-      this.pendingInputs.set(client.sessionId, input)
+      //
+      // 원장 22f 수정: dirX·dirZ·mode(연속값)는 지금까지와 동일하게
+      // "마지막 값"으로 덮어쓰지만, `jump`만은 예외로 직전에 남아 있던
+      // 값과 OR(합집합)한다. `jump`는 엣지 트리거다(`MoveInput.jump` 타입
+      // 코멘트, `@shared/sim/movement`) — 서버 틱(33ms, RQ-60) 사이에
+      // `jump:true` 다음 `jump:false`가 도착해도(짧은 키다운~키업), 그
+      // 사이 어느 한 시점의 스냅샷만 읽는 틱 루프가 `jump:true`를 놓치지
+      // 않으려면 "그 구간에 한 번이라도 true였는가"로 판정해야 한다.
+      // 연속값까지 같은 방식으로 합치면(예: 방향을 합집합·평균) 이동
+      // 감각이 왜곡되므로 확장하지 않는다(이 결함의 회귀 테스트,
+      // `tests/integration/22f-jump-input-loss.test.ts`의 "계약 고정"
+      // 케이스가 이를 못박는다). 이렇게 세운 `jump`는 `stepPlayerMovement`가
+      // 실제로 소비한 직후 다시 false로 되돌린다 — 그러지 않으면 착지 후
+      // 같은 값이 남아 무한 재점프하는 회귀가 생긴다(같은 파일의 "회귀
+      // 가드" 케이스).
+      const previousJump = this.pendingInputs.get(client.sessionId)?.jump ?? false
+      this.pendingInputs.set(client.sessionId, { ...input, jump: input.jump || previousJump })
 
       const seq = parseInputSeq(payload)
       if (seq !== undefined) {
@@ -998,6 +1025,30 @@ export class GameRoom extends Room<GameState> {
       }
 
       const input = this.pendingInputs.get(sessionId) ?? IDLE_MOVE_INPUT
+      // 원장 22f 수정: 위 'move' 핸들러의 OR 병합과 짝을 이루는 리셋 지점 —
+      // `input.jump`가 참이면 무조건 `pendingInputs`를 `jump:false`로
+      // 되돌린다. 되돌리지 않으면 다음 새 'move' 메시지가 도착할 때까지
+      // `jump:true`가 `pendingInputs`에 계속 남고, `stepGrounded`
+      // (`@shared/sim/movement`)는 접지 상태에서 매 틱 `input.jump`를 그대로
+      // 봐 재이륙시키므로 착지하는 즉시 다시 뛰어오르는 무한 버니합 회귀가
+      // 된다.
+      //
+      // **이 리셋은 `previous.grounded`(아래 `stepMovement` 분기)와 무관하게
+      // 무조건 실행된다 — "이번 틱에 실제로 물리가 소비했는가"가 아니라
+      // "이번 틱에 읽은 `input.jump`가 참이었는가"만 본다.** 공중 상태의
+      // `stepAirborne`(`@shared/sim/movement`)은 `input` 인자 자체를 받지
+      // 않으므로(공중 가속 미허용, RQ-92) 공중 틱에는 `jump`를 아예 읽지
+      // 않는데도 이 리셋은 그대로 실행된다. 이것이 안전한 이유: 리셋
+      // 자체는 부작용이 없는 되돌림일 뿐이고(공중 물리가 참조하지 않는
+      // 값을 지워도 그 틱의 궤적에 영향이 없다), 실제 플레이어가 점프
+      // 키를 계속 누르고 있으면 실 클라이언트가 매 틱 `jump:true`를 다시
+      // 보내므로(`registerMessageHandlers`의 'move' 핸들러 주석 참고, 실
+      // `PlayerControls.tsx`는 조작이 없어도 매 틱 유휴 payload를 계속
+      // 보낸다) 위 'move' 핸들러의 OR 병합이 다음 입력에서 다시 `true`로
+      // 세운다 — 매 틱 무조건 리셋해도 "홀드 중인 점프"가 사라지지 않는다.
+      if (input.jump) {
+        this.pendingInputs.set(sessionId, { ...input, jump: false })
+      }
       const next = stepMovement(previous, input)
       this.moveStates.set(sessionId, next)
       player.x = next.x
