@@ -224,7 +224,9 @@ def run_selftest() -> int:
         _stderr("[트리거 검출기 selftest] 실패 %d건:\n  %s"
                 % (len(failed), "\n  ".join(failed)))
         return 1
-    print("[트리거 검출기 selftest] 통과 — 색인 %d건·일치 3건·계약 2건 확인."
+    # 요약은 **실제 단언 수**를 말해야 한다 — `sensor-catalog.md`가 이 문자열을
+    # 그대로 인용하므로 정본이 적게 세면 문서도 적게 센다(리뷰 minor).
+    print("[트리거 검출기 selftest] 통과 — 색인 %d건·정규화 6건·일치 3건·계약 2건 확인."
           % len(checks))
     return 0
 

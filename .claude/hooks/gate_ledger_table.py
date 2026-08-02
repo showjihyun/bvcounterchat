@@ -258,12 +258,17 @@ def check_text(
         if m_fence:
             token = m_fence.group(1)
             if fence is None:
-                fence = token[0]
+                # **여는 토큰을 통째로 저장한다.** 문자만 저장하면 ````markdown 으로
+                # 연 펜스가 안쪽 ``` 에 닫혀 그 뒤를 마크다운으로 읽는다(리뷰 major —
+                # 주석이 "같은 문자·같은 길이 이상"을 계약으로 선언했는데 구현이
+                # 문자만 봤다). 표 마크업 규약을 문서화하는 하네스라 마크다운-속-
+                # 마크다운 예시가 자연스럽게 등장한다.
+                fence = token
                 expected = None
                 awaiting_separator = False
                 is_ledger_shape = False
                 skipping = False
-            elif token[0] == fence:
+            elif token[0] == fence[0] and len(token) >= len(fence):
                 fence = None
             continue
         if fence is not None:
@@ -548,8 +553,26 @@ def run_check() -> int:
     return 0
 
 
+def fragment_hits(fragments: list[str]) -> list[str]:
+    """편집 조각에서 **표 행의** 코드 스팬 맨 파이프만 뽑는다.
+
+    조각에는 표 문맥이 없으므로 선행 파이프로만 판정한다. 이 함수가 따로 있는
+    이유는 selftest가 훅 경로를 실제로 검사하기 위해서다 — 이전에는 selftest가
+    `code_span_pipe_hits`만 직접 불러 **훅이 그것을 어떤 범위에 적용하는지**를
+    검사하지 않았고, 그 틈으로 산문 오탐 회귀가 통과했다(리뷰 blocker).
+    """
+    hits: list[str] = []
+    for text in fragments:
+        for line in text.split("\n"):
+            if not line.lstrip(" \t").startswith("|"):
+                continue  # 표 행이 아니다 — 산문의 `a || b`는 GFM이 정상 렌더한다
+            found, _odd = code_span_pipe_hits(line)
+            hits.extend(found)
+    return hits
+
+
 def run_hook() -> int:
-    """PreToolUse hook. 원장을 쓰는 도구 호출을 검사한다."""
+    """PreToolUse hook. 하네스 문서를 쓰는 도구 호출을 검사한다."""
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError, ValueError):
@@ -574,26 +597,37 @@ def run_hook() -> int:
         violations, _ = check_text(content, ledger_mode=(rel == "harness/progress.md"))
         problems.extend(violations)
 
-    fragments = [content] if isinstance(content, str) else []
+    # **조각 검사도 표 행에만 적용한다.** `content`는 위에서 `check_text`가 이미
+    # 표 문맥으로 검사했으므로 여기 넣지 않는다 — 넣으면 이중 검사이고 그중 넓은
+    # 쪽이 오탐원이 된다.
+    #
+    # 커버리지가 `harness/**/*.md`로 넓어지면서 이 경로가 **표와 무관한 산문**까지
+    # 검사해 실제로 오탐을 냈다(리뷰 blocker, 실측): `infra/worker-crash-rca.md:12`의
+    # 블록쿼트 `` >   `"^20.19.0 || ^22.13.0"` `` 를 담은 편집이 exit 2로 막혔고,
+    # 그 파일을 **한 글자도 바꾸지 않은 Write**도 막혔다. 같은 파일에 `--check`는
+    # 위반 0건을 낸다 — 두 경로가 서로 반대 판정을 냈다. `origin/main`에서는
+    # rc=0이므로 이 확장이 만든 회귀다.
+    #
+    # 조각에는 표 문맥이 없으므로 **선행 파이프로만** 판정한다. 줄 중간을 자른
+    # 편집은 놓치지만 그쪽은 **미탐 방향**이라 오탐보다 낫다 — 훅은 편집을 막으므로
+    # 오탐 비용이 크다는 것이 이 파일의 일관된 원칙이다.
+    fragments: list[str] = []
     if isinstance(tool_input.get("new_string"), str):
         fragments.append(tool_input["new_string"])
     for edit in tool_input.get("edits") or []:
         if isinstance(edit, dict) and isinstance(edit.get("new_string"), str):
             fragments.append(edit["new_string"])
 
-    hits: list[str] = []
-    for text in fragments:
-        found, _odd = code_span_pipe_hits(text)
-        hits.extend(found)
+    hits = fragment_hits(fragments)
     if hits:
         sample = ", ".join(hits[:3]) + ("..." if len(hits) > 3 else "")
-        problems.append(f"  코드 스팬 안의 맨 파이프: {sample}")
+        problems.append(f"  표 행의 코드 스팬 안 맨 파이프: {sample}")
 
     if not problems:
         return 0
 
     _stderr(
-        "[원장 표 게이트] 원장 표를 깨뜨리는 편집이다:\n%s\n"
+        "[원장 표 게이트] 하네스 문서의 표를 깨뜨리는 편집이다:\n%s\n"
         "GFM은 셀 경계 파이프로 읽어 그 행의 비고를 **잘라 버린다** "
         "(원장 28a·22f가 실제로 그렇게 깨져 있었다).\n"
         "해결: 파이프 앞에 **백슬래시 하나**를 붙여라. 이중 백슬래시는 코드 스팬 "
@@ -720,6 +754,11 @@ def run_selftest() -> int:
         ("물결 펜스도 인식한다(오탐 금지)",
          table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
          + "~~~\n| 깨진 | 표 | 더 |\n~~~\n"),
+        # 리뷰 major — 4백틱으로 연 펜스가 안쪽 3백틱에 닫히면 그 뒤를 마크다운으로
+        # 읽는다. 마크다운 예시를 감싸는 표준 형태라 하네스 문서에 자연히 등장한다.
+        ("4백틱 펜스는 3백틱으로 닫히지 않는다(오탐 금지)",
+         table("| 1 | **a** | RQ-01 | ✅ | `f` | b |") + "\n\n"
+         + "````markdown\n```\n| 깨진 | 표 | 더 |\n```\n````\n"),
         # 26al — 산문·블록쿼트의 코드 스팬은 표 행이 아니다. 파일 전체를 훑던
         # 이전 방식이 커버리지 확장 직후 낸 오탐이다(`infra/worker-crash-rca.md:12`).
         ("블록쿼트 산문의 코드 스팬 맨 파이프(오탐 금지)",
@@ -823,6 +862,37 @@ def run_selftest() -> int:
     if not odd:
         failed.append("미닫힌 백틱을 별도 진단으로 알리지 않는다")
 
+    # **훅 조각 경로(`fragment_hits`)** — 위 hook_block/hook_pass는
+    # `code_span_pipe_hits`를 직접 부르므로 "훅이 그것을 **어떤 범위에** 적용하는가"를
+    # 검사하지 않았고, 그 틈으로 산문 오탐 회귀가 통과했다(리뷰 blocker).
+    # 커버리지가 `harness/**/*.md`로 넓어진 뒤 실제로 라이브 오탐이었다.
+    fragment_cases = [
+        # (이름, 조각, 차단해야 하는가)
+        ("표 행 조각의 코드 스팬 맨 파이프",
+         "| 28a | **x** | RQ-04 | ✅ | `f` | `a || b` 이다 |", True),
+        ("들여쓴 표 행 조각도 본다",
+         "  | 28a | **x** | RQ-04 | ✅ | `f` | `a || b` |", True),
+        ("블록쿼트 산문 조각(실측 오탐원 — infra/worker-crash-rca.md:12)",
+         '>   `"^20.19.0 || ^22.13.0"` + `check.sh` 런타임 가드다.', False),
+        ("평범한 산문 조각",
+         "engines는 `^20.19.0 || ^22.13.0` 이다.", False),
+        ("리스트 항목 조각",
+         "- `a || b` 형태는 정상이다", False),
+        ("여러 줄 조각 — 표 행만 잡고 산문은 흘린다",
+         "산문에 `a || b`\n| 1 | **x** | RQ | ✅ | `f` | `c || d` |", True),
+    ]
+    for name, frag, should_block in fragment_cases:
+        got = bool(fragment_hits([frag]))
+        if got != should_block:
+            failed.append(
+                "훅 조각 — %s: %s (기대 %s)"
+                % (name, "차단" if got else "통과", "차단" if should_block else "통과")
+            )
+    # 여러 줄 조각에서 **산문 쪽 히트가 섞이지 않는지**까지 본다.
+    mixed = fragment_hits(["산문에 `a || b`\n| 1 | **x** | RQ | ✅ | `f` | `c || d` |"])
+    if any("a || b" in h for h in mixed):
+        failed.append("훅 조각 — 산문 줄의 히트가 섞였다: %r" % mixed)
+
     # 경로 판정 — 프로젝트 밖 동명 파일을 관할로 착각하지 않는다.
     # 커버리지가 `harness/**/*.md`로 넓어졌으므로 두 판정을 나눠 검사한다:
     # `_gated_path`(검사 대상인가)와 `_is_ledger_path`(원장 규약을 적용하는가).
@@ -857,8 +927,10 @@ def run_selftest() -> int:
                 % (len(failed), "\n  ".join(failed)))
         return 1
     print("[원장 표 게이트 selftest] 통과 — 차단 %d건·허용 %d건·경로 %d건 확인."
-          % (len(must_block) + len(hook_block),
-             len(must_pass) + len(must_pass_generic) + len(hook_pass),
+          % (len(must_block) + len(hook_block)
+             + sum(1 for _, _, b in fragment_cases if b),
+             len(must_pass) + len(must_pass_generic) + len(hook_pass)
+             + sum(1 for _, _, b in fragment_cases if not b),
              len(path_cases)))
     return 0
 
