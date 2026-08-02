@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
-import { FALL_DAMAGE, NET, PLAYER } from '@shared/constants'
+import { FALL_DAMAGE, PLAYER } from '@shared/constants'
 import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
@@ -448,14 +448,35 @@ import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSea
  * 키를 누르고 있는 동안 매 틱 입력을 보내는 것(`PlayerControls.tsx`가
  * 30Hz로 입력을 계속 보낸다는 것은 RQ-43 관련 기존 코멘트에도 이미
  * 나온다)과 동일하게 `startJumpHold()`(아래)로 `jump:true`를 계속
- * 재전송한다 — 전송 간격은 `NET.TICK_MS`(서버 틱, ≈33.3ms)의 1/4
- * (`HOLD_SEND_INTERVAL_MS`, ≈8.3ms)로,
+ * 재전송한다.
+ *
+ * **1차 시도(폐기) — 실시간 간격(`setInterval`) 재전송**: 서버 틱
+ * (`NET.TICK_MS`≈33.3ms)의 1/4(≈8.3ms) 간격으로
  * `rq-62-input-sequence-authority.test.ts`의 "리뷰 blocker 재현" 절이 이미
- * 8ms(같은 33ms 틱 대비)로 검증해 둔 것과 같은 자릿수를 재사용한다(새로
- * 발명한 값이 아니다). 이렇게 하면 매 서버 틱이 소비를 마치고 `jump`를
- * `false`로 되돌리기 전에 이미 다음 `jump:true`가 도착해 있어(22f 수정의
- * OR 병합이 그 값을 살린다), 착지 즉시 다음 틱에 다시 이륙한다 — "접지를
- * 유지하는 틱"이 정의상 오지 않는다는 F1의 핵심 전제가 그대로 보존된다.
+ * 8ms(같은 33ms 틱 대비)로 검증해 둔 자릿수를 그대로 재사용해 재전송했으나,
+ * **격리 워크트리 M1 변이 실험에서 재설계한 F1이 그대로 통과해 버렸다**
+ * (1차 착지가 예상 1.3초 대신 3.2초 만에 이뤄짐 — "접지 유지 틱"이 실제로
+ * 발생해 M1의 지연 경로가 열렸다는 뜻, 검출력 상실). 원인: `pendingInputs`의
+ * 리셋(원장 22f 수정)은 `stepPlayerMovement`가 그 값을 실제로 착지·이륙에
+ * 썼는지와 무관하게 **매 틱** 무조건 실행된다(공중 물리 `stepAirborne`은
+ * `input.jump`를 아예 읽지 않는데도 리셋은 그대로 일어난다) — 즉 체공
+ * (≈19틱) 내내 "그 틱 직전에 새 메시지가 도착해 있어야" 살아남는 값이라,
+ * 착지 전이 그 틱 하나만 이기면 되는 게 아니라 **모든 개별 틱**에서
+ * 이겨야 하는 경합이다. Windows 타이머 해상도(`rq-62` 실측 ~15.6ms)에
+ * 걸려 실제 재전송 간격이 늘어난 데다, 이 재전송 타이머와 서버 자신의
+ * 30Hz 틱 타이머가 서로 다른 위상으로 독립 표류해(33.3ms:8.3ms, 정수
+ * 비율이 아니다) 주기적으로 "막 놓치는" 위상이 찾아온다 — 실시간 타이머
+ * 두 개를 경주시키는 방식 자체가 구조적으로 신뢰할 수 없었다.
+ *
+ * **채택안 — `setImmediate` 이벤트 루프 반복 재전송**: 실시간 간격 대신
+ * Node 이벤트 루프의 매 반복(iteration)마다 재전송한다(아래
+ * `startJumpHold` 코멘트 참고). 이 통합 테스트는 서버·클라이언트가 한
+ * 프로세스 안에서 돌므로, 이벤트 루프가 막히지 않는 한 한 틱 구간
+ * (≈33ms) 안에 이 루프가 여러 차례 돌며 그때마다 새 `jump:true`를 보내
+ * 실시간 타이머 두 개의 독립 표류에 기대지 않고 훨씬 촘촘하게 창을
+ * 메운다 — 착지 즉시 다음 틱에 다시 이륙해 "접지를 유지하는 틱"이
+ * 정의상 오지 않는다는 F1의 핵심 전제가 보존된다(아래 "검증" 절이 이
+ * 채택안으로 M1 검출력을 재확인한 실측이다).
  *
  * **보존한 것(팀리드 지시 그대로, 이 재설계의 합격 기준)**: 1차·2차
  * 착지 데미지 단언(`expectedDamage`·`secondExpectedDamage`, `hp ===
@@ -507,13 +528,6 @@ const RESPAWN_OBSERVE_TIMEOUT_MS = 8_000
 /** "3초보다 눈에 띄게 이르게 리스폰되면 안 된다"는 하한 — rq-15 파일과
  * 동일 근거(스케줄링 지터 흡수 500ms 관대). */
 const MIN_RESPAWN_ELAPSED_MS = 2_500
-/** REV9(F1 재설계) — `jump:true` 유지 재전송 간격. 서버 틱(`NET.TICK_MS`
- * ≈33.3ms)의 1/4 — `rq-62-input-sequence-authority.test.ts`의 "리뷰
- * blocker 재현" 절이 이미 8ms(같은 33ms 틱 대비)로 검증해 둔 것과 같은
- * 자릿수다(새로 발명한 값이 아니다). 이 간격으로 계속 재전송하면 22f
- * 수정(엣지 비트 소비 후 리셋) 아래에서도 매 틱 `jump:true`가 이미
- * 도착해 있어 버니합이 끊기지 않는다. */
-const HOLD_SEND_INTERVAL_MS = NET.TICK_MS / 4
 
 /** GA-45: 초과분 1m당 10 데미지 — (8-3)×10=50, 생존(HP 50 잔존). */
 const NON_FATAL_OVERRIDE_PEAK_M = 8
@@ -922,25 +936,51 @@ describe('RQ-18/GA-46: 낙하 데미지로 사망 → 리스폰이 정상 예약
  * REV9(F1 재설계) — 버니합을 유지하려면 실 클라이언트가 점프 키를
  * 누르고 있는 동안 매 틱 입력을 다시 보내는 것과 동일하게 `jump:true`를
  * 계속 재전송해야 한다. 원장 22f 수정 이후 `pendingInputs.jump`는
- * `stepPlayerMovement`가 소비한 직후 곧바로 `false`로 되돌아가므로
- * (`GameRoom.ts` "원장 22f 수정" 절), 한 번만 보내면 다음 틱은 그대로
- * 접지 상태를 유지한다 — F1이 검출하려는 "접지 유지 틱"이 생겨버린다.
+ * `stepPlayerMovement`가 그 값을 실제로 착지·이륙에 썼는지와 무관하게
+ * **매 틱** 소비 즉시 `false`로 되돌린다(`GameRoom.ts` "원장 22f 수정" 절
+ * — 공중 물리(`stepAirborne`)는 `input.jump`를 아예 읽지 않는데도 리셋은
+ * 무조건 실행된다). 즉 체공(≈19틱) 내내 매 틱 이 리셋이 반복되므로, 착지
+ * 전이 틱에 `jump`가 살아있으려면 **그 틱 직전에도** 새 메시지가 도착해
+ * 있어야 한다 — "한동안 유지"가 아니라 "매 틱마다 새로 이겨야 하는 경합"
+ * 이라는 뜻이다.
  *
- * `HOLD_SEND_INTERVAL_MS`(서버 틱의 1/4, ≈8.3ms) 간격으로 재전송하면
- * 매 서버 틱이 소비를 마치고 리셋하기 전에 이미 다음 `jump:true`가
- * 도착해 있어(22f의 OR 병합이 그 값을 살린다), 버니합이 끊기지 않는다
- * (파일 상단 REV9 절 참고). 반환하는 함수를 호출하면 재전송을 멈춘다 —
- * 호출자가 `finally`에서 정지시키고 명시적으로 `jump:false`를 보내야
- * 한다(그러지 않으면 다음 테스트로 넘어간 뒤에도 이 세션이 살아있는 한
- * 계속 재전송된다 — 이 파일에서는 `leaveRoom` 전에 반드시 멈춘다).
+ * **1차 시도(폐기) — `setInterval(8.3ms)` 실측 실패**: 서버 틱의 1/4
+ * 간격으로 재전송했으나, 격리 워크트리 M1 변이 실험에서 **재설계한 F1이
+ * 그대로 통과해 버렸다**(1차 착지가 1.3초 대신 3.2초 만에 이뤄짐 — 접지
+ * 유지 틱이 실제로 발생해 M1의 지연 경로가 열렸다는 뜻). 원인: Windows
+ * 타이머 해상도(`rq-62-input-sequence-authority.test.ts` 실측 ~15.6ms)에
+ * 걸려 실제 재전송 간격이 늘어난 데다, 이 재전송 타이머와 서버 자신의
+ * 30Hz 틱 타이머가 **서로 다른 위상으로 독립 표류**해 두 틱 길이의
+ * 비정수 비율(33.3ms:8.3ms) 때문에 주기적으로 "막 놓치는" 위상이
+ * 찾아온다 — 실시간 타이머 두 개를 경주시키는 방식 자체가 구조적으로
+ * 신뢰할 수 없었다(전문은 `_workspace/22f/01b_test-writer_f1-redesign.md`
+ * "1차 시도(폐기)" 절).
+ *
+ * **채택안 — `setImmediate` 루프**: 실시간 간격 대신 Node 이벤트 루프의
+ * 매 반복(iteration)마다 재전송한다. 서버의 틱 콜백도 같은 프로세스의
+ * 같은 이벤트 루프에서 실행되므로(이 통합 테스트는 서버·클라이언트가
+ * 한 프로세스 안에서 돈다), 이벤트 루프가 막히지 않는 한 한 틱 구간
+ * (≈33ms) 안에 이 루프가 여러 차례 돌며 그때마다 새 `jump:true`를 보낸다
+ * — 실시간 타이머 두 개의 독립 표류에 기대지 않으므로 훨씬 촘촘하고
+ * 안정적으로 창을 메운다(같은 격리 워크트리에서 M1 변이 실험으로 실측
+ * 재확인 — 아래 REV9 절·`01b_test-writer_f1-redesign.md` 참고).
+ *
+ * 반환하는 함수를 호출하면 재전송을 멈춘다 — 호출자가 `finally`에서
+ * 정지시키고 명시적으로 `jump:false`를 보내야 한다(그러지 않으면 다음
+ * 테스트로 넘어간 뒤에도 이 세션이 살아있는 한 계속 재전송된다 — 이
+ * 파일에서는 `leaveRoom` 전에 반드시 멈춘다).
  */
 function startJumpHold(room: Room): () => void {
-  const send = (): void => {
+  let active = true
+  const pump = (): void => {
+    if (!active) return
     room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
+    setImmediate(pump)
   }
-  send() // 즉시 한 번 — 인터벌의 첫 발화(HOLD_SEND_INTERVAL_MS 이후)까지 기다리지 않는다.
-  const timer = setInterval(send, HOLD_SEND_INTERVAL_MS)
-  return () => clearInterval(timer)
+  pump()
+  return () => {
+    active = false
+  }
 }
 
 describe('RQ-18 평가 기록 보강 — F1: 착지 전이 조건 고정(파일 상단 REV 절)', () => {
