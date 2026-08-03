@@ -48,7 +48,7 @@
  * 영향이 없다).
  */
 
-import { MOVEMENT, NET } from '@shared/constants'
+import { MOVEMENT, NET, WORLD } from '@shared/constants'
 
 export interface MoveState {
   x: number
@@ -75,6 +75,10 @@ export interface MoveInput {
 /** 1틱의 경과 시간(초). `NET.TICK_MS`(1000/30, 부동소수점)를 매번 나누지
  * 않도록 모듈 로드 시 한 번만 계산한다. */
 const TICK_SECONDS = NET.TICK_MS / 1000
+
+/** 월드 경계(RQ-30, GA-50) — `WORLD.SIZE_M`(60)에서 유도, ±30 하드코딩
+ * 금지(ADR-0010). */
+const HALF_WORLD_M = WORLD.SIZE_M / 2
 
 /** 점프 궤적에 쓰는 중력(m/s²) — 스펙 미확정 구현 선택값(위 파일 코멘트
  * 참고). 어떤 값을 골라도 해석적 궤적 샘플링은 오차 1% 미만이므로(실측,
@@ -140,14 +144,35 @@ function jumpElapsedSeconds(previousVy: number): number {
   return (JUMP_V0_MPS - previousVy) / JUMP_GRAVITY_MPS2
 }
 
+/** 좌표를 플레이 면적 경계(±`HALF_WORLD_M`) 안으로 가둔다(RQ-30/GA-50).
+ * 하드 클램프 — GA-50 then은 "항상 ±30m 안"만 요구하고 "어떻게 멈추는가"
+ * (슬라이드·반발 등)는 규정하지 않는다(`_workspace/RQ-30/01_test-writer
+ * _red.md` §4) — 벽 충돌이 들어오는 다음 조각이 게임 감각 결정을 대체할 수
+ * 있는 자리다. 상태를 들고 있지 않아 매 틱 결과만 절단하므로, 경계에서
+ * 안쪽으로 방향을 바꾸면 다음 틱 값이 경계 미만이라 그대로 반영된다(고착
+ * 없음).
+ *
+ * ⚠️ **절단 대상은 위치뿐이다.** `vx`·`vz`는 입력값 그대로 보고되므로 경계에
+ * 붙은 플레이어의 속도는 0이 아니다. 오늘은 무해하다 — 그 값을 표현에 쓰는
+ * 소비자가 없고, 클라 예측은 같은 함수를 재생하므로 서버와 정합한다. 다만
+ * 속도를 소비하는 첫 코드(달리기 애니메이션·데드레커닝)가 생기면 "벽에 붙어
+ * 달리는" 표현이 나온다 — **그때 이것이 결정이었는지 누락이었는지 알 수 있게**
+ * 여기 적어 둔다. 속도 처리는 벽 충돌 조각(RQ-32)에서 함께 정한다.
+ * (PR #44 리뷰 minor) */
+function clampToWorldBounds(value: number): number {
+  if (value > HALF_WORLD_M) return HALF_WORLD_M
+  if (value < -HALF_WORLD_M) return -HALF_WORLD_M
+  return value
+}
+
 /** 접지 결과 — 수평은 `vx`·`vz`를 그대로(값으로) 적용·보고하고 수직은
  * 0으로 유지한다. 그대로 서 있는 경우와 공중에서 착지하는 경우가 같은
  * 모양이라 공유한다. */
 function groundedOutcome(state: MoveState, vx: number, vz: number): MoveState {
   return {
-    x: state.x + vx * TICK_SECONDS,
+    x: clampToWorldBounds(state.x + vx * TICK_SECONDS),
     y: 0,
-    z: state.z + vz * TICK_SECONDS,
+    z: clampToWorldBounds(state.z + vz * TICK_SECONDS),
     vx,
     vy: 0,
     vz,
@@ -165,9 +190,9 @@ function airborneOutcome(state: MoveState, vx: number, vz: number, t: number): M
   }
 
   return {
-    x: state.x + vx * TICK_SECONDS,
+    x: clampToWorldBounds(state.x + vx * TICK_SECONDS),
     y: height,
-    z: state.z + vz * TICK_SECONDS,
+    z: clampToWorldBounds(state.z + vz * TICK_SECONDS),
     vx,
     vy: jumpVyAt(t),
     vz,

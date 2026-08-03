@@ -115,7 +115,31 @@ export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> 
   return serverRoom
 }
 
-/** 기본 탈출 오프셋 — Safe Zone 반경 + 15m 여유(0~20m 증명 구간 안).
+/** 기본 탈출 오프셋 — Safe Zone 반경 + 2m 여유(=6m).
+ *
+ * **REV(원장 25r/25a-1, RQ-30 월드 경계 클램프 도입 — 19 → 6으로 축소)**:
+ * 이전 값 19(반경+15)는 스폰 지점(반지름 22m 원 위 15개)을 방사 방향으로
+ * 반지름 **41m**까지 밀어냈다. RQ-30이 `stepMovement`(`@shared/sim
+ * /movement`)에 좌표 클램프(±`HALF_WORLD_M`=30)를 추가하면서 41 > 30이라
+ * `escapeSafeZone`이 쓴 좌표가 **다음 서버 틱에 즉시 30으로 되접혀**
+ * (`GameRoom.ts:1068` `stepPlayerMovement`) escape 자체가 무의미해졌다 —
+ * 19는 더 이상 쓸 수 없다.
+ *
+ * 대체 오프셋은 세 조건을 동시에 만족해야 한다(15개 스폰 지점 전수·오프셋
+ * 4.5~19m 스윕 전수 계산, `_workspace/RQ-30/01_test-writer_red.md` §6.3):
+ * 1. Safe Zone(반경 4m)을 확실히 벗어난다 — `offsetM > 4`(반경-방사 기하이므로
+ *    오프셋 자체가 곧 이탈 거리).
+ * 2. 월드 경계(±30) 안에 있다 — worst-case(스폰 idx=0, 각도 정확히 0°)
+ *    `x = 22 + offsetM < 30` ⇒ `offsetM < 8`.
+ * 3. 다른 스폰 지점의 Safe Zone에 새로 들어가지 않는다(비겹침, RQ-31 v1.5).
+ *
+ * 세 조건을 모두 만족하는 구간은 개구간 **(4, 8)m** — 방향은 방사-바깥
+ * (radial-outward) 설계를 그대로 유지한 채 오프셋 값만 줄이면 된다(방향
+ * 전환 불필요). 이 중 **6m**을 택했다 — worst-case 경계 여유
+ * 2.00m(30-28)와 Safe Zone 이탈 여유 2.00m(6-4)로 양쪽에 균등한 여유를
+ * 준다(구간 끝값인 4.5·7.9는 한쪽 여유가 0.5m 미만으로 빠듯하다). 비겹침
+ * 최소거리는 11.4125m로 어느 후보를 골라도 항상 넉넉하다(105쌍 전수,
+ * 이 조건은 사실상 항상 느슨해 세계경계·이탈 여유의 균형만 고려하면 된다).
  *
  * **결합 주의(원장 22y, 리뷰 major 5)**: 이 값은 `rq-90-spread-seed
  * -determinism.test.ts`의 `F1_SEED_SEQUENCE`(시드 12개 하드코딩 오라클
@@ -133,13 +157,15 @@ export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> 
  *   완전히 불변이라 전제 가드 발화가 **0건**이다 — 콘 반경과 표적의 각
  *   크기가 같은 `atan(bodyRadiusM / distance)`에서 나와 **비율이 항상
  *   3으로 고정**되기 때문이다(각 크기 자체는 거리에 반비례한다). **이
- *   축은 두 차례 실증됐다**: ① 원장 25f — `rq-90`의 사수·피격자를
+ *   축은 세 차례 실증됐다**: ① 원장 25f — `rq-90`의 사수·피격자를
  *   방사 탈출점으로 옮겨 A·B 거리가 실제로 9.1m→17.5m로 바뀜, 전제
- *   가드 불발화. ② 이번 라운드(원장 26s, RQ-31 v1.5 반경 5m→4m) — 이
- *   상수가 20→19로 바뀜, `rq-90-spread-seed-determinism.test.ts` 재실행
- *   결과 3/3 통과·전제 가드 불발화, 시드 재선정 불요. **결론**: 오프셋
- *   축만 바뀌는 한 재실행은 지금까지(2/2) 형식적 확인으로 끝났다 —
- *   그래도 재실행 자체는 계속 요구된다(위 굵은 문장), 생략하지 마라.
+ *   가드 불발화. ② 원장 26s(RQ-31 v1.5 반경 5m→4m) — 이 상수가 20→19로
+ *   바뀜, 재실행 결과 3/3 통과·전제 가드 불발화. ③ 이번 라운드(원장
+ *   25r/25a-1, RQ-30 월드 경계 클램프 도입) — 이 상수가 19→6으로 바뀜,
+ *   재실행 결과는 `_workspace/RQ-30/02_coder_green.md`에 전문 기록(시드
+ *   재선정 불요 여부 포함). **결론**: 오프셋 축만 바뀌는 한 재실행은
+ *   지금까지 형식적 확인으로 끝났다 — 그래도 재실행 자체는 계속
+ *   요구된다(위 굵은 문장), 생략하지 마라.
  * - **`SPAWN_POINTS` 축**(좌표 자체가 바뀌는 경우, 예: 스폰 로테이션
  *   확장): **다르다** — 스폰 조합 210쌍 중 **68쌍(32%)에서 가드가
  *   발화**한다(원장 22y·25f 재리뷰 실측). **결론**: `SPAWN_POINTS`를
@@ -147,7 +173,7 @@ export function getSafeZoneSeam<H = unknown>(room: Room): SafeZoneEscapeSeam<H> 
  *   32%는 무시할 수 없는 비율이라 재실행 결과를 **직접 확인**해야 한다.
  *
  * (`F1_SEED_SEQUENCE` 선언부 코멘트도 참고). */
-export const DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 15
+export const DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 2
 
 /** `base`(자신의 스폰 지점 또는 현재 위치) 기준 방사 방향 단위 벡터. 이
  * 파일 안의 모든 방사 방향 계산(텔레포트든 실이동이든)이 이 함수 하나를

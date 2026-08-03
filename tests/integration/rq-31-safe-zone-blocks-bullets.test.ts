@@ -146,10 +146,25 @@ const BETWEEN_SHOTS_MS = 300
 
 /** Safe Zone 반경(상수에서 유도 — 하드코딩 금지, 다른 rq-31 파일과 동일). */
 const RADIUS_M = WORLD.SAFE_ZONE_RADIUS_M
-/** C를 B의 방사 방향으로 밀어내는 오프셋 — `rq-31-safe-zone*.test.ts`의
- * `FAR_OUTSIDE_OFFSET_M`과 동일 값·동일 반경-방사 기하 증명(실측 확인
- * 범위 0~20m 안) — C가 항상 모든 Safe Zone 밖에 있도록 보장한다. */
-const TARGET_RADIAL_OFFSET_M = RADIUS_M + 15
+/** C를 B의 방사 방향으로 밀어내는 오프셋.
+ *
+ * **REV(원장 25a-1, RQ-30 월드 경계 클램프 도입 — 19 → 6으로 축소)**: 이전
+ * 값(`RADIUS_M+15`=19)은 이 파일이 조준을 텔레포트 **전** 계산값(`cPoint`)
+ * 그대로 쓴다는 데서 문제가 됐다 — B의 스폰 반지름(~22m 원) + 19m가
+ * `stepMovement`의 새 월드 경계 클램프(±30, RQ-30)를 넘는 스폰 조합(예:
+ * idx=1 스폰이면 x가 37.33까지 나감)에서는 텔레포트 다음 틱에 x축만
+ * 30으로 되접혀 실제 서버 위치가 `cPoint`에서 벗어나고, 미리 계산해 둔
+ * 조준 벡터가 그 벗어난 실제 위치를 더 이상 통과하지 못해 §(2) 양성
+ * 대조군("B를 치운 뒤 C 정상 피격")이 타임아웃으로 실패했다(이번 라운드
+ * 전체 스위트 실행에서 재현·확인, `_workspace/RQ-30/02_coder_green.md`
+ * 참고). `tests/support/safe-zone.ts`의 `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`과
+ * 동일한 세 조건(Safe Zone 이탈·월드 경계 안·비겹침) 분석으로 같은 값
+ * (6m)을 택했다 — worst-case에서도 ~28m로 항상 경계 안이라 이 왜곡이
+ * 재발하지 않는다. `rq-31-safe-zone.test.ts`·`rq-31-safe-zone-no-firing
+ * .test.ts`는 같은 공식(`RADIUS_M+15`)을 쓰면서도 텔레포트 **후** 실제
+ * 서버 위치를 다시 읽어(`readServerPlayer`) 조준하므로 이 클램프 왜곡에
+ * 영향받지 않는다 — 그 두 파일은 그대로 뒀다(수정 불요). */
+const TARGET_RADIAL_OFFSET_M = RADIUS_M + 2
 /** 양성 대조군에서 B를 사선 밖으로 치우는 수직(사선에 대해) 오프셋 —
  * 히트박스 폭(바디 반지름 0.3m + 헤드 반지름 0.15m, `DEFAULT_HITBOX`)의
  * 수십 배라 "빗맞았다"가 아니라 "애초에 사선에서 벗어났다"를 명확히
