@@ -11,9 +11,22 @@ import { KEYMAP } from '@client/input/keymap'
  * 락 배선까지, 사격·HUD는 후속).
  *
  * 점프는 엣지 트리거다(`@shared/sim/movement`의 `MoveInput.jump` 주석 —
- * "이번 틱의 점프 시도"). 키를 누르고 있어도 `getMoveInput()` 호출 1회에만
- * `jump: true`를 반환하고 즉시 소비한다 — 그렇지 않으면 착지 직후 키를
- * 계속 누르고 있는 것만으로 자동 연속 점프(버니합류 입력)가 발생한다.
+ * "이번 틱의 점프 시도"). `getMoveInput()`은 `jumpPending`을 **호출 1회에만**
+ * `jump: true`로 반환하고 즉시 소비한다 — **`keydown` 1회당 전송 1회**가
+ * 이 소비의 의도이며, 그러지 않으면 착지 직후 키를 계속 누르고 있는 것만으로
+ * 자동 연속 점프(버니합류 입력)가 발생한다.
+ *
+ * ⚠️ **그 의도는 지금 달성되지 않는다 — `onKeyDown`에 `event.repeat` 가드가
+ * 없다**(`src` 전체 참조 0건). 브라우저는 키를 누르고 있으면 OS 반복 지연 뒤
+ * `keydown`을 **반복 발생**시키므로 `jumpPending`이 계속 재무장되고, 30Hz
+ * 전송 루프(`PlayerControls.tsx`)가 그것을 싣는다. 따라서 **"키를 누르고
+ * 있어도 1회만 보낸다"는 거짓이다** — 이 문장이 원래 그렇게 적혀 있었고,
+ * 서버 주석·테스트 docblock 세 곳이 이 파일을 근거로 지목하며 같은 거짓을
+ * 옮겼다(PR #41 평가 F-A → 델타 리뷰 major → 2차 델타 minor 4).
+ *
+ * 가드를 넣을지는 **게임 감각 변경이라 스펙 결정**이며 원장 **22f-3**에
+ * 이월돼 있다(수동 스모크 포함). 자동 반복 자체는 **브라우저 실측 전**이고
+ * 근거는 코드 참조 검색 + DOM 표준뿐이다.
  */
 export interface MovementInputTracker {
   getMoveInput(): MoveInput
