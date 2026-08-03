@@ -150,7 +150,15 @@ function jumpElapsedSeconds(previousVy: number): number {
  * _red.md` §4) — 벽 충돌이 들어오는 다음 조각이 게임 감각 결정을 대체할 수
  * 있는 자리다. 상태를 들고 있지 않아 매 틱 결과만 절단하므로, 경계에서
  * 안쪽으로 방향을 바꾸면 다음 틱 값이 경계 미만이라 그대로 반영된다(고착
- * 없음). */
+ * 없음).
+ *
+ * ⚠️ **절단 대상은 위치뿐이다.** `vx`·`vz`는 입력값 그대로 보고되므로 경계에
+ * 붙은 플레이어의 속도는 0이 아니다. 오늘은 무해하다 — 그 값을 표현에 쓰는
+ * 소비자가 없고, 클라 예측은 같은 함수를 재생하므로 서버와 정합한다. 다만
+ * 속도를 소비하는 첫 코드(달리기 애니메이션·데드레커닝)가 생기면 "벽에 붙어
+ * 달리는" 표현이 나온다 — **그때 이것이 결정이었는지 누락이었는지 알 수 있게**
+ * 여기 적어 둔다. 속도 처리는 벽 충돌 조각(RQ-32)에서 함께 정한다.
+ * (PR #44 리뷰 minor) */
 function clampToWorldBounds(value: number): number {
   if (value > HALF_WORLD_M) return HALF_WORLD_M
   if (value < -HALF_WORLD_M) return -HALF_WORLD_M
