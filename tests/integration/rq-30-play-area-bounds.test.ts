@@ -62,6 +62,8 @@ import { MOVEMENT, WORLD } from '@shared/constants'
  * 시점 기준). 조사 결과와 대안 오프셋 후보는
  * `_workspace/RQ-30/01_test-writer_red.md`에 근거와 함께 남긴다 — 실제
  * 수정은 Green 단계(coder)의 몫이다.
+ * **REV(같은 PR에서 해소)**: 이 라운드가 오프셋을 6으로 낮췄다 —
+ * `tests/support/safe-zone.ts` docblock 참고.
  *
  * **결정론 메모**: 실 WebSocket(localhost, 임의 포트) + 서버의 실제 30Hz
  * `setSimulationInterval` 틱 루프에 의존한다(ADR-0008 허용 예외 — 기존
