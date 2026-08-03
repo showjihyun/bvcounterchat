@@ -5,7 +5,7 @@ import { CAPACITY, NET, PLAYER, UI, WEAPON, WORLD } from '@shared/constants'
 import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
-import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { stepMovement, type MoveInput, type MoveState, type WallAABB } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import {
   applySpread,
@@ -304,6 +304,21 @@ export class GameRoom extends Room<GameState> {
    * 시드로 만드는 데 쓴다 — `Math.random()`을 직접 부르지 않는다(ADR-0008,
    * `issueSpreadSeed` 코멘트 참고). */
   private spreadSeedCounter = 0
+  /** RQ-12 v1.7: hitscan 차폐 질의용 벽 목록 오버라이드(테스트 전용,
+   * 화이트박스) — **설정돼 있으면**(`[]`도 유효한 설정값이다, "벽 없음"과
+   * "오버라이드 없음"은 구분된다) `handleFire`가 `findClosestHit`의 4번째
+   * 인자로 `PRODUCTION_WALLS`(`@shared/sim/walls`) 대신 이 값을 쓴다.
+   * `undefined`(기본값)면 기존처럼 `PRODUCTION_WALLS`를 그대로 쓴다. 이
+   * 필드에 값을 대입하는 프로덕션 코드 경로는 없다 — 오직 통합 테스트만
+   * 화이트박스로 값을 쓴다(`spreadTuningOverride`와 동일한 권한·근거,
+   * 위 코멘트). **범위 한정** — `stepPlayerMovement`가 `stepMovement`에
+   * 넘기는 이동 충돌용 벽 목록(RQ-30)은 이 오버라이드와 무관하게 계속
+   * 무조건 `PRODUCTION_WALLS`만 쓴다. **이름을 바꾸지 않는다** — 통합
+   * 테스트(`rq-12-wall-occlusion.test.ts`의 `WallOcclusionTestSeam`)가
+   * `matchMaker.getLocalRoomById`로 이 정확한 필드명을 화이트박스 주입
+   * 대상으로 참조한다(`spreadTuningOverride`·`forcedSpreadSeed`와 동일한
+   * 결합 방식 — `as unknown as` 캐스팅이라 `tsc`가 대조하지 않는다). */
+  private wallsOverride: readonly WallAABB[] | undefined
   /** RQ-40: 최근 채팅 이력 — 오래된 것이 배열 앞쪽(도착 순서 그대로), 최대
    * `UI.CHAT_HISTORY`(50)개만 유지한다(초과분은 앞에서 폐기). 저장되는
    * 텍스트는 이미 `filterProfanity`를 거친 값이다(RQ-95) — 브로드캐스트
@@ -692,7 +707,12 @@ export class GameRoom extends Room<GameState> {
       candidates.push({ id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } })
     })
 
-    const closest = findClosestHit(ray, candidates, DEFAULT_HITBOX)
+    // RQ-12 v1.7: hitscan 차폐 질의는 `wallsOverride`가 설정돼 있으면(`[]`
+    // 포함) 그 값을, 아니면(`undefined`, 기본값) 실제 맵 벽(`PRODUCTION_WALLS`)
+    // 을 쓴다 — 이동 충돌(`stepPlayerMovement`, RQ-30)은 이 오버라이드와
+    // 무관하게 항상 `PRODUCTION_WALLS`만 쓴다(위 필드 코멘트, 범위 한정).
+    const occlusionWalls = this.wallsOverride ?? PRODUCTION_WALLS
+    const closest = findClosestHit(ray, candidates, DEFAULT_HITBOX, occlusionWalls)
     if (!closest || !closest.result.region) return
 
     const victim = this.state.players.get(closest.id)
