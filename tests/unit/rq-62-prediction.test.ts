@@ -344,8 +344,10 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 값이 되면 캡의 효과 자체를 증명할 수 없다). z:20은 네 벽 중 어느
     // 범위에도 걸리지 않는 대역이라(`tests/unit/sim-movement-walls.test.ts`
     // "양성 대조군"과 동일한 값·동일 근거) 벽과 무관하게 원래 의도(버퍼
-    // 캡만) 그대로 검증한다 — 아래 두 `stepMovement` 호출은 그래서 여전히
-    // `walls` 인자 없이 둔다(이 경로에서는 있으나 없으나 결과가 같다).
+    // 캡만) 그대로 검증한다 — 아래 두 `stepMovement` 호출에도 **같은
+    // `PRODUCTION_WALLS`를 넘겨** 오라클과 피검체가 같은 계약을 쓰게 한다
+    // (z:20에서는 값이 같아 오늘 결과는 불변이고, 벽이 이 대역을 덮게 되면
+    // `:384` 대조군이 대신 실패해 원인이 드러난다).
     const initial: MoveState = { x: 0, y: 0, z: 20, vx: 0, vy: 0, vz: 0, grounded: true }
     const predictor: ClientPredictor = createClientPredictor(initial)
     const totalInputs = BUFFER_CAP + 10 // 상한을 확실히 넘기는 여유(10개 초과)
