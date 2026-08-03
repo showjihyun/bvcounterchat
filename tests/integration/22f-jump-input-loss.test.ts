@@ -56,11 +56,10 @@ import { MOVEMENT } from '@shared/constants'
  * GA-32(RQ-20, `tests/unit/sim-movement.test.ts`)는 "점프 입력 → 최고점
  * 1.0m 도달 → 착지"라는 **정상 경로의 물리**만 규정한다 — 입력이 두
  * 메시지로 쪼개져 한 틱 경계 안에서 경합하는 시나리오는 다루지 않는다.
- * 이 결함류를 덮는 골든은 아직 없다(팀리드 지시, 골든 신설은 사용자
- * 권한 — `harness/evals/golden/**`를 이 파일이 수정하지 않는다). 이 파일은
- * `rq-62-input-sequence-authority.test.ts`의 "RQ-62 리뷰 blocker 재현"
- * describe 블록과 동일한 성격이다 — 골든 매핑 밖에서 결함 자체를 고정하는
- * 회귀 테스트다.
+ * 그 공백을 **GA-56이 메운다**(위 절). 이 파일은 결함 재현 테스트로 먼저
+ * 작성됐고 골든이 뒤따라 붙은 순서라, `rq-62-input-sequence-authority.test.ts`의
+ * "RQ-62 리뷰 blocker 재현" describe 블록과 성격이 같되 **지금은 골든 매핑이
+ * 있다**는 점만 다르다.
  *
  * ## 레벨 판단 (ADR-0008/0011)
  *
