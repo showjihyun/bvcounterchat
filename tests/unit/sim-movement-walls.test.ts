@@ -21,9 +21,10 @@ import { PRODUCTION_WALLS, WALL_EAST as PRODUCTION_WALL_EAST } from '@shared/sim
  * `tests/unit/`", `harness/workflow/tdd.md` 참고 표). GA-50(RQ-30 월드
  * 경계)이 통합 레벨이었던 것은 그 골든의 `verify` 필드가 통합 경로를
  * 명시적으로 지정했기 때문이다(`rq-30-play-area-bounds.test.ts` 상단
- * 참고) — 이 라운드는 **신설 골든이 없다**(사용자 권한, 팀리드 지시 —
- * "골든을 신설하지 마라"). 골든이 벽 충돌 메커니즘 자체를 아직 다루지
- * 않으므로 기본 규칙(순수 로직 → 단위)으로 되돌아간다. `stepMovement`를
+ * 참고) — 이 파일이 작성될 당시에는 벽 충돌을 덮는 골든이 없어 기본
+ * 규칙(순수 로직 → 단위)으로 되돌아갔다. 이후 독립 평가의 권고로
+ * **GA-57**(접지·공중 모두 벽 통과 금지)이 신설됐고 그 `verify`가 이
+ * 파일과 `rq-30-wall-collision-wiring.test.ts`를 함께 지정한다. `stepMovement`를
  * 직접 호출해 벽 주입 계약을 검증하는 것이 "서버가 확정하는 위치"라는
  * 관측 대상과도 어긋나지 않는다 — `GameRoom.stepPlayerMovement`가 이
  * 함수를 그대로 호출해 그 반환값을 공개 스키마(`player.x/y/z`)에 쓰기
@@ -343,7 +344,7 @@ describe('RQ-30 벽 충돌 — 정적 지오메트리 주입 계약 (ADR-0013, �
  * 막는지를 확인하는 것이므로 정본을 그대로 참조한다(숫자가 우연히 같아도
  * 복제하지 않는다).
  */
-describe('RQ-30/F2 회귀 — 공중(점프) 상태에서도 벽을 통과하지 않는다 (독립 평가 FAIL 대응, 골든 없음)', () => {
+describe('RQ-30/F2 회귀 — 공중(점프) 상태에서도 벽을 통과하지 않는다 (독립 평가 FAIL 대응, 골든 GA-57)', () => {
   /** 벽 앞 2m 지점(x:13, `WALL_EAST.minX`=15)에서 이함하는 **첫 틱만**
    * `jump:true`를 준다 — `MoveInput.jump`는 "접지 상태에서만 유효한
    * 엣지 트리거"다(movement.ts `MoveInput` docblock). 이후 틱까지 계속
