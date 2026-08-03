@@ -52,14 +52,18 @@
 
 import type { WallAABB } from '@shared/sim/movement'
 
-/** 동쪽 벽 — 두께 1m(x:15~16m), 폭 10m(z:-5~5m). */
-const WALL_EAST: WallAABB = { minX: 15, maxX: 16, minZ: -5, maxZ: 5 }
+/** 동쪽 벽 — 두께 1m(x:15~16m), 폭 10m(z:-5~5m). 개별로 export하는 이유:
+ * 통합 테스트(`rq-30-wall-collision-wiring.test.ts`, 평가 F1 대응)가 벽
+ * 좌표를 리터럴로 복제하지 않고 이 정본을 그대로 참조하게 하기 위해서다
+ * (ADR-0010 값 복제 금지 정신 — 이 값은 스펙 확정값은 아니지만, 정본이
+ * 하나면 좌표를 바꿔도 테스트가 따라간다). */
+export const WALL_EAST: WallAABB = { minX: 15, maxX: 16, minZ: -5, maxZ: 5 }
 /** 서쪽 벽 — 두께 1m(x:-16~-15m), 폭 10m(z:-5~5m). */
-const WALL_WEST: WallAABB = { minX: -16, maxX: -15, minZ: -5, maxZ: 5 }
+export const WALL_WEST: WallAABB = { minX: -16, maxX: -15, minZ: -5, maxZ: 5 }
 /** 북쪽 벽 — 폭 10m(x:-5~5m), 두께 1m(z:15~16m). */
-const WALL_NORTH: WallAABB = { minX: -5, maxX: 5, minZ: 15, maxZ: 16 }
+export const WALL_NORTH: WallAABB = { minX: -5, maxX: 5, minZ: 15, maxZ: 16 }
 /** 남쪽 벽 — 폭 10m(x:-5~5m), 두께 1m(z:-16~-15m). */
-const WALL_SOUTH: WallAABB = { minX: -5, maxX: 5, minZ: -16, maxZ: -15 }
+export const WALL_SOUTH: WallAABB = { minX: -5, maxX: 5, minZ: -16, maxZ: -15 }
 
 /** `GameRoom.stepPlayerMovement`가 `stepMovement`의 세 번째 인자로 상시
  * 주입하는 잠정 프로덕션 벽 목록 — 위 docblock 참고. */

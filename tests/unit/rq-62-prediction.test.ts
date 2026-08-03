@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import {
   createClientPredictor,
   type AuthoritativeMoveState,
@@ -336,7 +337,16 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
   const BUFFER_CAP = 100
 
   it(`RQ-62/리뷰 minor: 버퍼는 최대 ${BUFFER_CAP}개까지만 보관하고, 초과분은 가장 오래된(가장 작은 seq) 입력부터 드롭한다`, () => {
-    const initial = createGroundedState()
+    // z:20 — RQ-30 REV(평가 FAIL F3 대응)으로 `prediction.ts`가 `PRODUCTION_WALLS`를
+    // 주입하게 되면서, 원점(z=0)에서 110틱 +X 직진하면 `WALL_EAST`(x:15~16,
+    // z:-5~5)에 걸려 이 테스트의 순수 버퍼 상한 관찰(100개 vs 110개 재생
+    // 결과가 달라야 한다)이 벽 클램프로 오염된다(둘 다 벽에서 포화돼 같은
+    // 값이 되면 캡의 효과 자체를 증명할 수 없다). z:20은 네 벽 중 어느
+    // 범위에도 걸리지 않는 대역이라(`tests/unit/sim-movement-walls.test.ts`
+    // "양성 대조군"과 동일한 값·동일 근거) 벽과 무관하게 원래 의도(버퍼
+    // 캡만) 그대로 검증한다 — 아래 두 `stepMovement` 호출은 그래서 여전히
+    // `walls` 인자 없이 둔다(이 경로에서는 있으나 없으나 결과가 같다).
+    const initial: MoveState = { x: 0, y: 0, z: 20, vx: 0, vy: 0, vz: 0, grounded: true }
     const predictor: ClientPredictor = createClientPredictor(initial)
     const totalInputs = BUFFER_CAP + 10 // 상한을 확실히 넘기는 여유(10개 초과)
 
@@ -372,5 +382,69 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
       unboundedExpected = stepMovement(unboundedExpected, input)
     }
     expect(expected).not.toEqual(unboundedExpected)
+  })
+})
+
+/**
+ * RQ-30 REV(순증, 독립 평가 FAIL F3 대응) — `src/client/net/prediction.ts`가
+ * `stepMovement`를 부르는 두 지점(`applyInput`·`reconcile`의 재생 루프)
+ * 모두 서버(`GameRoom.ts`)와 같은 `@shared/sim/walls`의 `PRODUCTION_WALLS`를
+ * 주입해야 한다 — 그러지 않으면 서버는 벽 있는 세계를, 클라는 벽 없는
+ * 세계를 시뮬레이션해 예측이 벽 앞에서 서버와 어긋나고, 재조정마다 미확인
+ * 입력을 또 벽 없이 재생하므로 수렴하지 않는다(RQ-61 위반은 아니다 — 최종
+ * 값은 항상 서버가 이기므로 — 그러나 RQ-62 예측의 목적을 깨뜨린다).
+ *
+ * 아래 두 테스트는 `applyInput`·`reconcile` 각각을 독립적으로 벽 앞에서
+ * 스트레스한다 — `PRODUCTION_WALLS` 주입이 빠지면 두 테스트 모두 즉시
+ * 죽는다(예측/재생 결과가 `stepMovement(..., PRODUCTION_WALLS)`로 직접
+ * 계산한 기대값보다 훨씬 멀리 가버린다).
+ */
+describe('RQ-62/RQ-30 REV(평가 FAIL F3 대응): 예측·재조정이 서버와 동일한 프로덕션 벽을 반영한다', () => {
+  it('RQ-62/F3: applyInput — 벽 앞에서 지속 이동을 예측해도 predicted 위치가 WALL_EAST 근접면을 넘지 않는다', () => {
+    // x:13 — WALL_EAST(minX:15)의 근접면에서 2m 앞. z:0은 WALL_EAST의
+    // z범위(-5~5) 안이라 정면으로 충돌한다.
+    const initial: MoveState = { x: 13, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+    const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+    const TICKS = 30 // 2m를 건너기에 필요한 10틱(6m/s)보다 3배 여유
+
+    let expected = initial
+    let lastPredicted: MoveState = initial
+    for (let i = 0; i < TICKS; i += 1) {
+      expected = stepMovement(expected, input, PRODUCTION_WALLS)
+      lastPredicted = predictor.applyInput(input).predicted
+    }
+
+    expect(lastPredicted).toEqual(expected)
+    // 벽이 실제로 개입했다는 전제 확인 — 벽이 없다면 13+30*0.2=19에
+    // 도달했을 것이다. 이 값이 근접면(15)을 넘지 않아야 벽이 실제로
+    // 관측됐다는 뜻이다.
+    expect(lastPredicted.x).toBeLessThanOrEqual(WALL_EAST.minX + 1e-6)
+    expect(lastPredicted.x).toBeGreaterThan(13) // 고착이 아니라 실제로 벽까지 밀렸다
+  })
+
+  it('RQ-62/F3: reconcile — 미확인 입력을 재생할 때도 프로덕션 벽을 반영해, 재조정 결과가 벽 근접면을 넘지 않는다', () => {
+    const initial: MoveState = { x: 13, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+    const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+    const TICKS = 30
+
+    for (let i = 0; i < TICKS; i += 1) {
+      predictor.applyInput(input)
+    }
+
+    // 서버가 아직 아무 입력도 확인하지 못했다고 가정한다 — 버퍼의 30개
+    // 입력 전부가 재생 대상이다.
+    const snapshot: AuthoritativeMoveState = { ...initial, lastProcessedInputSeq: 0 }
+    const reconciled = predictor.reconcile(snapshot)
+
+    let expected = initial
+    for (let i = 0; i < TICKS; i += 1) {
+      expected = stepMovement(expected, input, PRODUCTION_WALLS)
+    }
+
+    expect(reconciled).toEqual(expected)
+    expect(reconciled.x).toBeLessThanOrEqual(WALL_EAST.minX + 1e-6)
+    expect(reconciled.x).toBeGreaterThan(13)
   })
 })
