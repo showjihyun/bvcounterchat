@@ -90,9 +90,21 @@ const BETWEEN_SHOTS_MS = 300
  * `RESPAWN_OBSERVE_TIMEOUT_MS`와 동일 값·동일 근거). */
 const RESPAWN_OBSERVE_TIMEOUT_MS = 8_000
 
-/** "모든 Safe Zone 밖"을 구성하는 방사 오프셋 — `rq-31-safe-zone.test.ts`
- * §반경-방사 기하 문서와 동일 값·동일 근거(실측 확인 범위 0~20m 안). */
-const FAR_OUTSIDE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 15
+/** "모든 Safe Zone 밖"을 구성하는 방사 오프셋.
+ *
+ * **REV(원장 25a-1, RQ-30 월드 경계 클램프 도입 — 19 → 6으로 축소)**: 이전
+ * 값(19)은 `aFarPoint`·`bFarPoint`(텔레포트 **전** 계산값)를 그대로
+ * `aimAtBody`에 넘기는데, A·B의 스폰 반지름(~22m 원) + 19m가
+ * `stepMovement`의 새 월드 경계 클램프(±30, RQ-30)를 넘는 스폰 조합(예:
+ * idx=0 스폰 → x=41, idx=1 스폰 → x=37.33)에서는 텔레포트 다음 틱에
+ * 축별로 되접혀 실제 서버 위치가 계산에 쓰인 미클램프 점과 어긋나고, 그
+ * 어긋난 방향으로 조준한 사격이 B를 빗맞혀 "1번째 사격 후 B의 HP 변화
+ * 대기"가 타임아웃됐다(이번 라운드 전체 스위트 실행에서 재현·확인,
+ * `_workspace/RQ-30/02_coder_green.md` 참고). `tests/support/safe-zone.ts`의
+ * `DEFAULT_SAFE_ZONE_ESCAPE_OFFSET_M`과 동일한 세 조건 분석으로 같은 값
+ * (6m)을 택했다 — worst-case(idx=0, 각도 0°)에서도 x=28로 항상 경계
+ * 안이라 이 왜곡이 재발하지 않는다. */
+const FAR_OUTSIDE_OFFSET_M = WORLD.SAFE_ZONE_RADIUS_M + 2
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
