@@ -368,7 +368,7 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 재생한 결과.
     let expected = initial
     for (let i = totalInputs - BUFFER_CAP; i < totalInputs; i += 1) {
-      expected = stepMovement(expected, inputs[i]!)
+      expected = stepMovement(expected, inputs[i]!, PRODUCTION_WALLS)
     }
     expect(reconciled).toEqual(expected)
 
@@ -379,7 +379,7 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 구분 불가).
     let unboundedExpected = initial
     for (const input of inputs) {
-      unboundedExpected = stepMovement(unboundedExpected, input)
+      unboundedExpected = stepMovement(unboundedExpected, input, PRODUCTION_WALLS)
     }
     expect(expected).not.toEqual(unboundedExpected)
   })
