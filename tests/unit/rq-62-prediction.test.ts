@@ -347,7 +347,8 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 캡만) 그대로 검증한다 — 아래 두 `stepMovement` 호출에도 **같은
     // `PRODUCTION_WALLS`를 넘겨** 오라클과 피검체가 같은 계약을 쓰게 한다
     // (z:20에서는 값이 같아 오늘 결과는 불변이고, 벽이 이 대역을 덮게 되면
-    // `:384` 대조군이 대신 실패해 원인이 드러난다).
+    // 아래 대조군 `expect(expected).not.toEqual(unboundedExpected)`가 대신
+    // 실패해 원인이 드러난다).
     const initial: MoveState = { x: 0, y: 0, z: 20, vx: 0, vy: 0, vz: 0, grounded: true }
     const predictor: ClientPredictor = createClientPredictor(initial)
     const totalInputs = BUFFER_CAP + 10 // 상한을 확실히 넘기는 여유(10개 초과)
