@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { findClosestHit, type HitboxConfig, type HitCandidate, type Ray } from '@shared/sim/combat'
+import { findClosestHit, type HitboxConfig, type HitCandidate, type Ray, type Vec3 } from '@shared/sim/combat'
 import type { WallAABB } from '@shared/sim/movement'
+import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 
 /**
  * RQ-12 v1.7 사격 차폐(맵 정적 지오메트리에 의한 hitscan 차단) — 순수 산술
@@ -144,4 +145,139 @@ describe('RQ-12 v1.7/GA-58 findClosestHit 벽 차폐 — 벽이 사격 판정에
     expect(result?.result.hit).toBe(true)
     expect(result?.result.distance).toBeCloseTo(TARGET_HIT_DISTANCE, 6)
   })
+})
+
+/**
+ * 결함 재현 — 벽에 밀착한 사수는 어느 방향으로 쏴도 전탄이 무효화된다
+ * (PR #48 리뷰 blocker, team-lead 04_test-writer_flush 지시).
+ *
+ * **근본 원인**: `intersectWallXZ`(`src/shared/sim/combat.ts:267`)의
+ * `if (tMax < tMin || tMax < -FORWARD_EPS) return undefined` 가드는, 레이
+ * 원점이 벽 슬랩 **경계 위**에 있고 방향이 벽에서 **멀어질 때** `tMax`가
+ * `-0`이 되는 경우를 배제하지 못한다 — `-0 < -1e-9`가 거짓이라 그대로
+ * 통과해 `Math.max(tMin, 0) = 0`이 진입 거리로 나간다. 진입 거리 0은 어떤
+ * 후보의 명중 거리(양수)보다도 작으므로(`isOccludedByWall`) **전 후보가
+ * 차폐 제외**된다.
+ *
+ * **이 좌표는 우연이 아니다**: `clampAgainstWalls`(`src/shared/sim/movement
+ * .ts:214`)가 이동 클램프 후 x를 `wall.minX`로 정확히 스냅하고,
+ * `GameRoom.ts:1092`(`stepPlayerMovement`)가 그 값을 `moveStates`에 넣고,
+ * `handleFire`(`GameRoom.ts:681`)가 반올림 없이 그 값을 레이 원점
+ * (`eyeOrigin`)에 그대로 쓴다 — "벽에 붙어 엄폐한다"는 평범한 조작이 매 번
+ * 이 경계 좌표를 만들어낸다. 네 벽 대칭이고, 벽 대역(15.8~16.8m)은 Safe
+ * Zone(18~26m) 밖이라 RQ-31 게이트도 가리지 않는다.
+ *
+ * 아래 명제는 **관측 가능한 행동(명중/미명중)만** 단언한다 — 수정 방향
+ * (리뷰어 제안 `tMax <= 0` 등)은 구현자에게 넘긴다. `WALL_EAST`·
+ * `PRODUCTION_WALLS`는 `@shared/sim/walls`에서 그대로 임포트한다(ADR-0010
+ * 값 복제 금지 — `15`·`16` 리터럴을 이 파일에 새로 쓰지 않는다).
+ */
+describe('결함 재현 — 벽 밀착 사수의 전탄 무효화 (PR #48 리뷰 blocker)', () => {
+  /** 밀착 사수 원점 — `WALL_EAST.minX`(경계) 정확히 위, z=0은 벽의 z
+   * 범위(`WALL_EAST.minZ`~`WALL_EAST.maxZ` = -5~5) 안이라 x축 슬랩 배제
+   * 분기(`intersectWallXZ`의 평행 분기)를 타지 않는다(위 결함 설명의
+   * 전제 조건). */
+  const FLUSH_ORIGIN: Vec3 = { x: WALL_EAST.minX, y: 1, z: 0 }
+  /** 표적을 사수로부터 이 거리(월드 미터)만큼 띄운다 —
+   * `TEST_HITBOX.bodyRadiusM`(1)을 빼면 손으로 검산 가능한 명중 거리가
+   * 나온다(아래 `EXPECTED_HIT_DISTANCE`). */
+  const TARGET_OFFSET_M = 6
+  const EXPECTED_HIT_DISTANCE = TARGET_OFFSET_M - TEST_HITBOX.bodyRadiusM
+
+  it('밀착 + 벽 반대 방향(서쪽, 벽에서 멀어짐) 사격은 명중해야 한다 — 지금은 자기 벽에 차폐돼 Red', () => {
+    const ray: Ray = { origin: FLUSH_ORIGIN, direction: { x: -1, y: 0, z: 0 } }
+    const target: HitCandidate = {
+      id: 'target',
+      pose: { position: { x: FLUSH_ORIGIN.x - TARGET_OFFSET_M, y: 0, z: 0 } },
+    }
+
+    const result = findClosestHit(ray, [target], TEST_HITBOX, [WALL_EAST])
+
+    expect(result?.id).toBe('target')
+    expect(result?.result.hit).toBe(true)
+    expect(result?.result.distance).toBeCloseTo(EXPECTED_HIT_DISTANCE, 6)
+  })
+
+  it('밀착 + 벽면과 나란한 방향(북쪽, z축 — 벽을 관통하지 않음) 사격도 명중해야 한다 — 지금은 자기 벽에 차폐돼 Red', () => {
+    const ray: Ray = { origin: FLUSH_ORIGIN, direction: { x: 0, y: 0, z: 1 } }
+    const target: HitCandidate = {
+      id: 'target',
+      pose: { position: { x: FLUSH_ORIGIN.x, y: 0, z: FLUSH_ORIGIN.z + TARGET_OFFSET_M } },
+    }
+
+    const result = findClosestHit(ray, [target], TEST_HITBOX, [WALL_EAST])
+
+    expect(result?.id).toBe('target')
+    expect(result?.result.hit).toBe(true)
+    expect(result?.result.distance).toBeCloseTo(EXPECTED_HIT_DISTANCE, 6)
+  })
+
+  it('양성 대조군 — 밀착 + 벽 쪽 방향(동쪽, 실제로 벽을 관통하는 경로)은 여전히 차폐돼야 한다(과잉수정 방지)', () => {
+    const ray: Ray = { origin: FLUSH_ORIGIN, direction: { x: 1, y: 0, z: 0 } }
+    const target: HitCandidate = {
+      id: 'target',
+      pose: { position: { x: WALL_EAST.maxX + TARGET_OFFSET_M, y: 0, z: 0 } },
+    }
+
+    const result = findClosestHit(ray, [target], TEST_HITBOX, [WALL_EAST])
+
+    expect(result).toBeUndefined()
+  })
+
+  interface FlushWallCase {
+    wall: WallAABB
+    label: string
+    origin: Vec3
+    awayDirection: Vec3
+  }
+
+  /** 벽의 두께가 더 얇은 축을 "두께 축"으로 판별해, 그 축에서 맵 중심
+   * (원점)에 더 가까운 면("안쪽 면")과 거기서 멀어지는 방향을 유도한다 —
+   * 좌표 리터럴을 하드코딩하지 않고 `WallAABB` 필드값만으로 계산한다
+   * (ADR-0010). 네 벽(`PRODUCTION_WALLS`) 전수를 이 하나의 함수로 덮어
+   * 조합 폭발 없이 대칭을 확인한다(팀리드 지시). */
+  function flushWallCase(wall: WallAABB): FlushWallCase {
+    const xThicknessM = wall.maxX - wall.minX
+    const zThicknessM = wall.maxZ - wall.minZ
+    if (xThicknessM < zThicknessM) {
+      const isEastSide = wall.minX > 0
+      const flushX = isEastSide ? wall.minX : wall.maxX
+      return {
+        wall,
+        label: isEastSide ? '동' : '서',
+        origin: { x: flushX, y: 1, z: 0 },
+        awayDirection: { x: isEastSide ? -1 : 1, y: 0, z: 0 },
+      }
+    }
+    const isNorthSide = wall.minZ > 0
+    const flushZ = isNorthSide ? wall.minZ : wall.maxZ
+    return {
+      wall,
+      label: isNorthSide ? '북' : '남',
+      origin: { x: 0, y: 1, z: flushZ },
+      awayDirection: { x: 0, y: 0, z: isNorthSide ? -1 : 1 },
+    }
+  }
+
+  it.each(PRODUCTION_WALLS.map(flushWallCase))(
+    '네 벽 대칭($label): 안쪽 면 밀착 + 벽 반대 방향 사격은 명중해야 한다 — 지금은 자기 벽에 차폐돼 Red',
+    ({ wall, origin, awayDirection }) => {
+      const target: HitCandidate = {
+        id: 'target',
+        pose: {
+          position: {
+            x: origin.x + awayDirection.x * TARGET_OFFSET_M,
+            y: 0,
+            z: origin.z + awayDirection.z * TARGET_OFFSET_M,
+          },
+        },
+      }
+
+      const result = findClosestHit({ origin, direction: awayDirection }, [target], TEST_HITBOX, [wall])
+
+      expect(result?.id).toBe('target')
+      expect(result?.result.hit).toBe(true)
+      expect(result?.result.distance).toBeCloseTo(EXPECTED_HIT_DISTANCE, 6)
+    },
+  )
 })
