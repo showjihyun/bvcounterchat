@@ -72,6 +72,19 @@ export interface MoveInput {
   jump: boolean
 }
 
+/**
+ * RQ-30 벽 충돌(원장 25a-2, ADR-0013 결정 1~2) — 정적 지오메트리를 축
+ * 정렬 상자(무한 높이 기둥)로 표현한다. `minY`/`maxY`가 없는 것은 의도다 —
+ * 등반 가능한 유한 높이 "박스"(RQ-32)와 "벽"(지형, RQ-30)을 구분하는
+ * 기존 어휘를 따른다(`tests/unit/sim-movement-walls.test.ts` docblock).
+ */
+export interface WallAABB {
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+}
+
 /** 1틱의 경과 시간(초). `NET.TICK_MS`(1000/30, 부동소수점)를 매번 나누지
  * 않도록 모듈 로드 시 한 번만 계산한다. */
 const TICK_SECONDS = NET.TICK_MS / 1000
@@ -165,14 +178,73 @@ function clampToWorldBounds(value: number): number {
   return value
 }
 
+/**
+ * 벽 목록(`WallAABB[]`)에 대해 이번 틱 후보 위치(nextX/nextZ)를 근접면에서
+ * 절단한다 — **축별 독립 절단**(RQ-30 팀리드 지시: "정지 방식을 과도하게
+ * 설계하지 마라 — 부등식만 단언한다"). 이 라운드의 커버리지(원장 25a-2)가
+ * ±X·±Z 단일축 접근만 다루므로, x축·z축을 순서대로 독립 적용해도 충분하다
+ * (대각선 이동 중 모서리 스침 같은 케이스는 이 계약이 시험하지 않는다).
+ *
+ * 각 벽에 대해, 이동 축과 **수직**인 축의 좌표가 벽의 범위 안에 있을 때만
+ * 절단한다 — 그렇지 않으면 벽 옆을 스쳐 지나가는 경로까지 막아버린다(위
+ * "양성 대조군" 요구). 근접면은 **직전 위치(prevX/prevZ)가 벽의 어느 쪽에
+ * 있었는가**로 정한다 — 반대쪽에서 접근하면 반대쪽 면에서 멈춘다.
+ *
+ * **고착 방지가 이 판정 순서에서 자연히 나온다**: 벽에 붙어 멈춘
+ * 뒤(`prevX`가 근접면 값과 같아짐) 반대 방향으로 밀면, 후보 위치가 그
+ * 근접면을 다시 넘지 않으므로(반대 방향으로 움직였으니까) 두 조건
+ * (`prev` 비교, `next` 비교) 중 하나가 깨져 절단이 걸리지 않는다 —
+ * 세계 경계의 `clampToWorldBounds`(상태 비보유 절단)와 달리 이 함수는
+ * "다가오는 방향"까지 함께 봐야 하므로 직전 위치가 필요하다. */
+function clampAgainstWalls(
+  prevX: number,
+  prevZ: number,
+  nextX: number,
+  nextZ: number,
+  walls: readonly WallAABB[],
+): { x: number; z: number } {
+  let x = nextX
+  let z = nextZ
+
+  for (const wall of walls) {
+    // x축 이동 절단 — z(수직축)가 벽의 z범위 안에 있어야("스쳐 지나감"이
+    // 아니라 실제로 벽면과 마주친다) 충돌로 본다.
+    if (z > wall.minZ && z < wall.maxZ) {
+      if (prevX <= wall.minX && x > wall.minX) {
+        x = wall.minX
+      } else if (prevX >= wall.maxX && x < wall.maxX) {
+        x = wall.maxX
+      }
+    }
+
+    // z축 이동 절단 — x(수직축)가 벽의 x범위 안에 있어야 충돌. 위에서 x가
+    // 이미 절단됐을 수 있으므로 절단된 x로 재평가한다.
+    if (x > wall.minX && x < wall.maxX) {
+      if (prevZ <= wall.minZ && z > wall.minZ) {
+        z = wall.minZ
+      } else if (prevZ >= wall.maxZ && z < wall.maxZ) {
+        z = wall.maxZ
+      }
+    }
+  }
+
+  return { x, z }
+}
+
 /** 접지 결과 — 수평은 `vx`·`vz`를 그대로(값으로) 적용·보고하고 수직은
  * 0으로 유지한다. 그대로 서 있는 경우와 공중에서 착지하는 경우가 같은
- * 모양이라 공유한다. */
-function groundedOutcome(state: MoveState, vx: number, vz: number): MoveState {
+ * 모양이라 공유한다. 세계 경계(`clampToWorldBounds`) 절단 이후 벽 절단
+ * (`clampAgainstWalls`)을 적용한다 — 둘 다 위치만 절단하고 속도(`vx`/`vz`)는
+ * 그대로 보고한다(위 `clampToWorldBounds` 코멘트의 "절단 대상은 위치뿐"과
+ * 동일한 선택 — 속도 처리는 이 라운드의 스코프가 아니다). */
+function groundedOutcome(state: MoveState, vx: number, vz: number, walls: readonly WallAABB[]): MoveState {
+  const boundedX = clampToWorldBounds(state.x + vx * TICK_SECONDS)
+  const boundedZ = clampToWorldBounds(state.z + vz * TICK_SECONDS)
+  const { x, z } = clampAgainstWalls(state.x, state.z, boundedX, boundedZ, walls)
   return {
-    x: clampToWorldBounds(state.x + vx * TICK_SECONDS),
+    x,
     y: 0,
-    z: clampToWorldBounds(state.z + vz * TICK_SECONDS),
+    z,
     vx,
     vy: 0,
     vz,
@@ -182,17 +254,34 @@ function groundedOutcome(state: MoveState, vx: number, vz: number): MoveState {
 
 /** 이륙 후 경과 시각 `t`(초)에서의 공중 결과. 높이가 0 이하로 내려간
  * 시점(해석적 궤적이 지면을 지나친 시점)이면 착지로 스냅한다 — 그
- * 시점까지 유지해 온 수평 속도(vx·vz)로 착지 틱의 이동까지 마저 적용한다. */
-function airborneOutcome(state: MoveState, vx: number, vz: number, t: number): MoveState {
+ * 시점까지 유지해 온 수평 속도(vx·vz)로 착지 틱의 이동까지 마저 적용한다.
+ *
+ * **REV(독립 평가 FAIL F2 대응) — 공중 상태도 벽을 본다**: `WallAABB`
+ * docblock이 "무한 높이 기둥"이라고 선언한 이상 공중(점프 중)에도 그
+ * 기둥을 통과할 수 없어야 문서와 코드가 일치한다 — 최초 구현은 공중
+ * 궤적에 `walls`를 전혀 스레딩하지 않아 몸통 높이로 벽을 관통했다(평가자
+ * 실측: x=15에서 점프 → 1틱 만에 x=15.4로 벽 안쪽 진입). 이제 착지
+ * 스냅(`groundedOutcome` 호출)뿐 아니라 **체공 중 매 틱의 수평 위치도**
+ * `clampAgainstWalls`로 절단한다 — 세계 경계(`clampToWorldBounds`)를
+ * 먼저 적용한 뒤 벽을 적용하는 순서는 접지 경로(`groundedOutcome`)와
+ * 동일하다.
+ *
+ * **RQ-32 박스 등반과 충돌하지 않는다**: 박스(유한 높이, 점프로 오르는
+ * 대상)는 `WallAABB`와 다른 범주이고 이 벽 목록에 포함되지 않는다 — 벽이
+ * 무한 높이인 것과 박스가 낮아 뛰어넘을 수 있는 것은 양립한다. */
+function airborneOutcome(state: MoveState, vx: number, vz: number, t: number, walls: readonly WallAABB[]): MoveState {
   const height = jumpHeightAt(t)
   if (height <= 0) {
-    return groundedOutcome(state, vx, vz)
+    return groundedOutcome(state, vx, vz, walls)
   }
 
+  const boundedX = clampToWorldBounds(state.x + vx * TICK_SECONDS)
+  const boundedZ = clampToWorldBounds(state.z + vz * TICK_SECONDS)
+  const { x, z } = clampAgainstWalls(state.x, state.z, boundedX, boundedZ, walls)
   return {
-    x: clampToWorldBounds(state.x + vx * TICK_SECONDS),
+    x,
     y: height,
-    z: clampToWorldBounds(state.z + vz * TICK_SECONDS),
+    z,
     vx,
     vy: jumpVyAt(t),
     vz,
@@ -200,15 +289,16 @@ function airborneOutcome(state: MoveState, vx: number, vz: number, t: number): M
   }
 }
 
-function stepGrounded(state: MoveState, input: MoveInput): MoveState {
+function stepGrounded(state: MoveState, input: MoveInput, walls: readonly WallAABB[]): MoveState {
   const { vx, vz } = groundVelocity(input)
   if (!input.jump) {
-    return groundedOutcome(state, vx, vz)
+    return groundedOutcome(state, vx, vz, walls)
   }
   // 이륙 — 이번 틱의 수평 속도를 그대로 착지까지의 공중 관성으로
   // 고정한다(RQ-92 공중 가속 미허용). 수직은 해석적 궤적의
-  // t = TICK_SECONDS 지점(이륙 후 정확히 한 틱 경과).
-  return airborneOutcome(state, vx, vz, TICK_SECONDS)
+  // t = TICK_SECONDS 지점(이륙 후 정확히 한 틱 경과). 이함 틱도 접지·공중
+  // 나머지 구간과 동일하게 벽을 본다(위 `airborneOutcome` REV 코멘트 참고).
+  return airborneOutcome(state, vx, vz, TICK_SECONDS, walls)
 }
 
 /** 공중 물리는 이번 틱 입력을 참조하지 않는다 — `MOVEMENT.AIR_CONTROL
@@ -216,13 +306,21 @@ function stepGrounded(state: MoveState, input: MoveInput): MoveState {
  * 순간 고정된 값)만 그대로 적용한다(에어 스트레이프·버니합 없음). 상태
  * **값**만 읽으므로 직렬화 왕복·얕은 복사를 거친 `state`를 넘겨도 결과가
  * 같다(REV 2026-07-24). */
-function stepAirborne(state: MoveState): MoveState {
+function stepAirborne(state: MoveState, walls: readonly WallAABB[]): MoveState {
   const t = jumpElapsedSeconds(state.vy) + TICK_SECONDS
-  return airborneOutcome(state, state.vx, state.vz, t)
+  return airborneOutcome(state, state.vx, state.vz, t, walls)
 }
 
 /** 1틱(`NET.TICK_MS`) 전진 — 평지(y=0) 순수 산술(RQ-20, RQ-92). Rapier
- * 없음, 사다리(RQ-21)·박스(RQ-22)·낙하 데미지(RQ-18)는 스코프 밖이다. */
-export function stepMovement(state: MoveState, input: MoveInput): MoveState {
-  return state.grounded ? stepGrounded(state, input) : stepAirborne(state)
+ * 없음, 사다리(RQ-21)·박스(RQ-22)·낙하 데미지(RQ-18)는 스코프 밖이다.
+ *
+ * **`walls`(RQ-30, 원장 25a-2/26o) — 세 번째 인자, 기본값 `[]`**: 정적
+ * 지오메트리를 축 정렬 상자 목록으로 **주입**받는다(`src/shared`는 파일·
+ * 전역·환경에서 벽을 읽지 않는다 — ADR-0010 환경 중립). 생략하거나 빈
+ * 배열을 넘기면 벽이 전혀 없던 기존 동작 그대로다(하위 호환 — 기존 13개
+ * 호출부가 전부 이 계약을 만족한다). **접지·공중 모두 적용한다**(평가
+ * FAIL F2 대응 REV, 위 `airborneOutcome` 코멘트 참고 — 최초 구현은 접지
+ * 상태에만 적용해 공중에서 벽을 관통했다). */
+export function stepMovement(state: MoveState, input: MoveInput, walls: readonly WallAABB[] = []): MoveState {
+  return state.grounded ? stepGrounded(state, input, walls) : stepAirborne(state, walls)
 }

@@ -6,6 +6,7 @@ import { createClock } from '@shared/sim/clock'
 import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import {
   applySpread,
   canFire,
@@ -1065,7 +1066,9 @@ export class GameRoom extends Room<GameState> {
       if (input.jump) {
         this.pendingInputs.set(sessionId, { ...input, jump: false })
       }
-      const next = stepMovement(previous, input)
+      // RQ-30(원장 25a-2): 세 번째 인자로 잠정 벽 목록을 주입한다 — 배치
+      // 근거·"확정 배치 아님" 경고는 `@shared/sim/walls` docblock 참고.
+      const next = stepMovement(previous, input, PRODUCTION_WALLS)
       this.moveStates.set(sessionId, next)
       player.x = next.x
       player.y = next.y

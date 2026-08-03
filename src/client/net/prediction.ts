@@ -1,4 +1,5 @@
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { PRODUCTION_WALLS } from '@shared/sim/walls'
 
 /**
  * RQ-62 클라이언트 예측 + 재조정(reconciliation) — 순수 로직 (ADR-0003 입력
@@ -12,6 +13,17 @@ import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/moveme
  *
  * 상세 계약·설계 근거는 `tests/unit/rq-62-prediction.test.ts` 상단 주석과
  * `_workspace/RQ-62/01_test-writer_red.md` §2를 참고.
+ *
+ * **REV(독립 평가 FAIL F3 대응, 원장 25a-2)** — `stepMovement` 호출 두
+ * 곳(`applyInput`·`reconcile`의 재생 루프) 모두 `@shared/sim/walls`의
+ * `PRODUCTION_WALLS`를 세 번째 인자로 주입한다. RQ-30 벽 도입 전에는 서버·
+ * 클라 양쪽이 벽 없는 세계를 시뮬레이션해 일치했으나, 서버(`GameRoom.ts`)만
+ * 벽을 주입하고 클라가 계속 2-인자 호출을 쓰면 예측이 벽 앞에서 서버와
+ * 어긋나 재조정마다 수렴하지 않는 발산(고무줄 현상)이 생긴다(RQ-61 서버
+ * 권위 위반은 아니다 — 최종 값은 항상 서버가 이긴다 — 하지만 RQ-62 예측의
+ * 목적 자체가 깨진다). 같은 상수를 공유 임포트하므로 좌표 리터럴 복제가
+ * 아니다(ADR-0010). `.glb` 확정으로 `PRODUCTION_WALLS`의 출처가 바뀌어도
+ * 이 파일은 손대지 않아도 된다.
  */
 
 export interface AuthoritativeMoveState extends MoveState {
@@ -81,7 +93,7 @@ export function createClientPredictor(initialState: MoveState): ClientPredictor 
       if (buffer.length > BUFFER_CAP) {
         buffer.shift()
       }
-      predicted = stepMovement(predicted, input)
+      predicted = stepMovement(predicted, input, PRODUCTION_WALLS)
       return { seq, predicted }
     },
 
@@ -92,7 +104,7 @@ export function createClientPredictor(initialState: MoveState): ClientPredictor 
 
       let state = toMoveState(serverState)
       for (const entry of buffer) {
-        state = stepMovement(state, entry.input)
+        state = stepMovement(state, entry.input, PRODUCTION_WALLS)
       }
 
       predicted = state
