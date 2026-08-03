@@ -3,7 +3,7 @@ import { createGameStore } from '@client/store/gameStore'
 import { createUiStore } from '@client/store/uiStore'
 import { connectToGame } from '@client/net/connection'
 import type { GameConnection } from '@client/net/connection'
-import { getOrCreateStatsUuid } from '@client/identity/statsUuid'
+import { getOrCreateStatsUuid, readUuidStorage } from '@client/identity/statsUuid'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
 import { ChatPanel } from '@client/hud/ChatPanel'
@@ -41,16 +41,24 @@ const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wi
  * 정리한다(끊긴 연결에 계속 `sendMoveInput`을 호출하는 것을 막는다).
  *
  * RQ-81: 접속 시 익명 통계 UUID(`localStorage`, ADR-0006 결정 4)를 함께
- * 보낸다. `getOrCreateStatsUuid(window.localStorage)`를 지연 초기화
+ * 보낸다. `getOrCreateStatsUuid(readUuidStorage())`를 지연 초기화
  * (`useState` 초기화 함수)로 한 번만 호출한다 — 매 렌더마다 `localStorage`를
  * 다시 읽지 않고, 이 셸 컴포넌트(브라우저 전용, `App.tsx`는 통합 테스트가
  * 직접 임포트하지 않는다)가 그 값을 소유해 `connectToGame`(netcode 레이어,
  * Node 환경에서도 직접 실행되는 모듈)에 값으로 넘긴다.
+ *
+ * 원장 26k(리뷰 blocker): 여기서 `window.localStorage`를 직접 참조하면 안
+ * 된다 — opaque origin(샌드박스 iframe)·사이트 데이터 차단 환경에서는
+ * `localStorage` **속성 접근 자체**가 던지고, 인자는 호출자(이 컴포넌트)
+ * 쪽에서 평가되므로 `getOrCreateStatsUuid` 내부 try/catch로는 그 예외를
+ * 잡을 수 없다(1차 수정에서 놓친 지점). `readUuidStorage()`가 그 속성
+ * 접근 자체를 감싸 안전한 폴백을 반환한다 — 조건 구분은 `statsUuid.ts`의
+ * `readUuidStorage`/`getOrCreateStatsUuid` 코멘트 참고.
  */
 export function App() {
   const [store] = useState(() => createGameStore())
   const [uiStore] = useState(() => createUiStore())
-  const [statsUuid] = useState(() => getOrCreateStatsUuid(window.localStorage))
+  const [statsUuid] = useState(() => getOrCreateStatsUuid(readUuidStorage()))
   const [connection, setConnection] = useState<GameConnection | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)

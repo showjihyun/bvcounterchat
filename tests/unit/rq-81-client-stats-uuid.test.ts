@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getOrCreateStatsUuid, resolveStatsUuid, STATS_UUID_STORAGE_KEY, type UuidStorage } from '@client/identity/statsUuid'
+import {
+  getOrCreateStatsUuid,
+  readUuidStorage,
+  resolveStatsUuid,
+  STATS_UUID_STORAGE_KEY,
+  type UuidStorage,
+} from '@client/identity/statsUuid'
 import { isValidStatsUuid } from '@shared/stats/uuid'
 
 /**
@@ -96,9 +102,13 @@ describe('RQ-81 getOrCreateStatsUuid — 저장소 부작용', () => {
 })
 
 /** `getItem`/`setItem` 중 지정한 메서드가 항상 던지는 저장소 더블 —
- * 원장 26k(`localStorage` 접근 미보호로 앱 전체가 백지가 되는 결함)의
- * 재현 조건(사이트 데이터 차단, 프라이빗 모드, 쿼터 초과, 샌드박스 iframe)을
- * 흉내낸다. `UuidStorage`가 주입식 인터페이스라 화이트박스 없이 검증 가능. */
+ * 원장 26k 조건 2(`statsUuid.ts`의 `getOrCreateStatsUuid` 코멘트): 속성
+ * 접근(`window.localStorage` 자체)은 성공했지만 **메서드 호출**이 던지는
+ * 경우(쿼터 초과, 구형 프라이빗 모드 계열)를 재현한다. opaque origin·
+ * 사이트 데이터 차단(속성 접근 자체가 던지는 조건 1)은 아래 별도 describe
+ * (`readUuidStorage`)가 다룬다 — 리뷰 blocker: 이 둘을 뭉뚱그려 여기서
+ * 같이 다루면 안 된다. `UuidStorage`가 주입식 인터페이스라 화이트박스
+ * 없이 검증 가능. */
 function throwingStorage(opts: { onGetItem?: boolean; onSetItem?: boolean }): UuidStorage {
   return {
     getItem(key: string): string | null {
@@ -158,6 +168,42 @@ describe('RQ-81 getOrCreateStatsUuid — 저장소 접근 실패 가드(원장 2
       let uuid = ''
       expect(() => {
         uuid = getOrCreateStatsUuid(storage, () => VALID_UUID)
+      }).not.toThrow()
+      expect(isValidStatsUuid(uuid)).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+})
+
+describe('RQ-81 readUuidStorage — 속성 접근 실패 가드(원장 26k 리뷰 blocker)', () => {
+  // 리뷰 blocker: `window.localStorage` **속성 접근 자체**가 던지는 환경
+  // (opaque origin·샌드박스 iframe, 사이트 데이터 차단)에서는
+  // `getOrCreateStatsUuid` 내부 try/catch로 잡을 수 없다 — 인자는 호출자
+  // (`App.tsx`) 쪽에서 이미 평가되기 때문이다. `readUuidStorage()`가 그
+  // 속성 접근 자체를 감싼다. 실제 브라우저 동작(Chrome: "Failed to read
+  // the 'localStorage' property from 'Window'")을 흉내내려 `getter`가
+  // 던지는 객체를 만든다 — `throwingStorage`(위)와 달리 메서드가 아니라
+  // 속성 자체가 던진다는 점이 이 테스트의 핵심이다.
+  it("RQ-81/26k: localStorage 속성 접근(getter) 자체가 던져도 readUuidStorage는 던지지 않고, 그 결과를 getOrCreateStatsUuid에 넘기면 유효한 UUID를 반환한다", () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const throwingWindow = {} as { localStorage: UuidStorage }
+      Object.defineProperty(throwingWindow, 'localStorage', {
+        get(): UuidStorage {
+          throw new DOMException("Failed to read the 'localStorage' property from 'Window'", 'SecurityError')
+        },
+      })
+
+      let storage: UuidStorage | undefined
+      expect(() => {
+        storage = readUuidStorage(throwingWindow)
+      }).not.toThrow()
+      expect(warnSpy).toHaveBeenCalled()
+
+      let uuid = ''
+      expect(() => {
+        uuid = getOrCreateStatsUuid(storage!, () => VALID_UUID)
       }).not.toThrow()
       expect(isValidStatsUuid(uuid)).toBe(true)
     } finally {
