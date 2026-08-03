@@ -79,6 +79,56 @@ import { MOVEMENT, WORLD } from '@shared/constants'
  * 지속 입력을 주면 클램프가 없는 오늘 코드베이스는 좌표가 30을 훌쩍
  * 넘긴다(실측 여유 — 첫 메시지 왕복 지연을 감안해도 남은 시간만으로 1m를
  * 넘어서기에 충분하다) — Red 신호가 타이밍 지터에 묻히지 않는다.
+ *
+ * ## REV(평가 FAIL 대응 — `airborneOutcome` 그물 순증, 팀리드 지시)
+ *
+ * **독립 평가 판정: FAIL(사유 1건, 나머지 전 축 PASS).** 원인은 이 파일의
+ * 결함이 아니라 **커버리지 공백**이다 — `@shared/sim/movement`의 클램프는
+ * `groundedOutcome`·`airborneOutcome` 두 경로에 각각 들어갔는데(코더 판단은
+ * 옳다, 불변식은 공중에서도 성립해야 한다), 위 6건 전부가
+ * `placePlayer(..., grounded: true)` + `jump: false`라 **공중 상태
+ * (`grounded === false`, 공개 스키마로는 `y > 0`과 동치 —
+ * `@shared/schema/GameState.ts`의 `Player.y` 필드 코멘트 "`grounded ===
+ * (y === 0)`"가 이 저장소의 기존 관례로 이미 명문화해 뒀다)에 한 번도
+ * 들어가지 않는다. `airborneOutcome`의 클램프(184~192행)를 통째로 제거해도
+ * 저장소 전체 스위트가 무성으로 통과했다(평가자 변이 실측).
+ *
+ * **이 추가의 성격 — 골든 누락 보완이 아니다.** GA-50 자체는 평가자가
+ * 문장 단위 대조로 이미 "완전히 커버된다"고 판정했다 — GA-50의 `given`
+ * ("경계 근처 지면에 서 있음")·`when`("이동 입력을 지속")·`then`("항상
+ * ±30m 안")은 모두 **지상(접지) 이동**을 그리며, 점프·공중을 언급하지
+ * 않는다. 아래 새 테스트는 골든이 요구하지 않는 코드(공중 클램프 분기)를
+ * **삭제해도 무성으로 통과하는 상태를 막는 그물**이다 — RQ-30 "플레이
+ * 면적 60×60m" 불변식이 공중에서도 깨지지 않아야 한다는, 골든보다 더
+ * 보수적인 회귀 방지 목적이지 GA-50 요구사항의 확장이 아니다.
+ *
+ * **"공중 상태를 실제로 지났는가" 가드 — `rq-18-fall-damage.test.ts`
+ * REV3/5의 교훈을 그대로 적용**: 그 파일이 CI에서 실제로 겪은 결함류는
+ * "`y>0`을 단발성으로 노리는 관측"이 `GameRoom.startTickLoop`의 틱
+ * 캐치업(`driver.advanceByElapsed`가 지연된 콜백 한 번에 여러 틱을 동기
+ * 처리)에 걸려 중간 상태를 건너뛸 수 있다는 것이었다 — 그 파일은 "관측"
+ * 대신 "안정 신호"(한 번 참이 되면 계속 참인 조건)로 재설계해 해결했다.
+ * 이 파일의 점프 체공은 임의 주입 높이가 아니라 `MOVEMENT.JUMP_HEIGHT`
+ * (1.0m) 고정 궤적이라 총 체공이 유한(해석적으로 ≈19틱≈632ms, `@shared/sim
+ * /movement.ts`·`rq-18-fall-damage.test.ts` 양쪽이 이미 이 수치를
+ * 기록해 뒀다) — 그리고 `GameRoom`의 틱 캐치업 상한(`maxTicksPerAdvance`,
+ * `@shared/sim/tickDriver.ts` 기본 15틱)이 이 총 체공(≈19틱)보다 **작아서**
+ * 단일 콜백이 체공 전체를 통째로 삼킬 수 없다 — 반드시 콜백 경계(이벤트
+ * 루프 양보 지점)가 체공 도중에 최소 한 번 생긴다. 그럼에도 "관측이
+ * 우연히 그 지점을 잡는가"에 기대지 않기 위해, 아래 새 테스트는 (1) 이함
+ * 자체를 `waitForServer3DCondition`(서버 자체 상태 직접 폴링, 클라 패치
+ * 배치와 무관 — 기존 `waitForServerCondition`과 동일 원칙)으로 **넉넉한
+ * 상한 안에서 확정**한 뒤에만 관측 창을 시작하고, (2) 관측 창에서 수집한
+ * 표본 중 `y > 0`(공중)인 것이 **실제로 존재하는지**를 명시적으로
+ * 단언한다 — 이 가드가 없으면 이 케이스도 조용히 착지 후 표본만 모아
+ * 같은 공백을 반복할 수 있다(팀리드 지시 원문).
+ *
+ * **범위 — 순증만.** 위 6건(핵심 4방향·모서리·고착 금지)과 양성
+ * 대조군은 전혀 건드리지 않았다. 새 인터페이스(`Position3D`)·헬퍼
+ * (`readServerPosition3D`·`waitForServer3DCondition`·
+ * `sampleServerPosition3DOverWindow`)도 기존 `HorizontalPosition` 계열과
+ * 분리된 별도 추가다 — 기존 6건이 쓰는 함수의 시그니처·동작은 한 글자도
+ * 바뀌지 않았다.
  */
 
 const ROOM_NAME = 'game'
@@ -106,6 +156,19 @@ const SUSTAINED_PUSH_WINDOW_MS = 600
 const INWARD_RETURN_WINDOW_MS = 500
 /** 경계에서 먼 곳 양성 대조군 관측 창. */
 const FAR_FROM_BOUNDARY_WINDOW_MS = 500
+
+/** REV(공중 경로 그물) — `jump:true` 전송 뒤 서버가 실제로 이함(y>0)을
+ * 반영했는지 확인하는 상한. `rq-18-fall-damage.test.ts`의 동명 상수
+ * (`TAKEOFF_CONFIRM_TIMEOUT_MS`=5000ms)와 동일 값·동일 근거 — 이 확인이
+ * 실패한다면 착지를 기다리는 것보다 훨씬 이전 단계(입력 반영 자체)의
+ * 결함이므로 넉넉해도 CI 부하를 흡수하는 쪽이 안전하다. */
+const TAKEOFF_CONFIRM_TIMEOUT_MS = 5_000
+/** REV(공중 경로 그물) — 이함 확정 시점부터 공중 표본을 모으는 관측 창.
+ * 해석적 점프 체공은 `MOVEMENT.JUMP_HEIGHT`(1.0m) 고정 궤적으로 ≈19틱
+ * ≈632ms다(`@shared/sim/movement.ts` 코멘트·`rq-18-fall-damage.test.ts`
+ * 양쪽이 이미 기록한 수치, 이 파일 상단 REV 절 참고) — 1500ms는 그 위에
+ * 2배 넘는 여유를 둔다(타이밍 지터·이함 확정까지의 폴링 지연을 흡수). */
+const AIRBORNE_OBSERVE_WINDOW_MS = 1_500
 
 /** 모든 대기에 상한을 강제하는 래퍼 — 상한 초과는 hang이 아니라 즉시 실패다. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -290,6 +353,79 @@ function expectAlwaysWithinWorldBounds(samples: HorizontalPosition[]): void {
     expect(s.z).toBeLessThanOrEqual(HALF_WORLD_M + BOUNDARY_TOLERANCE_M)
     expect(s.z).toBeGreaterThanOrEqual(-HALF_WORLD_M - BOUNDARY_TOLERANCE_M)
   }
+}
+
+/** REV(공중 경로 그물, 순증) — 아래부터는 기존 `HorizontalPosition` 계열과
+ * 완전히 분리된 새 인터페이스·헬퍼다(파일 상단 REV 절 "범위 — 순증만"
+ * 참고). 기존 6건이 쓰는 `HorizontalPosition`·`readServerPosition`·
+ * `waitForServerCondition`·`sampleServerPositionOverWindow`는 한 줄도
+ * 바뀌지 않는다. */
+interface Position3D extends HorizontalPosition {
+  y: number
+}
+
+/** `y`까지 포함해 읽는다 — `@shared/schema/GameState.ts`의 `Player.y`
+ * 필드 코멘트가 이미 명문화한 "`grounded === (y === 0)`"을 그대로
+ * 이용해, 별도 private `grounded` 필드 접근 없이 공개 스키마 값만으로
+ * 공중 여부를 판정한다. */
+function readServerPosition3D(seam: BoundsTestSeam, sessionId: string): Position3D | undefined {
+  const p = seam.state.players.get(sessionId)
+  if (typeof p?.x === 'number' && typeof p?.y === 'number' && typeof p?.z === 'number') {
+    return { x: p.x, y: p.y, z: p.z }
+  }
+  return undefined
+}
+
+/** `waitForServerCondition`과 동일한 폴링+타임아웃 골격이나 `y`까지
+ * 포함한 3D 좌표를 다룬다 — 이함(`y>0`) 확정 대기 전용. */
+function waitForServer3DCondition(
+  seam: BoundsTestSeam,
+  sessionId: string,
+  predicate: (p: Position3D) => boolean,
+  label: string,
+  timeoutMs: number,
+): Promise<Position3D> {
+  return new Promise<Position3D>((resolve, reject) => {
+    const tryResolve = (): boolean => {
+      const current = readServerPosition3D(seam, sessionId)
+      if (current && predicate(current)) {
+        resolve(current)
+        return true
+      }
+      return false
+    }
+    if (tryResolve()) return
+    const interval = setInterval(() => {
+      if (tryResolve()) {
+        clearInterval(interval)
+        clearTimeout(timeout)
+      }
+    }, SERVER_POLL_INTERVAL_MS)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+    }, timeoutMs)
+  })
+}
+
+/** `sampleServerPositionOverWindow`와 동일한 골격이나 `y`까지 포함한 3D
+ * 좌표를 다룬다 — 공중(y>0) 표본을 걸러내려면 y가 필요하다. */
+function sampleServerPosition3DOverWindow(
+  seam: BoundsTestSeam,
+  sessionId: string,
+  windowMs: number,
+): Promise<Position3D[]> {
+  return new Promise<Position3D[]>((resolve) => {
+    const samples: Position3D[] = []
+    const interval = setInterval(() => {
+      const current = readServerPosition3D(seam, sessionId)
+      if (current) samples.push(current)
+    }, SERVER_POLL_INTERVAL_MS)
+    setTimeout(() => {
+      clearInterval(interval)
+      resolve(samples)
+    }, windowMs)
+  })
 }
 
 describe('RQ-30/GA-50: 월드 경계 클램프 — 플레이 면적(60×60m) ±30m 이탈 불가', () => {
@@ -484,6 +620,75 @@ describe('RQ-30/GA-50: 월드 경계 클램프 — 플레이 면적(60×60m) ±3
 
       // z는 dirZ=0이었으므로 표류하지 않는다.
       expect(Math.abs(last.z)).toBeLessThan(0.01)
+
+      await leaveRoom(room)
+    },
+    15_000,
+  )
+
+  /**
+   * 코드 방어(GA-50 요구 아님 — 평가 FAIL 대응, 파일 상단 REV 절 참고) —
+   * 경계 근처에서 점프해 공중에 있는 동안에도 x가 항상 ±30m 안에 머문다.
+   *
+   * GA-50 자체는 지상 이동만 그린다(파일 상단 REV 절) — 이 테스트는 GA-50의
+   * 확장이 아니라 `airborneOutcome`(`@shared/sim/movement.ts`)의 클램프
+   * 분기를 지키는 별개의 회귀 그물이다.
+   *
+   * **공중 가속 미허용이라 재전송이 필요 없다**: `MOVEMENT.AIR_CONTROL
+   * === false`(RQ-92)라 `stepAirborne`은 이함 이후 틱의 입력을 아예
+   * 참조하지 않는다(`movement.ts` `stepAirborne` 코멘트) — 이함 순간의
+   * `dirX`가 그 뒤 전체 체공의 수평 속도를 고정한다. 그래서 "지속 입력"은
+   * 이 케이스에 해당하지 않는다(위 지상 케이스들과 다른 점) — `jump:true`
+   * + 방향을 실은 `'move'` 한 번만 보낸다.
+   */
+  it(
+    'RQ-30 공중 경로 방어(GA-50 아님 — airborneOutcome 그물): 경계 근처에서 점프해 공중에 있는 동안에도 x·z가 항상 ±30m 안에 머문다',
+    async () => {
+      const room = await joinGame(newClient(server))
+      const seam = getServerRoom(room)
+
+      const start = { x: START_COORD_M, z: 0 }
+      placePlayer(seam, room.sessionId, start)
+      await waitForServerCondition(
+        seam,
+        room.sessionId,
+        (p) => Math.abs(p.x - start.x) < BOUNDARY_TOLERANCE_M,
+        `RQ-30: 화이트박스 순간이동(${JSON.stringify(start)}) 반영 대기`,
+        BASELINE_TIMEOUT_MS,
+      )
+
+      // 지상에서 점프 + 바깥쪽(+X) 방향으로 이함.
+      room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: true })
+
+      // 안정 신호(파일 상단 REV 절 — `rq-18-fall-damage.test.ts` REV3/5의
+      // 교훈) — "y>0 관측"을 단발성으로 노리지 않는다. 서버 자체 상태를
+      // 넉넉한 상한 안에서 계속 폴링해 이함이 실제로 확정될 때까지
+      // 기다린다(확정 전에는 관측 창을 시작하지 않는다).
+      const liftoff = await waitForServer3DCondition(
+        seam,
+        room.sessionId,
+        (p) => p.y > 0,
+        'RQ-30: 점프 이함(y>0) 확정 대기',
+        TAKEOFF_CONFIRM_TIMEOUT_MS,
+      )
+      expect(liftoff.y).toBeGreaterThan(0)
+
+      // 이함이 확정된 시점부터 관측 — 해석적 궤적 전체 체공(≈19틱≈632ms)을
+      // 넉넉히 덮는 창(`AIRBORNE_OBSERVE_WINDOW_MS` 코멘트 참고).
+      const samples = await sampleServerPosition3DOverWindow(seam, room.sessionId, AIRBORNE_OBSERVE_WINDOW_MS)
+
+      // 가드 — 공중(y>0) 표본을 실제로 지났는지 확인한다. 이게 없으면 이
+      // 케이스도 조용히 접지 경로만 타서(예: 착지 후 표본만 모임) 평가가
+      // 지적한 공백이 그대로 남는다.
+      const airborneSamples = samples.filter((s) => s.y > 0)
+      expect(
+        airborneSamples.length,
+        'RQ-30: 관측 구간에서 공중(y>0) 표본을 한 건도 지나지 않았다 — 이 케이스가 접지 경로만 탄 것이라 airborneOutcome의 클램프를 전혀 스트레스하지 못한다',
+      ).toBeGreaterThan(0)
+
+      // 핵심 — 공중 표본에서도 x·z가 항상 ±30m 안(기존 검사기를 그대로
+      // 재사용 — y를 버리고 x·z만 넘긴다, 파일 상단 REV 절 "범위 — 순증만").
+      expectAlwaysWithinWorldBounds(airborneSamples.map((s) => ({ x: s.x, z: s.z })))
 
       await leaveRoom(room)
     },
