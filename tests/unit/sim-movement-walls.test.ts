@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState, type WallAABB } from '@shared/sim/movement'
 import { MOVEMENT, NET } from '@shared/constants'
+import { PRODUCTION_WALLS, WALL_EAST as PRODUCTION_WALL_EAST } from '@shared/sim/walls'
 
 /**
  * RQ-30 벽 충돌 — 정적 지오메트리를 데이터로, 순수 함수가 주입받아 판정
@@ -294,4 +295,125 @@ describe('RQ-30 벽 충돌 — 정적 지오메트리 주입 계약 (ADR-0013, �
       },
     )
   })
+})
+
+/**
+ * RQ-30/F2 회귀(독립 평가 FAIL, `_workspace/RQ-30-walls/03_evaluator_report.md`
+ * §10) — **공중(점프) 상태에서도 벽을 통과하지 않는다.**
+ *
+ * 결함 재현: 최초 구현은 `stepGrounded`(접지 이동)에만 `clampAgainstWalls`를
+ * 걸고 `stepAirborne`/`airborneOutcome`(공중 이동)에는 걸지 않았다 — 평가자
+ * 실측(위 보고서 §10 "실측 궤적")으로 벽 앞에서 점프하면 몸통 높이(y≈0.38~
+ * 1.0m)에서 벽을 그대로 통과해 반대편에 착지하는 것이 확인됐다(착지 위치
+ * x≈18.8, `WALL_EAST.maxX`=16을 2.8m 넘김). `WallAABB` docblock(`movement.ts`·
+ * `walls.ts`·이 파일 모두)이 벽을 **"무한 높이 기둥"**으로 선언하는 이상,
+ * 공중이라고 통과할 수 있다는 예외는 문서·스펙 어디에도 없다 — 구현이
+ * 자신이 선언한 자료구조의 의미를 스스로 부정하고 있었다(평가자 표현).
+ *
+ * 이 파일의 다른 테스트(정면 차단·고착 금지·양성 대조군)는 전부 `jump:
+ * false` 접지 이동만 다룬다 — 벽 테스트 8건 중 `jump: true`를 쓰는 것이
+ * 0건이었다는 것이 평가자가 지목한 정확한 공백이다(위 보고서 §10 "테스트
+ * 측면"). 아래 두 테스트가 그 공백을 최초로 메운다.
+ *
+ * **레벨·결정론**: 위 describe와 동일 — 순수 산술, `Math.random()`·
+ * `Date.now()`·실 타이머 없음, 틱은 수동 반복으로만 전진한다.
+ *
+ * **좌표 재사용(ADR-0010 — 값 복제 금지)**: 이 블록만 `PRODUCTION_WALLS`
+ * (와 근접면 참조용 `WALL_EAST`)를 `@shared/sim/walls`에서 직접 임포트해
+ * 쓴다 — 이 파일 상단의 로컬 `WALL_EAST`/`TEST_WALLS`는 이 라운드 스캐폴드
+ * 검증용 상수이지 프로덕션 정본이 아니다(위 파일 최상단 docblock 참고).
+ * F2는 **실제로 서버에 상시 배선된**(`GameRoom.ts`) 그 정본 자체가 관통을
+ * 막는지를 확인하는 것이므로 정본을 그대로 참조한다(숫자가 우연히 같아도
+ * 복제하지 않는다).
+ */
+describe('RQ-30/F2 회귀 — 공중(점프) 상태에서도 벽을 통과하지 않는다 (독립 평가 FAIL 대응, 골든 없음)', () => {
+  /** 벽 앞 2m 지점(x:13, `WALL_EAST.minX`=15)에서 이함하는 **첫 틱만**
+   * `jump:true`를 준다 — `MoveInput.jump`는 "접지 상태에서만 유효한
+   * 엣지 트리거"다(movement.ts `MoveInput` docblock). 이후 틱까지 계속
+   * `jump:true`를 주면 착지 순간(다시 접지) 매번 새 도약이 트리거되는
+   * 연속 폴짝임(bunny hop) 아티팩트가 생겨 "착지 후 정지" 전제가 깨진다
+   * (프로브로 직접 확인 — 착지 틱 바로 다음 틱에 `grounded`가 다시
+   * `false`로 튐). 실제 호출부(`GameRoom.stepPlayerMovement`)도 점프
+   * 키를 누른 그 틱에만 `jump:true`를 실어 보낸다. z:0은 `WALL_EAST`의
+   * z범위(-5~5) 안이라 정면으로 충돌한다. */
+  const JUMP_LAUNCH: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: true }
+  /** 이함 이후(2번째 틱부터) — `stepAirborne`은 이번 틱 입력을 아예
+   * 참조하지 않으므로(REV 2026-07-24 코멘트) 공중 중에는 `dirX`/`jump`
+   * 값 자체가 결과에 영향을 주지 않지만, 착지 이후에도 "벽 방향 입력을
+   * 유지한다"는 시나리오를 그대로 반영하도록 `dirX:1`은 유지하고
+   * `jump:false`만 확정한다. */
+  const HOLD_TOWARD_WALL: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+
+  /** 이함~착지 전체 비행(점프 높이 1m·중력 20m/s² 궤적 — movement.ts의
+   * `JUMP_V0_MPS`/`JUMP_GRAVITY_MPS2` 유도와 동일 물리)은 이함 후 약
+   * 0.63초(≈19틱)에 끝난다(프로브로 확인 — 아래 보고서 §Red/Green 실행
+   * 출력 참고). 25틱이면 착지 이후 6틱까지 여유 있게 관측해 "착지가
+   * 실제로 일어났고 그 상태를 유지한다"는 것까지 확인할 수 있다. */
+  const TICKS_COVERING_FLIGHT = 25
+
+  /** `walls`를 매 틱 동일하게 주입하며 `TICKS_COVERING_FLIGHT`회 전진하고,
+   * 매 틱 결과 상태를 전부 기록한다(마지막 값만이 아니라 **비행 전체**
+   * 위를 검사하기 위해 — F2는 "착지 순간"이 아니라 "체공 중" 관통이었다).
+   * 첫 틱만 `JUMP_LAUNCH`(엣지 트리거), 이후는 `HOLD_TOWARD_WALL`. */
+  function runJumpSequence(start: MoveState, walls: readonly WallAABB[]): MoveState[] {
+    const trajectory: MoveState[] = []
+    let state = start
+    for (let i = 0; i < TICKS_COVERING_FLIGHT; i += 1) {
+      const input = i === 0 ? JUMP_LAUNCH : HOLD_TOWARD_WALL
+      state = stepMovement(state, input, walls)
+      trajectory.push(state)
+    }
+    return trajectory
+  }
+
+  it(
+    'RQ-30/F2: 벽 앞에서 점프해 벽 방향 입력을 유지해도 체공 내내(착지 전까지 매 틱) 위치가 근접면을 넘지 않는다',
+    () => {
+      const trajectory = runJumpSequence(createGroundedState({ x: 13, z: 0 }), PRODUCTION_WALLS)
+
+      // 전제 확인 — 실제로 공중에 뜬 틱이 존재해야 "공중 경로"를 검증한
+      // 것이다(전부 접지 상태라면 이 테스트가 F2와 무관해진다).
+      expect(trajectory.some((s) => !s.grounded)).toBe(true)
+
+      // 통과 금지 — 접지·공중 어느 상태에서든, 비행 전체 어느 틱에서도
+      // 근접면(PRODUCTION_WALL_EAST.minX)을 넘지 않는다(부동소수 오차만
+      // 허용). F2 결함 재현: 이 단언이 없던 시절에는 몸통 높이(y≈0.38~
+      // 1.0m)에서 x가 16.8까지 벽을 관통했다(평가자 실측, 위 docblock 참고).
+      for (const s of trajectory) {
+        expect(s.x).toBeLessThanOrEqual(PRODUCTION_WALL_EAST.minX + WALL_TOLERANCE_M)
+      }
+
+      // 고착 아님 — 출발점(13)에 못박히지 않고 실제로 근접면 부근까지
+      // 밀렸다.
+      const closestApproach = Math.max(...trajectory.map((s) => s.x))
+      expect(closestApproach).toBeGreaterThan(PRODUCTION_WALL_EAST.minX - WALL_APPROACH_MARGIN_M)
+    },
+  )
+
+  it(
+    'RQ-30/F2 양성 대조: 벽 절단이 공중 경로에 걸려도 점프 궤적(y 상승·하강·착지) 자체는 벽이 없는 경로와 동일하다',
+    () => {
+      // z:0(벽과 정면 충돌) vs z:20(이 파일의 기존 "양성 대조군"과 동일
+      // 대역 — 어느 벽의 XZ 범위에도 걸리지 않는다)에서 동일한 점프 입력을
+      // 재생한다. 수평 위치만 벽에 막힐 뿐, 매 틱의 수직 물리(y·vy)와
+      // 착지 시점(grounded 전이)은 경과 시각(t)만의 함수라 수평 위치와
+      // 무관해야 한다 — 다르면 벽 절단이 수직 물리까지 오염시킨 과잉수정
+      // (F2를 "점프 자체를 죽여서" 고친 경우)을 잡는다. 벽이 공중에서
+      // 완전히 무력화된 회귀(F2 재발)는 이 비교와 무관하게 위 테스트가
+      // 이미 잡는다 — 이 테스트는 그 반대쪽(과잉수정) 극단을 잡는 양성
+      // 대조군이다.
+      const blocked = runJumpSequence(createGroundedState({ x: 13, z: 0 }), PRODUCTION_WALLS)
+      const clear = runJumpSequence(createGroundedState({ x: 13, z: 20 }), PRODUCTION_WALLS)
+
+      expect(blocked.map((s) => s.y)).toEqual(clear.map((s) => s.y))
+      expect(blocked.map((s) => s.vy)).toEqual(clear.map((s) => s.vy))
+      expect(blocked.map((s) => s.grounded)).toEqual(clear.map((s) => s.grounded))
+
+      // 점프가 무력화되지 않았다는 전제 확인 — 상승해 JUMP_HEIGHT 근방에
+      // 도달했다가 결국 착지(y=0, grounded=true)로 돌아온다.
+      expect(Math.max(...clear.map((s) => s.y))).toBeCloseTo(MOVEMENT.JUMP_HEIGHT, 2)
+      expect(clear[clear.length - 1]?.grounded).toBe(true)
+      expect(clear[clear.length - 1]?.y).toBe(0)
+    },
+  )
 })
