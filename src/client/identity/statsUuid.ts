@@ -84,12 +84,46 @@ function defaultGenerateUuid(): string {
  * 배선 계층(`App.tsx`) 진입점 — `storage`에서 기존 UUID를 읽고, 없거나
  * 손상됐으면 새로 만들어 저장한 뒤 반환한다. 이후 `connectToGame`이 이
  * 값을 `joinOrCreate` 옵션에 실어 보낸다.
+ *
+ * **원장 26k — 저장소 접근 가드**: 브라우저의 사이트 데이터 차단, 프라이빗
+ * 모드 계열(일부 브라우저는 `localStorage` 자체를 없애거나 쓰기를 막는다),
+ * 쿼터 초과, 샌드박스 iframe에서는 `getItem`/`setItem` 호출 자체가 던질 수
+ * 있다(`SecurityError`/`QuotaExceededError` 등). 이 함수는 지금까지
+ * `App.tsx`가 `useState(() => getOrCreateStatsUuid(...))`로 **렌더 초기화
+ * 함수 안에서** 호출하므로, 여기서 던지면 예외가 렌더 밖으로 전파돼 앱
+ * 전체가 백지가 된다(통계만 빠지는 게 아니다) — 그래서 두 호출 모두
+ * try/catch로 감싼다.
+ *
+ * - `getItem` 실패 → 저장값이 없는 것과 동일하게 취급(`existing = null`).
+ *   `resolveStatsUuid`가 새 UUID를 생성한다.
+ * - `setItem` 실패 → 저장을 포기하고 **생성한 UUID를 그대로 반환**한다.
+ *   그 세션은 통계가 다음 접속으로 이어지지 않지만(매번 새 UUID), 게임
+ *   자체는 정상 동작한다 — 서버(`GameRoom.onJoin`)는 `isValidStatsUuid`를
+ *   통과하는 값만 받아들이고 형식 유효성 외에는 아무것도 요구하지 않으며
+ *   (신원 증명이 아니다, 위 모듈 코멘트), `onLeave`도 uuid가 있을 때만
+ *   통계를 기록하므로 저장 실패 자체가 접속·플레이를 막지 않는다.
+ * - 두 catch 모두 `console.warn`으로 원인을 남긴다(GameRoom의 RQ-60
+ *   `onOverflow` 경고와 같은 관례 — 조용히 삼키지 않는다) — 단, 통계
+ *   유실은 조용히 진행 가능한 실패이지 재시도·복구 대상이 아니므로 그
+ *   이상의 처리(재시도, 사용자 알림)는 하지 않는다.
  */
 export function getOrCreateStatsUuid(storage: UuidStorage, generateUuid: () => string = defaultGenerateUuid): string {
-  const existing = storage.getItem(STATS_UUID_STORAGE_KEY)
-  const { uuid, shouldPersist } = resolveStatsUuid(existing, generateUuid)
-  if (shouldPersist) {
-    storage.setItem(STATS_UUID_STORAGE_KEY, uuid)
+  let existing: string | null = null
+  try {
+    existing = storage.getItem(STATS_UUID_STORAGE_KEY)
+  } catch (err) {
+    console.warn('[statsUuid] localStorage.getItem 실패 — 새 UUID를 생성합니다(통계는 이번 세션에서 이어지지 않습니다).', err)
   }
+
+  const { uuid, shouldPersist } = resolveStatsUuid(existing, generateUuid)
+
+  if (shouldPersist) {
+    try {
+      storage.setItem(STATS_UUID_STORAGE_KEY, uuid)
+    } catch (err) {
+      console.warn('[statsUuid] localStorage.setItem 실패 — 저장 없이 이번 세션의 UUID만 사용합니다.', err)
+    }
+  }
+
   return uuid
 }

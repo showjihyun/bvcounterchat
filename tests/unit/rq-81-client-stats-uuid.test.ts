@@ -95,6 +95,77 @@ describe('RQ-81 getOrCreateStatsUuid — 저장소 부작용', () => {
   })
 })
 
+/** `getItem`/`setItem` 중 지정한 메서드가 항상 던지는 저장소 더블 —
+ * 원장 26k(`localStorage` 접근 미보호로 앱 전체가 백지가 되는 결함)의
+ * 재현 조건(사이트 데이터 차단, 프라이빗 모드, 쿼터 초과, 샌드박스 iframe)을
+ * 흉내낸다. `UuidStorage`가 주입식 인터페이스라 화이트박스 없이 검증 가능. */
+function throwingStorage(opts: { onGetItem?: boolean; onSetItem?: boolean }): UuidStorage {
+  return {
+    getItem(key: string): string | null {
+      if (opts.onGetItem) {
+        throw new DOMException(`blocked: ${key}`, 'SecurityError')
+      }
+      return null
+    },
+    setItem(key: string, value: string): void {
+      if (opts.onSetItem) {
+        throw new DOMException(`blocked: ${key}=${value}`, 'SecurityError')
+      }
+    },
+  }
+}
+
+describe('RQ-81 getOrCreateStatsUuid — 저장소 접근 실패 가드(원장 26k)', () => {
+  // 26k: `App.tsx`가 이 함수를 `useState(() => ...)` 초기화 함수 안에서
+  // 호출한다 — 여기서 던지면 예외가 렌더 밖으로 전파되어 앱 전체가
+  // 백지가 된다(통계만 빠지는 게 아니다). 아래 세 테스트는 "던지지 않는다"
+  // 자체를 회귀 가드로 고정한다.
+  it('RQ-81/26k: getItem이 던져도 예외가 전파되지 않고 유효한 UUID를 반환한다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const storage = throwingStorage({ onGetItem: true })
+      let uuid = ''
+      expect(() => {
+        uuid = getOrCreateStatsUuid(storage, () => VALID_UUID)
+      }).not.toThrow()
+      expect(isValidStatsUuid(uuid)).toBe(true)
+      expect(warnSpy).toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('RQ-81/26k: setItem이 던져도 예외가 전파되지 않고 유효한 UUID를 반환한다(저장은 포기하되 게임은 그 값을 쓴다)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const storage = throwingStorage({ onSetItem: true })
+      let uuid = ''
+      expect(() => {
+        uuid = getOrCreateStatsUuid(storage, () => VALID_UUID)
+      }).not.toThrow()
+      expect(uuid).toBe(VALID_UUID)
+      expect(isValidStatsUuid(uuid)).toBe(true)
+      expect(warnSpy).toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('RQ-81/26k: getItem·setItem이 모두 던져도(최악의 경우) 예외가 전파되지 않고 형식이 유효한 UUID를 반환한다', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const storage = throwingStorage({ onGetItem: true, onSetItem: true })
+      let uuid = ''
+      expect(() => {
+        uuid = getOrCreateStatsUuid(storage, () => VALID_UUID)
+      }).not.toThrow()
+      expect(isValidStatsUuid(uuid)).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+})
+
 describe('RQ-81 getOrCreateStatsUuid — secure-context 폴백(평가 major 4)', () => {
   it("RQ-81: crypto.randomUUID가 없는 환경(HTTP 사내망 배포, insecure context)에서도 getRandomValues로 유효한 UUID를 만든다", () => {
     // RQ-80/ADR-0009 HTTP 배포에서는 Crypto.randomUUID()가 없을 수 있다
