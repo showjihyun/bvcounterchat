@@ -317,12 +317,35 @@ function groundedOutcome(
   }
 }
 
-/** 이륙 후 경과 시각 `t`(초)에서의 공중 결과. 해석적 궤적 높이가 지지
- * 높이(`standingHeight`, 박스 없으면 항상 0) 이하로 내려간 시점이면
- * 착지로 스냅한다 — 그 시점까지 유지해 온 수평 속도(vx·vz)로 착지 틱의
- * 이동까지 마저 적용한다(박스가 없으면 "height<=0 → 착지"라는 기존
- * 동작과 완전히 동일 — `tests/unit/sim-movement-boxes.test.ts` docblock
- * "행동 계약" 절).
+/** 이륙 후 경과 시각 `tPrev`(초, **이번 틱 시작 시점 기준** — 아직 이번
+ * 틱의 `TICK_SECONDS`를 더하지 않은 값)에서의 공중 결과.
+ *
+ * **REV(리뷰 blocker 수정 — 원장 25a-4/평가) — 궤적을 발밑(launch-relative)
+ * 기준으로 오프셋한다.** `jumpHeightAt(t)`는 `y=0` 기준 절대 높이 곡선이다
+ * — 박스 위(발밑 높이 `h0 = standingHeight(...) > 0`)에서 이함하면, 옛
+ * 구현은 이 절대 곡선을 그대로 썼다. 그 결과 이함 첫 틱의 절대 높이
+ * (`jumpHeightAt(TICK_SECONDS)` ≈ 0.1997m, 현재 물리 상수 기준)가 `h0`
+ * 이하면 착지 스냅 조건(`height <= support`)이 **이함 그 자체에서 이미
+ * 참**이 되어 점프가 통째로 삼켜졌다(`h0` > 0.1997m인 모든 박스, RQ-32
+ * 허용 구간 0.2~1.0m 전부 해당). 삼켜지지 않는 낮은 `h0`에서도 정점이
+ * 절대 `MOVEMENT.JUMP_HEIGHT`에 고정돼 발밑 기준(`h0 + JUMP_HEIGHT`)에서
+ * 어긋났다 — "높은 지대일수록 실효 점프가 낮아진다"는 비대칭인데, 어떤
+ * 스펙 문장도 이를 규정하지 않는다(리뷰어 지적).
+ *
+ * **오프셋 값(`h0`)을 별도 필드로 저장하지 않는다** — `MoveState`
+ * 7필드 계약(REV 2026-07-24)을 깨지 않기 위해서다. 대신 매 틱
+ * `state.y - jumpHeightAt(tPrev)`로 다시 구한다 — `state.y`가 이미
+ * `h0 + jumpHeightAt(tPrev)`이므로 대수적으로 `h0`과 같다. **평지(맨
+ * 지면, `h0=0`)에서는 이 값이 IEEE754상 항상 정확히 0으로 떨어진다**
+ * (`X - X = 0`은 부동소수점에서 반올림 없이 항상 정확하다 — `state.y`가
+ * 귀납적으로 `jumpHeightAt(tPrev)`와 비트 동일하기 때문, 아래 §회귀
+ * 참고) — 그래서 이 변경은 기존 절대 곡선 동작과 **바이트 동일**하다
+ * (박스가 없거나 발밑이 맨 지면일 때).
+ *
+ * 해석적 궤적 높이(`h0 + jumpHeightAt(tNext)`)가 지지 높이
+ * (`standingHeight`, 박스 없으면 항상 0) 이하로 내려간 시점이면 착지로
+ * 스냅한다 — 그 시점까지 유지해 온 수평 속도(vx·vz)로 착지 틱의 이동까지
+ * 마저 적용한다.
  *
  * **REV(독립 평가 FAIL F2 대응) — 공중 상태도 벽을 본다**: `WallAABB`
  * docblock이 "무한 높이 기둥"이라고 선언한 이상 공중(점프 중)에도 그
@@ -344,16 +367,18 @@ function airborneOutcome(
   state: MoveState,
   vx: number,
   vz: number,
-  t: number,
+  tPrev: number,
   walls: readonly WallAABB[],
   boxes: readonly BoxAABB[],
 ): MoveState {
+  const tNext = tPrev + TICK_SECONDS
   const boundedX = clampToWorldBounds(state.x + vx * TICK_SECONDS)
   const boundedZ = clampToWorldBounds(state.z + vz * TICK_SECONDS)
   const blockingBoxes = boxesBlockingAt(state.y, boxes)
   const { x, z } = clampAgainstWalls(state.x, state.z, boundedX, boundedZ, [...walls, ...blockingBoxes])
 
-  const height = jumpHeightAt(t)
+  const tookOffFrom = state.y - jumpHeightAt(tPrev)
+  const height = tookOffFrom + jumpHeightAt(tNext)
   const support = standingHeight(x, z, boxes)
   if (height <= support) {
     return groundedOutcome(state, vx, vz, walls, boxes)
@@ -363,7 +388,7 @@ function airborneOutcome(
     y: height,
     z,
     vx,
-    vy: jumpVyAt(t),
+    vy: jumpVyAt(tNext),
     vz,
     grounded: false,
   }
@@ -375,10 +400,11 @@ function stepGrounded(state: MoveState, input: MoveInput, walls: readonly WallAA
     return groundedOutcome(state, vx, vz, walls, boxes)
   }
   // 이륙 — 이번 틱의 수평 속도를 그대로 착지까지의 공중 관성으로
-  // 고정한다(RQ-92 공중 가속 미허용). 수직은 해석적 궤적의
-  // t = TICK_SECONDS 지점(이륙 후 정확히 한 틱 경과). 이함 틱도 접지·공중
-  // 나머지 구간과 동일하게 벽·박스를 본다(위 `airborneOutcome` 코멘트 참고).
-  return airborneOutcome(state, vx, vz, TICK_SECONDS, walls, boxes)
+  // 고정한다(RQ-92 공중 가속 미허용). `tPrev=0` — 이함 시점(아직 이번
+  // 틱이 경과하지 않은 시각)이라 발밑 오프셋(`tookOffFrom`, 위
+  // `airborneOutcome` 코멘트)이 정확히 `state.y`(이함 직전 접지 높이)가
+  // 된다. 이함 틱도 접지·공중 나머지 구간과 동일하게 벽·박스를 본다.
+  return airborneOutcome(state, vx, vz, 0, walls, boxes)
 }
 
 /** 공중 물리는 이번 틱 입력을 참조하지 않는다 — `MOVEMENT.AIR_CONTROL
@@ -387,8 +413,8 @@ function stepGrounded(state: MoveState, input: MoveInput, walls: readonly WallAA
  * **값**만 읽으므로 직렬화 왕복·얕은 복사를 거친 `state`를 넘겨도 결과가
  * 같다(REV 2026-07-24). */
 function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: readonly BoxAABB[]): MoveState {
-  const t = jumpElapsedSeconds(state.vy) + TICK_SECONDS
-  return airborneOutcome(state, state.vx, state.vz, t, walls, boxes)
+  const tPrev = jumpElapsedSeconds(state.vy)
+  return airborneOutcome(state, state.vx, state.vz, tPrev, walls, boxes)
 }
 
 /** 1틱(`NET.TICK_MS`) 전진 — 순수 산술(RQ-20, RQ-92). Rapier 없음,
