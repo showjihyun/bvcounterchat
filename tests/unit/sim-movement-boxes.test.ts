@@ -1,0 +1,315 @@
+import { describe, expect, it } from 'vitest'
+import { stepMovement, type BoxAABB, type MoveInput, type MoveState } from '@shared/sim/movement'
+import { MOVEMENT, NET } from '@shared/constants'
+
+/**
+ * RQ-22 박스 점프 — 정적 지오메트리(유한 높이)를 데이터로, 순수 함수가
+ * 주입받아 판정 (원장 25a-4, ADR-0013 결과 절 "박스 등반은 명시적 점프").
+ *
+ * 매핑된 골든 케이스 **GA-55**(`harness/evals/golden/track-a-product.jsonl:55`,
+ * `verify` 필드가 `tests/integration/rq-22-box-jump.test.ts`를 지정 — 그래서
+ * GA-55 자체의 "행동 검증"은 통합 레벨 파일이 맡는다. 이 파일은 그 행동을
+ * 뒷받침하는 **순수 틱 함수 계약**을 고정한다, `harness/workflow/tdd.md`의
+ * "탄도·데미지·이동·낙하 계산 등 순수 로직 → 단위" 원칙):
+ * - given: 플레이어가 박스 옆 지면에 서 있고 점프 높이가 1.0m(RQ-92), 박스
+ *   상단 높이는 1.0m보다 낮으며, 공중 가속은 허용되지 않음.
+ * - when: ① 박스 방향으로 이동하며 점프 ② 정지 상태에서 제자리 점프.
+ * - then: ①에서는 박스 상단에 착지해 접지 상태가 되고 y가 박스 높이와
+ *   같다. ②에서는 박스에 올라서지 못하고 원래 지면으로 돌아온다 —
+ *   수평 관성 없이는 등반이 불가능하다.
+ *
+ * **GA-53(박스 치수 상한, `tests/unit/map-box-dimensions.test.ts`)은 이
+ * 라운드가 다루지 않는다** — 실제 맵 `.glb` 클러스터 배치가 아직 없다
+ * (team-lead 지시, 25a-4 착수 메모).
+ *
+ * **가정(coder에게 — 이 shape으로 구현할 것. 그린필드 계약)**:
+ *
+ * ```ts
+ * // src/shared/sim/movement.ts — WallAABB 옆에 추가
+ * export interface BoxAABB {
+ *   minX: number; maxX: number
+ *   minZ: number; maxZ: number
+ *   /** 상단 높이(m) — RQ-32: 점프 높이(1.0m)보다 낮아야 등반 가능. * /
+ *   topY: number
+ * }
+ * export function stepMovement(
+ *   state: MoveState,
+ *   input: MoveInput,
+ *   walls?: readonly WallAABB[],   // 기존 계약(RQ-30), 그대로 유지
+ *   boxes?: readonly BoxAABB[],    // 신규 — 기본값 [] (생략 시 박스 없음)
+ * ): MoveState
+ *
+ * // src/shared/sim/boxes.ts — walls.ts와 동일한 모양의 신규 모듈(제안, 강제 아님)
+ * export const BOX_ALPHA: BoxAABB = { minX: 11, maxX: 14, minZ: 8, maxZ: 11, topY: 0.4 }
+ * export const PRODUCTION_BOXES: readonly BoxAABB[] = [BOX_ALPHA]
+ * ```
+ *
+ * **행동 계약 — "지지 높이"만 정한다(수평 차단은 아래 별도 절 참고)**:
+ * 어느 틱이든(접지·공중 모두) 플레이어의 수평 위치 `(x,z)`가 박스의 XZ
+ * 범위 안이면, 그 지점의 **지지 높이**(standing height)는
+ * `max(0, 그 지점을 포함하는 모든 박스의 topY)`다 — 범위 밖이면 기존과
+ * 동일하게 0(맨지면)이다.
+ * - **공중(하강 중)**: 해석적 궤적 높이가 지지 높이 이하로 내려가는 순간
+ *   착지로 스냅한다(기존 `airborneOutcome`의 "height<=0 → 착지"를
+ *   "height<=지지 높이 → 착지, y=지지 높이"로 일반화 — 박스가 없으면
+ *   지지 높이가 항상 0이라 기존 동작과 완전히 동일하다).
+ * - **접지(이미 서 있음)**: `groundedOutcome`도 매 틱 y를 하드코딩된 0이
+ *   아니라 현재 `(x,z)`의 지지 높이로 재계산해야 한다. **이것이 없으면
+ *   착지 다음 틱에 y가 도로 0으로 꺼지는 "1틱 반짝임" 결함이 생긴다**
+ *   (아래 "접지 지속" 테스트가 정확히 이 결함을 잡는다) — 박스 위에
+ *   서서 한 틱이라도 더 있으면 `stepGrounded`→`groundedOutcome` 경로를
+ *   타므로, 그 경로가 박스를 모르면 즉시 바닥으로 떨어진다.
+ *
+ * **명시적으로 정하지 않는 것(스코프 밖, team-lead 지시 — "GA-55 두 명제 +
+ * 최소한의 대조군이면 충분하다. 넓히지 마라")**:
+ * - **박스 옆면 수평 차단 여부** — 점프하지 않고 걸어서 박스 쪽으로 다가가면
+ *   옆면에서 멈추는지(벽처럼), 아니면 박스 범위 안으로 그냥 걸어 들어가
+ *   지지 높이만큼 순간적으로 "솟아오르는지"는 이 파일이 시험하지 않는다.
+ *   GA-55의 given/when/then 어디에도 "걸어서 접근"·"옆면 충돌" 표현이 없다
+ *   — ①·②는 둘 다 **점프를 전제**한다. 이 질문은 진짜 게임 감각 결정이라
+ *   판단해 별도로 질문했다(보고서 §질문 1 참고) — 답이 오기 전까지는
+ *   추측해 고정하지 않는다.
+ * - 박스 가장자리에서 걸어 나가는 낙하 물리, RQ-18 낙하 데미지와의 상호작용,
+ *   사격 차폐에 박스 포함 여부, 다중 박스 겹침/조합 — 전부 원장 25a-4가
+ *   비스코프로 선언했다.
+ *
+ * **좌표 선택 — 회귀 안전 대역(런타임 값 기준 재계산, 팀리드 지시)**:
+ * `PRODUCTION_WALLS`가 이미 반경 15.8~16.8m를 점유하고, `SPAWN_POINTS`
+ * (15개, 반경 21.9~22.6m, 좌표 전수 재계산 — 아래 `computeSpawnPoints`
+ * 참고)와 탈출 지점(반경 ~28m)도 점유돼 있다. 이 파일은 **자기 완결
+ * 단위 테스트**(다른 파일과 상태를 공유하지 않는다)라 엄밀히는 좌표 충돌
+ * 위험이 없지만(각 `it()`이 로컬 상태만 다룬다), `sim-movement-walls
+ * .test.ts` 선례와 동일하게 이 좌표를 **프로덕션 배치 후보**로 그대로
+ * 제안한다 — `GameRoom.stepPlayerMovement`가 이 값을 실제로 상시 주입하게
+ * 되면 기존 통합 테스트 47개 파일이 같은 좌표 대역의 영향을 받기 때문이다.
+ * 전수 조사 결과(아래, 리터럴 grep이 아니라 각 파일의 실제 산술로 재계산 —
+ * `sim-movement-walls.test.ts` 선례가 "리터럴 grep은 계산 좌표를 놓친다"고
+ * 이미 경고했다):
+ *
+ * - **정적 배치 리터럴** — `tests/integration/rq-12-wall-occlusion.test.ts`의
+ *   `TARGET_BEHIND_WALL_POS`(17,0,0)·`TARGET_BEFORE_WALL_POS`(10,0,0),
+ *   `rq-31-safe-zone-blocks-bullets.test.ts`의 `ORIGIN`(0,0,0),
+ *   `rq-61-server-authoritative-position.test.ts`의 `IN_MAP_SPOOF`
+ *   (12.5,1.5,-12.5) — **전부 z가 0 또는 음수**다. 이 파일의 박스는
+ *   z∈[8,11](양수, 0에서 8m 이상)이라 전부 무관하다.
+ * - **동적 드리프트(점프 + 수평 이동)** — `stepMovement`를 호출하는 jump 관련
+ *   파일 5개(`22f-jump-input-loss`·`rq-18-fall-damage`·`rq-30-play-area
+ *   -bounds`·`rq-92-fall-damage-curve`·`rq-92-no-air-acceleration`) 중
+ *   실제로 수평 이동을 동반한 점프는 단 둘: (a) `rq-92-no-air-acceleration
+ *   .test.ts` — 스폰 인덱스 0(유일한 참가자라 `nextSpawnIndex(undefined,15)`
+ *   =0 확정, `SPAWN_POINTS[0]`=(22,0), 아래 `computeSpawnPoints` 재계산)에서
+ *   dirX=1로 이함, z는 공중 가속 미허용(RQ-92)이라 0 그대로 고정 — x는
+ *   자연 착지 시각(≈19틱, 아래 §점프 궤적)보다 오래 걸리면 이미 그 테스트
+ *   자체가 `grounded===false`를 잃어 실패하므로 x는 넉넉히 잡아도 22~26을
+ *   못 넘는다. 이 파일의 박스(x:[11,14])와 전혀 겹치지 않는다(22>14).
+ *   (b) `rq-30-play-area-bounds.test.ts`의 점프 케이스 — 시작 x=29(세계
+ *   경계 근접), 더 바깥쪽으로만 이동 — x:[11,14]와 무관.
+ *   그 외 3개 파일은 전부 `dirX:0,dirZ:0`(제자리 점프)만 보낸다(전수 확인,
+ *   `jumpAndObserveLanding`류 헬퍼가 공통으로 이 패턴을 쓴다) — 수평 이동이
+ *   없으므로 좌표 무관.
+ * - **순수 접지(비점프) 대규모 스윕** — `rq-30-play-area-bounds.test.ts`의
+ *   4방향·대각선·중앙 스윕은 전부 z=0 또는 x=0을 축으로 고정한 채 이동한다
+ *   (예: 중앙→가장자리 스윕은 z=0 고정, dirX=1). 아래 "접지 지속" 요구
+ *   (groundedOutcome도 지지 높이를 본다) 때문에 **비점프 이동도 이론상
+ *   박스 지지 높이의 영향을 받을 수 있지만**, 이 파일의 박스 z 범위([8,11])
+ *   가 이 스윕들의 고정축(z=0/x=0)과 겹치지 않아 무관하다.
+ *
+ * `computeSpawnPoints`(재계산, `@shared/sim/spawn`의 `buildSpawnPoints`와
+ * 동일 산식 — 반경 22, 15개 등간격, 정수 반올림): 0:(22,0)·1:(20,9)·
+ * 2:(15,16)·3:(7,21)·4:(-2,22)·5:(-11,19)·6:(-18,13)·7:(-22,5)·8:(-22,-5)·
+ * 9:(-18,-13)·10:(-11,-19)·11:(-2,-22)·12:(7,-21)·13:(15,-16)·14:(20,-9).
+ * 이 박스(x:[11,14],z:[8,11])와 정확히 겹치는 지점은 없다(최근접은 인덱스1
+ * (20,9), 거리 6 이상).
+ *
+ * **점프 궤적(현재 구현값, `movement.ts`의 `JUMP_GRAVITY_MPS2=20`·
+ * `JUMP_V0_MPS=√(2·20·1.0)≈6.3246` 기준 — 중력은 "구현 자유값"이라 이
+ * 라운드가 바꿀 이유가 없으므로 그대로 관측값을 쓴다, `t=n/30`초 매 틱
+ * `y(t)=v0·t-10t²`)**: 상승 구간(대략 tick1~9)은 항상 상승, tick9~10
+ * 부근(≈0.997m)이 최고점, 이후 하강. topY=0.4m를 하강 중 통과하는 지점은
+ * tick16(h≈0.529, 아직 topY 위)과 tick17(h≈0.373, topY 아래) 사이 —
+ * 그래서 착지는 tick17에 일어난다(박스가 있든 없든 이 관측은 동일 —
+ * 박스가 있으면 tick17에 y=0.4로 스냅, 없으면 tick19에 y=0으로 스냅).
+ * **이 파일은 "정확히 tick17에 착지한다"를 단언하지 않는다** — 대신 시작점
+ * (x=8)에서 박스 근접면(x=11)까지 3m 여유를 두고, hold 구간을 tick25까지
+ * (박스 원면(14)에서 1m 여유가 남는 x=13까지) 유지해 중력 상수가 달라져도
+ * (예: 착지가 tick12~tick23 사이 어디서 일어나도) 이 파일의 검증이 깨지지
+ * 않도록 여유를 크게 잡았다(구현 자유값에 대한 강한 결합 회피).
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실 타이머
+ * 없음 — 이 파일의 모든 테스트가 완전히 재현 가능한 정수 틱 반복이라는
+ * 사실 자체로 증명된다(`sim-movement-walls.test.ts`와 동일 근거, 별도
+ * 결정론 테스트 중복 추가 없음).
+ */
+
+/** 이 라운드의 잠정 박스 1개 — 실제 프로덕션 후보 좌표(위 docblock "좌표
+ * 선택" 참고). 3m×3m, 상단 0.4m(< `MOVEMENT.JUMP_HEIGHT`=1.0m, GA-55
+ * given). */
+const BOX_ALPHA: BoxAABB = { minX: 11, maxX: 14, minZ: 8, maxZ: 11, topY: 0.4 }
+const TEST_BOXES: readonly BoxAABB[] = [BOX_ALPHA]
+
+/** 부동소수점 허용치 — `sim-movement-walls.test.ts`의 `WALL_TOLERANCE_M`과
+ * 동일 값·동일 근거. */
+const TOLERANCE_M = 1e-6
+
+function createGroundedState(overrides: Partial<MoveState> = {}): MoveState {
+  return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true, ...overrides }
+}
+
+/** 매 틱 입력을 갈아 끼우며 전체 궤적(매 틱 상태)을 기록한다 — F2 규약
+ * (`sim-movement-walls.test.ts`의 `runJumpSequence`)과 동일하게 마지막
+ * 값만이 아니라 **비행 전체**를 관찰해야 "1틱 반짝임" 결함을 잡을 수
+ * 있다. `inputAt(i)`는 0-based 틱 인덱스(i=0이 첫 틱)를 받는다. */
+function runSequence(start: MoveState, ticks: number, inputAt: (tickIndex: number) => MoveInput, boxes: readonly BoxAABB[]): MoveState[] {
+  const trajectory: MoveState[] = []
+  let state = start
+  for (let i = 0; i < ticks; i += 1) {
+    state = stepMovement(state, inputAt(i), [], boxes)
+    trajectory.push(state)
+  }
+  return trajectory
+}
+
+/** GA-55 given의 공유 시작점 — 박스(근접면 x=11) 3m 앞, z는 박스 z범위
+ * 한가운데(9, [8,11] 중앙 부근)에 서 있다("박스 옆 지면에 서 있고"). */
+const START: MoveState = createGroundedState({ x: 8, z: 9 })
+
+/** hold 구간(박스 방향으로 이동 유지) 종료 틱 수 — 위 docblock "점프
+ * 궤적" 절의 여유 계산 참고. 이 틱에서 x=8+0.2×25=13(박스 원면 14에서
+ * 1m 여유). */
+const HOLD_TICKS = 25
+/** hold 종료 후 정지 상태를 몇 틱 더 관찰해 "접지 지속"(1틱 반짝임 아님)을
+ * 확인할지. */
+const SETTLE_TICKS = 5
+const TOTAL_TICKS = HOLD_TICKS + SETTLE_TICKS
+
+/** ①: 첫 틱만 이함(엣지 트리거) + 박스 방향(dirX=1) 유지, hold 종료 후
+ * 정지(dirX=0)로 전환 — "착지 후에도 계속 그 자리에 서 있다"를 관찰하기
+ * 위해서다(계속 박스 원면 밖으로 걸어 나가면 가장자리 낙하라는 별도
+ * 스코프를 건드리게 된다, 위 docblock "명시적으로 정하지 않는 것" 참고). */
+function inputTowardBox(tickIndex: number): MoveInput {
+  const jump = tickIndex === 0
+  const dirX = tickIndex < HOLD_TICKS ? 1 : 0
+  return { dirX, dirZ: 0, mode: 'run', jump }
+}
+
+/** ②: 첫 틱만 이함 + 이후 전부 무입력(제자리) — 수평 관성이 전혀 없다. */
+function inputInPlace(tickIndex: number): MoveInput {
+  return { dirX: 0, dirZ: 0, mode: 'run', jump: tickIndex === 0 }
+}
+
+describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받침, 골든 자체 검증은 통합 레벨)', () => {
+  describe('GA-55①: 박스 방향으로 이동하며 점프 — 박스 상단에 착지해 접지 상태가 되고 y가 박스 높이와 같다', () => {
+    const trajectory = runSequence(START, TOTAL_TICKS, inputTowardBox, TEST_BOXES)
+
+    it('전제 확인 — 실제로 공중에 뜬 구간이 존재한다(즉시 스냅한 것이 아니라 진짜 비행)', () => {
+      expect(trajectory.some((s) => !s.grounded)).toBe(true)
+      // 초반(예: 6번째 틱, x=8+0.2×6=9.2 — 아직 박스 근접면(11) 훨씬 못
+      // 미침)에는 공중이면서 박스 지지 높이보다 훨씬 높다 — 즉시 착지로
+      // 스냅하는 오구현이 아님을 확인.
+      const early = trajectory[5]
+      expect(early).toBeDefined()
+      expect(early!.grounded).toBe(false)
+      expect(early!.y).toBeGreaterThan(BOX_ALPHA.topY)
+    })
+
+    it('결국 접지 상태가 되고, 그 y가 박스 상단 높이(topY)와 같다(0이 아니다)', () => {
+      const landed = trajectory.find((s) => s.grounded)
+      expect(landed).toBeDefined()
+      expect(landed!.y).toBeCloseTo(BOX_ALPHA.topY, 6)
+      expect(landed!.y).not.toBeCloseTo(0, 6) // 맨 지면(0)으로 꺼지지 않았다
+      // 실제로 박스 XZ 범위 "위"에서 착지했다 — 우연히 다른 이유로 y가
+      // 같아진 것이 아니라는 위치 증거.
+      const landedIndex = trajectory.indexOf(landed!)
+      expect(landed!.x).toBeGreaterThanOrEqual(BOX_ALPHA.minX - TOLERANCE_M)
+      expect(landed!.x).toBeLessThanOrEqual(BOX_ALPHA.maxX + TOLERANCE_M)
+      expect(landed!.z).toBeGreaterThanOrEqual(BOX_ALPHA.minZ - TOLERANCE_M)
+      expect(landed!.z).toBeLessThanOrEqual(BOX_ALPHA.maxZ + TOLERANCE_M)
+      expect(landedIndex).toBeLessThan(HOLD_TICKS) // hold 구간 안에서 일어났다(여유 계산 전제 확인)
+    })
+
+    it('접지 지속(1틱 반짝임 아님) — 착지 이후 hold를 유지하는 동안도, 정지한 뒤(settle)에도 y는 계속 박스 높이다', () => {
+      const landedIndex = trajectory.findIndex((s) => s.grounded)
+      expect(landedIndex).toBeGreaterThanOrEqual(0)
+      // 착지 이후 끝까지(hold 잔여 + settle 전체) 단 한 틱도 y가 0으로
+      // 꺼지지 않는다 — `groundedOutcome`이 하드코딩된 0을 쓰면 바로 다음
+      // 틱에 이 단언이 깨진다(위 docblock "접지 지속" 절의 결함 재현).
+      for (let i = landedIndex; i < trajectory.length; i += 1) {
+        expect(trajectory[i]!.grounded).toBe(true)
+        expect(trajectory[i]!.y).toBeCloseTo(BOX_ALPHA.topY, 6)
+      }
+    })
+
+    it('정지(settle) 구간에서는 더 이상 수평으로 이동하지 않는다(박스 원면을 넘어가지 않는다 — 가장자리 낙하는 별도 스코프)', () => {
+      const atHoldEnd = trajectory[HOLD_TICKS - 1]
+      const atEnd = trajectory[trajectory.length - 1]
+      expect(atHoldEnd).toBeDefined()
+      expect(atEnd).toBeDefined()
+      expect(atEnd!.x).toBeCloseTo(atHoldEnd!.x, 6)
+      expect(atEnd!.x).toBeLessThan(BOX_ALPHA.maxX) // 원면을 넘지 않았다(여유 계산 전제 확인)
+    })
+  })
+
+  describe('GA-55②: 정지 상태에서 제자리 점프 — 박스에 올라서지 못하고 원래 지면(y=0)으로 돌아온다', () => {
+    const trajectory = runSequence(START, TOTAL_TICKS, inputInPlace, TEST_BOXES)
+
+    it('수평 관성이 없어 박스 방향으로 전혀 이동하지 않는다(x·z 불변)', () => {
+      for (const s of trajectory) {
+        expect(s.x).toBeCloseTo(START.x, 6)
+        expect(s.z).toBeCloseTo(START.z, 6)
+      }
+    })
+
+    it('결국 접지 상태로 돌아오고, y는 박스 높이가 아니라 원래 지면(0)이다', () => {
+      const settled = trajectory[trajectory.length - 1]
+      expect(settled).toBeDefined()
+      expect(settled!.grounded).toBe(true)
+      expect(settled!.y).toBeCloseTo(0, 6)
+      expect(settled!.y).not.toBeCloseTo(BOX_ALPHA.topY, 6)
+    })
+
+    it('전제 확인 — 실제로 공중에 뜬 구간은 있었다(제자리에서도 점프 자체는 일어난다)', () => {
+      expect(trajectory.some((s) => !s.grounded)).toBe(true)
+    })
+  })
+
+  describe('양성 대조군 — 박스가 주입돼 있어도 궤적이 박스 XZ 범위를 지나지 않으면 영향이 전혀 없다', () => {
+    it('박스와 반대쪽(z=-9)에서 같은 이동+점프를 반복하면 박스 없는 물리와 동일하다(최고점≈JUMP_HEIGHT, 결국 y=0 복귀)', () => {
+      const farStart = createGroundedState({ x: 8, z: -9 })
+      const trajectory = runSequence(farStart, TOTAL_TICKS, inputTowardBox, TEST_BOXES)
+
+      expect(Math.max(...trajectory.map((s) => s.y))).toBeCloseTo(MOVEMENT.JUMP_HEIGHT, 1)
+      const settled = trajectory[trajectory.length - 1]
+      expect(settled).toBeDefined()
+      expect(settled!.grounded).toBe(true)
+      expect(settled!.y).toBeCloseTo(0, 6) // 박스 지지 높이(0.4)가 아니라 맨 지면
+    })
+
+    it('같은 좌표·같은 입력이라도 박스를 아예 주지 않으면(boxes=[]) 결과가 동일하다(박스 목록 자체가 결과를 좌우하지 않는 경로)', () => {
+      const withEmptyBoxes = runSequence(START, TOTAL_TICKS, inputTowardBox, [])
+      const settled = withEmptyBoxes[withEmptyBoxes.length - 1]
+      expect(settled).toBeDefined()
+      expect(settled!.grounded).toBe(true)
+      expect(settled!.y).toBeCloseTo(0, 6) // 박스가 없으니 맨 지면에 착지
+    })
+  })
+
+  describe('기본값 호환 — 4번째 인자(boxes)를 생략하면 기존 동작(박스 없음) 그대로다(회귀 가드, ADR-0010 하위 호환)', () => {
+    it('GA-55①과 정확히 같은 경로를, boxes 인자를 아예 넘기지 않고(walls만 3-인자) 재생하면 박스를 무시하고 y=0으로 착지한다', () => {
+      let state: MoveState = START
+      for (let i = 0; i < TOTAL_TICKS; i += 1) {
+        state = stepMovement(state, inputTowardBox(i), []) // 3-인자 — boxes 생략
+      }
+      expect(state.grounded).toBe(true)
+      expect(state.y).toBeCloseTo(0, 6)
+    })
+
+    it('walls·boxes 둘 다 생략한 기존 2-인자 호출도 그대로 동작한다(13개 기존 호출부와 동일 형태)', () => {
+      let state: MoveState = START
+      for (let i = 0; i < TOTAL_TICKS; i += 1) {
+        state = stepMovement(state, inputTowardBox(i)) // 2-인자 — walls·boxes 둘 다 생략
+      }
+      expect(state.grounded).toBe(true)
+      expect(state.y).toBeCloseTo(0, 6)
+    })
+  })
+})
