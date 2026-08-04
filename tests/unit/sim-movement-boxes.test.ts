@@ -440,3 +440,133 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
     })
   })
 })
+
+/**
+ * 리뷰 blocker 재현 — 박스 위에 선 플레이어는 점프할 수 없다(ADR-0011
+ * 결정 1: `src/shared` 결함 재현은 test-writer 전유, `src/`는 건드리지
+ * 않는다).
+ *
+ * **결함(리뷰어 실측)**: `jumpHeightAt(t)`는 **y=0 기준 절대 높이**
+ * 곡선인데, `airborneOutcome`이 착지 스냅을 `jumpHeightAt(t) <= standing
+ * Height(x,z,boxes)`로 판정한다 — 이함 높이(박스 위 topY)만큼 궤적을
+ * 오프셋하지 않는다. 그래서 이함 첫 틱(`jumpHeightAt(TICK_SECONDS)`
+ * ≈0.1997m, 아래서 리터럴 없이 유도)이 박스 `topY` 이하면 착지 스냅
+ * 조건이 **이함 그 자체에서 이미 참**이 되어 점프가 통째로 삼켜진다.
+ * `topY`가 그 임계선 아래여도(스웰로 증상은 없다) 궤적 자체가 여전히
+ * **절대** 곡선이라 정점이 발밑 기준(`topY + JUMP_HEIGHT`)에서 어긋난다
+ * — 두 증상이 같은 뿌리(절대 vs 발밑 기준)라 이 파일 하나가 함께 덮는다.
+ *
+ * **회귀 대상**: RQ-20("점프를 지원해야 한다", 무조건절)·RQ-92(점프 높이
+ * 1.0m) — 이 라운드(RQ-22)가 만들기 전까지는 두 RQ 모두 ✅였다.
+ *
+ * **레벨**: 순수 로직(`airborneOutcome`/`standingHeight`의 산술 그
+ * 자체가 결함이다)이라 단위 레벨에서 재현한다. 실서버 도달 경로는
+ * 가설이 아니다 — 통합 테스트 GA-55①(`rq-22-box-jump.test.ts`)이 이미
+ * 매 실행마다 플레이어를 정확히 `player.y=BOX_ALPHA.topY, grounded=true`
+ * 상태로 데려다 놓는다. 그 상태에서 스페이스를 누르는 것이 아래
+ * `standingOnBoxTop`이 합성하는 상태와 정확히 같다.
+ *
+ * **여러 박스 높이로 시험하는 이유**: 임계선(`ONE_TICK_AIRBORNE_HEIGHT_M`
+ * ≈0.1997) **아래**(삼켜짐 증상 없음, 정점 어긋남만 발생)와 **위**
+ * (`BOX_ALPHA.topY`=0.4, 그리고 RQ-32 상한 근접 `JUMP_HEIGHT-0.1`=0.9,
+ * 삼켜짐 발생)를 각각 시험해야 "임계값이 코드에 우연히 남는" 수정(예:
+ * `BOX_ALPHA.topY`에만 특화된 하드코딩)을 잡는다. 좌표·높이는 전부
+ * `BOX_ALPHA`·`MOVEMENT.JUMP_HEIGHT`에서 유도한다(ADR-0010 — 리터럴 금지).
+ * 임계값(0.1997)도 `jumpHeightAt`을 직접 import하는 대신(비공개 함수,
+ * export 요구는 `src/` 수정이라 금지) **공개 API(`stepMovement`)로 평지
+ * 이함 1틱을 실제로 실행해 유도**한다.
+ *
+ * **수정 방향은 강제하지 않는다** — 관측 가능한 행동(이함 여부·정점
+ * 높이·착지 위치)만 단언한다. `airborneOutcome`이 궤적을 발밑 기준으로
+ * 오프셋하든, `standingHeight`를 궤적 계산 이전에 빼서 상대 좌표로
+ * 바꾸든, 그 구현 선택은 coder 몫이다.
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실
+ * 타이머 없음 — 이 describe의 모든 테스트가 완전히 재현 가능한 정수 틱
+ * 반복이라는 사실 자체로 증명된다.
+ */
+describe('리뷰 blocker 재현 — 박스 위에서 점프하면 (박스 높이에 따라) 이함이 삼켜지거나 정점이 발밑 기준을 벗어난다', () => {
+  /** 이함 1틱 후 절대 높이 — `jumpHeightAt(TICK_SECONDS)`를 리터럴로
+   * 박지 않고 공개 API(박스 없는 평지 이함)로 유도한다. 현재 구현
+   * (g=20, `JUMP_HEIGHT`=1.0)에서는 약 0.1997m다 — 결함의 정확한
+   * 임계선이며, 매 실행마다 이 함수 자체에서 재도출되므로 물리 상수가
+   * 바뀌어도 따라간다. */
+  const ONE_TICK_AIRBORNE_HEIGHT_M = stepMovement(
+    createGroundedState(),
+    { dirX: 0, dirZ: 0, mode: 'run', jump: true },
+    [],
+    [],
+  ).y
+
+  const BOX_CENTER_X = (BOX_ALPHA.minX + BOX_ALPHA.maxX) / 2
+  const BOX_CENTER_Z = (BOX_ALPHA.minZ + BOX_ALPHA.maxZ) / 2
+
+  /** `BOX_ALPHA`와 같은 발자국(footprint), 높이만 다른 박스 — 임계선
+   * 위·아래를 갈아 끼우기 위한 헬퍼. */
+  function boxWithTopY(topY: number): BoxAABB {
+    return { minX: BOX_ALPHA.minX, maxX: BOX_ALPHA.maxX, minZ: BOX_ALPHA.minZ, maxZ: BOX_ALPHA.maxZ, topY }
+  }
+
+  /** "박스 위에 이미 서 있다" 합성 상태 — GA-55① 통합 테스트가 실서버에서
+   * 실제로 도달시키는 상태와 동형(위 docblock 참고). */
+  function standingOnBoxTop(topY: number): MoveState {
+    return createGroundedState({ x: BOX_CENTER_X, y: topY, z: BOX_CENTER_Z })
+  }
+
+  /** 제자리 수직 점프 — 첫 틱만 이함(엣지 트리거), 이후 유지 입력. 수평
+   * 이동이 전혀 없으니 박스 옆면 차단(질문1)과는 무관하다. */
+  function verticalJumpInput(tickIndex: number): MoveInput {
+    return { dirX: 0, dirZ: 0, mode: 'run', jump: tickIndex === 0 }
+  }
+
+  /** 착지까지 관측하기 충분한 틱 수 — 발밑 기준으로 올바르게 고쳐지면
+   * 비행 시간은 박스 높이와 무관하다(같은 상대 포물선을 topY만큼
+   * 평행이동한 것뿐이므로 중력·초기속도가 그대로인 한 소요 시간도
+   * 그대로다) — 기존 관측값(~19틱, `sim-movement-walls.test.ts` "점프
+   * 궤적" 절)과 같은 규모, 30틱이면 착지 후 여유까지 넉넉하다. */
+  const TICKS = 30
+
+  const CASES = [
+    {
+      label: '임계선 아래(0.1997m의 절반) — 삼켜짐은 없어야 하지만 정점은 여전히 발밑 기준을 벗어난다',
+      topY: ONE_TICK_AIRBORNE_HEIGHT_M / 2,
+    },
+    { label: 'BOX_ALPHA 실제 배치(0.4m, 임계선 위) — 리뷰가 지목한 즉시 삼켜짐 그 자체', topY: BOX_ALPHA.topY },
+    {
+      label: 'RQ-32 상한 근접(JUMP_HEIGHT-0.1m) — 삼켜짐이 가장 심한 경우',
+      topY: MOVEMENT.JUMP_HEIGHT - 0.1,
+    },
+  ]
+
+  it.each(CASES)('박스 상단($label)에서 점프 — ①이함 ②정점(발밑+JUMP_HEIGHT) ③박스 위 재착지', ({ topY }) => {
+    const trajectory = runSequence(standingOnBoxTop(topY), TICKS, verticalJumpInput, [boxWithTopY(topY)])
+
+    // ① 박스 위에서 점프하면 이함한다 — 첫 틱부터 공중이어야 한다(평지
+    // 이함과 동일한 즉시성). 삼켜지면 이 틱조차 grounded=true로 남는다
+    // (리뷰 blocker의 핵심 증상).
+    expect(trajectory[0]!.grounded).toBe(false)
+
+    // ② 정점이 발밑 기준(topY + JUMP_HEIGHT)이다 — 절대 기준(그냥
+    // JUMP_HEIGHT)이면 이 단언이 topY만큼 어긋난다. 평지 대조군과 동일한
+    // 허용오차(소수 1자리, 이산 틱 샘플링 오차 흡수)를 쓴다.
+    const apex = Math.max(...trajectory.map((s) => s.y))
+    expect(apex).toBeCloseTo(topY + MOVEMENT.JUMP_HEIGHT, 1)
+
+    // ③ 박스 위로 되돌아 착지한다 — 맨 지면(0)이 아니라 박스 높이다.
+    const settled = trajectory[trajectory.length - 1]!
+    expect(settled.grounded).toBe(true)
+    expect(settled.y).toBeCloseTo(topY, 6)
+  })
+
+  it('평지 양성 대조군 — 박스가 전혀 없으면 기존 동작이 변하지 않는다(정점≈JUMP_HEIGHT, 착지 y=0)', () => {
+    const trajectory = runSequence(createGroundedState(), TICKS, verticalJumpInput, [])
+
+    expect(trajectory[0]!.grounded).toBe(false)
+    const apex = Math.max(...trajectory.map((s) => s.y))
+    expect(apex).toBeCloseTo(MOVEMENT.JUMP_HEIGHT, 1)
+
+    const settled = trajectory[trajectory.length - 1]!
+    expect(settled.grounded).toBe(true)
+    expect(settled.y).toBeCloseTo(0, 6)
+  })
+})
