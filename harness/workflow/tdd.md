@@ -125,11 +125,19 @@ coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과
 격리된 워크트리**에서 수행한다. 메인 워킹트리에서 하지 않는다.
 
 ```bash
-git worktree add --detach <경로> HEAD    # node_modules는 정션/심링크로 공유
+WT=/d/workspace/wt-<라운드>                        # 워크트리 경로 — 한 곳에서만 정의한다
+git worktree add --detach "$WT" HEAD               # node_modules는 정션/심링크로 공유
 # …실험…
-cmd //c rmdir "<경로>/node_modules"      # ① 정션 링크부터 끊는다
-git worktree remove --force <경로>       # ② 그 다음에 워크트리를 지운다
+cmd //c rmdir "$(cygpath -w "$WT/node_modules")"   # ① 정션 링크만 끊는다
+git worktree remove --force "$WT"                  # ② 그 다음에 워크트리를 지운다
 ```
+
+> `cygpath -w`가 필요한 이유: `cmd.exe`의 빌트인 `rmdir`은 `/`를 **스위치
+> 접두사**로 파싱해 슬래시 경로를 주면 `매개 변수가 틀립니다`로 **exit 1**이
+> 되고 정션이 그대로 남는다(실측). 그렇다고 문서에 리터럴 백슬래시를 쓰면
+> 저작 과정에서 `\n`이 개행으로 먹히는 사고가 재발한다 — 실제로 이 문서에서
+> 두 번 났다. `cygpath -w`는 **둘 다 피한다**. 정션을 아예 만들지 않고
+> `npm ci`로 재설치(약 10초)하는 쪽도 동등하게 안전하다.
 
 > ⚠️ **순서를 바꾸지 마라 — 정션을 먼저 해제한 뒤에 워크트리를 지운다.**
 > 정션이 살아 있는 채로 부모 디렉터리를 재귀 삭제하면 **어떤 명령이든**
