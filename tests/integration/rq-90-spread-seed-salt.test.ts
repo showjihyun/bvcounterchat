@@ -462,67 +462,114 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
   it(
     '클라 join 옵션에 임의의 salt류 키를 실어 보내도 서버가 실제로 쓰는 시드는 그 옵션과 무관하다' +
       '(coder가 착수 전 실측한 MatchMaker.js 함정 — merge({}, clientOptions, handler.options)는 ' +
-      'handler.options에 없는 키를 클라 값 그대로 통과시킨다 — 의 재발 방지 그물, team-lead 권고)',
+      'handler.options에 없는 키를 클라 값 그대로 통과시킨다 — 의 재발 방지 그물) — ' +
+      '비교식(구현 공식 무관, team-lead 지시로 REV)',
     async () => {
-      // `spreadSaltOverride`는 실제 프로덕션이 이 이름을 쓰는지와 무관하다
-      // — "handler.options(`index.ts`의 `{ statsDbPath }`)에 없는 키는
-      // 클라 옵션이 가공 없이 onCreate에 도달한다"는 위험 패턴 자체를
-      // 재현하는 대표 키다(team-lead가 `MatchMaker.js:343`·`Utils.js:106`
-      // 실측으로 지적). salt 도입은 확정대로 private-field 화이트박스
-      // (`forcedRoomSalt`, 위 seam)를 쓰므로 이 키가 서버에 도달해도
-      // **아무 영향이 없어야 한다**.
+      // **REV(team-lead 지적)**: 이전 버전은 `expectedSeed=(tickBeforeFire<<16)^0`
+      // (오늘의 정확한 공식)으로 hit/miss를 예측해 실제값과 비교했다 — coder가
+      // salt를 넣으면 `issueSpreadSeed`가 더 이상 이 공식이 아니므로, 그
+      // 예측이 깨지고 이 단언은 **옵션과 무관하게** Green 순간 거짓 실패를
+      // 낸다("코드가 무엇을 단언하는지와 주석이 다르다"는 지적 — 정확했다).
       //
-      // **`create`를 쓴다(`joinOrCreate` 아님)** — 위 메인 테스트가 만든
-      // 룸 4개(A1·A2·B1·B2)는 `afterAll`에서만 정리되므로 이 `it()` 실행
-      // 시점에도 여전히 열려 있다. `joinOrCreate`였다면 이름이 같은
-      // 기존 룸(A 또는 B)에 합류해 `spreadSeedCounter`가 이미 1인 상태로
-      // 시작했을 것이다(실측: 첫 시도에서 정확히 이 사유로 전제 가드가
-      // 발화했다 — `spreadSeedCounter=1`) — `create`로 항상 새 인스턴스를
-      // 강제해야 "이 룸의 첫 사격"이라는 전제가 구조적으로 보장된다(위
-      // 메인 테스트의 `createRoom`과 동일 이유).
-      const client = newClient(server)
-      const room = await withTimeout(
-        client.create(ROOM_NAME, { spreadSaltOverride: 999999999 }),
-        JOIN_TIMEOUT_MS,
-        `create('${ROOM_NAME}', { spreadSaltOverride }) — 악의적 옵션`,
-      )
-      rooms.push(room)
-      const targetClient = newClient(server)
-      const targetRoom = await joinRoomById(targetClient, room.roomId, 'options 테스트 피격자')
-      rooms.push(targetRoom)
+      // **수정**: 절대 예측(공식) 대신 **비교식**을 쓴다 — 악의적 옵션을 받은
+      // 룸 X와 받지 않은 룸 Y에 **같은 `forcedRoomSalt`**를 주입하고, 같은
+      // tick·spreadSeedCounter=0에서 두 룸의 결과가 같은지만 본다:
+      //   - 오늘(솔트 미구현): `forcedRoomSalt`가 무시되고 X·Y 둘 다 같은
+      //     공식(어떤 공식이든) → 같다. 통과.
+      //   - Green 이후(솔트 구현): 양쪽이 주입된 같은 salt를 쓰고 옵션은
+      //     안 읽힌다 → 같다. 통과.
+      //   - 옵션이 시드에 섞이면: X만 salt가 오염돼 갈린다 → 실패.
+      // 어느 쪽도 "오늘의 정확한 공식이 무엇인가"를 가정하지 않는다.
+      //
+      // ⚠️ **한 가지 한계를 숨기지 않는다**: `forcedRoomSalt`가(다른 override
+      // 필드 `forcedSpreadSeed`·`spreadTuningOverride`와 동일한 이 저장소의
+      // 확립된 관례대로) **다운스트림에서 절대 우선**한다면(예:
+      // `this.forcedRoomSalt ?? this.roomSalt`), 이 비교는 X의 "옵션이 실제로
+      // `roomSalt`를 오염시켰는가" 자체를 관측하지 못할 수 있다 — 두 룸 다
+      // `forcedRoomSalt`가 그 이후의 모든 자연 경로(오염됐든 아니든)를
+      // 덮어써 버리기 때문이다. 즉 이 테스트가 검증하는 것은 엄밀히는
+      // "override가 옵션보다 우선한다"이지 "옵션이 자연 roomSalt에 전혀
+      // 섞이지 않는다" 그 자체는 아닐 수 있다. team-lead 지시를 그대로
+      // 구현하되 이 한계를 명시한다 — coder의 실제 우선순위 구현을 보고
+      // 필요하면 재검토한다(`_workspace/RQ-90-spread/01_test-writer_red.md`
+      // §19 참고).
+      const FORCED_SALT_FOR_COMPARISON = 424242
 
-      const baseline = await waitForDefinedPlayer(targetRoom, targetRoom.sessionId)
-      expect(baseline.hp).toBe(PLAYER.MAX_HP)
+      const clientX1 = newClient(server)
+      const clientY1 = newClient(server)
+      const [roomX1, roomY1] = await Promise.all([
+        withTimeout(
+          clientX1.create(ROOM_NAME, { spreadSaltOverride: 999999999 }),
+          JOIN_TIMEOUT_MS,
+          `create('${ROOM_NAME}', { spreadSaltOverride }) — 악의적 옵션(룸 X)`,
+        ),
+        createRoom(clientY1, '옵션 없는 비교군(룸 Y)'),
+      ])
+      rooms.push(roomX1, roomY1)
 
-      const seam = getServerRoom(room)
-      escapeSafeZone(seam, room.sessionId, SHOOTER_BASE)
-      releaseSpawnProtectionAndEscape(seam, targetRoom.sessionId, TARGET_BASE)
-      seam.spreadTuningOverride = { coneRadiusRad: BOUNDARY_CONE_RADIUS_RAD, movingMultiplier: 2, airborneMultiplier: 4 }
+      const clientX2 = newClient(server)
+      const clientY2 = newClient(server)
+      const [roomX2, roomY2] = await Promise.all([
+        joinRoomById(clientX2, roomX1.roomId, '룸 X 피격자'),
+        joinRoomById(clientY2, roomY1.roomId, '룸 Y 피격자'),
+      ])
+      rooms.push(roomX2, roomY2)
 
-      // 이 룸도 첫 사격이므로 spreadSeedCounter=0이 구조적으로 보장된다.
-      if (seam.spreadSeedCounter !== 0) {
-        throw new Error(`RQ-90 22w(옵션 도달 불가) 전제 위반 — 첫 사격 전인데 spreadSeedCounter=${seam.spreadSeedCounter}`)
+      const [baselineX, baselineY] = await Promise.all([
+        waitForDefinedPlayer(roomX2, roomX2.sessionId),
+        waitForDefinedPlayer(roomY2, roomY2.sessionId),
+      ])
+      expect(baselineX.hp).toBe(PLAYER.MAX_HP)
+      expect(baselineY.hp).toBe(PLAYER.MAX_HP)
+
+      const seamX = getServerRoom(roomX1)
+      const seamY = getServerRoom(roomY1)
+
+      escapeSafeZone(seamX, roomX1.sessionId, SHOOTER_BASE)
+      releaseSpawnProtectionAndEscape(seamX, roomX2.sessionId, TARGET_BASE)
+      escapeSafeZone(seamY, roomY1.sessionId, SHOOTER_BASE)
+      releaseSpawnProtectionAndEscape(seamY, roomY2.sessionId, TARGET_BASE)
+
+      const tuning = { coneRadiusRad: BOUNDARY_CONE_RADIUS_RAD, movingMultiplier: 2, airborneMultiplier: 4 }
+      seamX.spreadTuningOverride = tuning
+      seamY.spreadTuningOverride = tuning
+      // 같은 forcedRoomSalt를 양쪽에 주입 — 오늘은 존재하지 않는 필드라
+      // 무시된다(Red 전제, 위 seam 코멘트). Green 이후에는 두 룸의 자연
+      // random roomSalt 차이라는 잡음을 제거해 "옵션 효과"만 남긴다.
+      seamX.forcedRoomSalt = FORCED_SALT_FOR_COMPARISON
+      seamY.forcedRoomSalt = FORCED_SALT_FOR_COMPARISON
+
+      if (seamX.spreadSeedCounter !== 0 || seamY.spreadSeedCounter !== 0) {
+        throw new Error(
+          `RQ-90 22w(옵션 도달 불가) 전제 위반 — 첫 사격 전인데 spreadSeedCounter가 0이 아니다` +
+            `(X=${seamX.spreadSeedCounter}, Y=${seamY.spreadSeedCounter})`,
+        )
       }
-      const tickBeforeFire = seam.state.tick
+      const tickBeforeFireX = seamX.state.tick
+      const tickBeforeFireY = seamY.state.tick
+      if (tickBeforeFireX !== tickBeforeFireY) {
+        throw new Error(
+          `RQ-90 22w(옵션 도달 불가) 전제 위반 — 사격 직전 두 룸의 tick이 다르다` +
+            `(X=${tickBeforeFireX}, Y=${tickBeforeFireY}) — 재실행 필요.`,
+        )
+      }
 
-      room.send('fire', { dirX: AIM.x, dirY: AIM.y, dirZ: AIM.z })
-      await waitForTickAtLeast(room, tickBeforeFire + CONFIRM_TICK_ADVANCE, 'options 테스트 처리 확인(tick 전진)')
+      roomX1.send('fire', { dirX: AIM.x, dirY: AIM.y, dirZ: AIM.z })
+      roomY1.send('fire', { dirX: AIM.x, dirY: AIM.y, dirZ: AIM.z })
 
-      const after = readPlayer(targetRoom, targetRoom.sessionId)
-      if (!after) {
+      await waitForTickAtLeast(roomX1, tickBeforeFireX + CONFIRM_TICK_ADVANCE, '룸 X 처리 확인(tick 전진)')
+      await waitForTickAtLeast(roomY1, tickBeforeFireY + CONFIRM_TICK_ADVANCE, '룸 Y 처리 확인(tick 전진)')
+
+      const afterX = readPlayer(roomX2, roomX2.sessionId)
+      const afterY = readPlayer(roomY2, roomY2.sessionId)
+      if (!afterX || !afterY) {
         throw new Error('RQ-90 22w(옵션 도달 불가) — 사격 후 관측 실패(피격자 상태를 읽지 못했다)')
       }
 
-      // "옵션이 시드에 전혀 영향을 못 준다"는 오늘의 공식(tick·counter만)
-      // 그대로 예측한 결과와 실제 결과가 정확히 일치해야 한다는 뜻이다 —
-      // 악의적 옵션이 조금이라도 시드에 섞였다면 이 예측이 어긋난다.
-      // 이 단언은 coder의 salt 구현 **이후에도 계속 성립해야 한다**
-      // (private-field 방식은 애초에 options를 읽지 않으므로) — 일회성
-      // Red가 아니라 영구적인 회귀 방지 그물이다.
-      const expectedSeed = ((tickBeforeFire << 16) ^ 0) >>> 0
-      const expectedHit = isHitAtCone(expectedSeed, BOUNDARY_CONE_RADIUS_RAD)
-      const actualHit = after.hp !== PLAYER.MAX_HP
-      expect(actualHit).toBe(expectedHit)
+      // 악의적 옵션을 받은 룸(X)과 받지 않은 룸(Y)이 같은 forcedRoomSalt·
+      // 같은 tick·같은 counter에서 **같은 결과**를 내야 한다 — 옵션이
+      // 조금이라도 시드에 섞였다면 X만 갈려 이 단언이 깨진다.
+      expect(afterX.hp).toBe(afterY.hp)
     },
   )
 })
