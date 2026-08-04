@@ -288,7 +288,20 @@ describe('RQ-21 사다리 이동 — 프로덕션 배선(GA-54): 서버가 확�
         // 상호작용(단위 테스트 docblock 참고): 사다리 등반은 낙하로
         // 오귀속되지 않는다.
         expect(climbing.grounded).toBe(true)
-        expect(climbing.x).toBeCloseTo(LADDER_ALPHA.minX + (LADDER_ALPHA.maxX - LADDER_ALPHA.minX) / 2, 1) // 진입 후 x는 사다리 폭 안에 고정
+        // 진입 후 x·z가 사다리 볼륨의 XZ 범위 안에 있다 — 원래 의도
+        // (REV: 이전 `toBeCloseTo(center, 1)`은 정밀도 0.05m가 걷기
+        // 보폭(0.2m/틱)보다 좁아 "정확히 중앙으로 스냅"을 요구하는
+        // 의도치 않은 계약이 돼 버렸다. RQ-21 v1.4·GA-54 어디에도 사다리
+        // 위 수평 중심 요구가 없으므로, 중심 스냅 여부와 무관하게 통과하는
+        // 범위 단언으로 되돌린다 — `LADDER_ALPHA`의 경계에서 유도하며
+        // 리터럴을 쓰지 않는다, ADR-0010). 사다리 판정 자체가 죽으면(y가
+        // ASCEND_CONFIRM_Y_M에 끝내 도달하지 못해) 위 `waitForMoveStateCondition`
+        // 이 타임아웃으로 먼저 죽으므로, 이 범위 단언이 공허하게 통과하는
+        // 경로는 없다.
+        expect(climbing.x).toBeGreaterThan(LADDER_ALPHA.minX)
+        expect(climbing.x).toBeLessThan(LADDER_ALPHA.maxX)
+        expect(climbing.z).toBeGreaterThan(LADDER_ALPHA.minZ)
+        expect(climbing.z).toBeLessThan(LADDER_ALPHA.maxZ)
         // 공개 스키마도 같은 값을 확정한다(정본-스키마 배선 확인).
         const climbingPublic = seam.state.players.get(sessionId)
         expect(climbingPublic?.grounded).toBe(true)
