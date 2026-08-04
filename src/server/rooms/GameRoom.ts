@@ -7,6 +7,7 @@ import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState, type WallAABB } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
+import { PRODUCTION_BOXES } from '@shared/sim/boxes'
 import {
   applySpread,
   canFire,
@@ -1088,11 +1089,17 @@ export class GameRoom extends Room<GameState> {
       }
       // RQ-30(원장 25a-2): 세 번째 인자로 잠정 벽 목록을 주입한다 — 배치
       // 근거·"확정 배치 아님" 경고는 `@shared/sim/walls` docblock 참고.
-      const next = stepMovement(previous, input, PRODUCTION_WALLS)
+      // RQ-22(원장 25a-4): 네 번째 인자로 잠정 박스 목록을 주입한다 —
+      // 배치 근거는 `@shared/sim/boxes` docblock 참고.
+      const next = stepMovement(previous, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
       this.moveStates.set(sessionId, next)
       player.x = next.x
       player.y = next.y
       player.z = next.z
+      // RQ-22(질문2 회신): 공개 스키마에도 접지 여부를 그대로 싣는다 —
+      // `grounded === (y === 0)` 파생이 박스 위 착지에서 틀리기 때문에
+      // 클라이언트(`connection.ts`)가 파생 대신 이 필드를 직접 읽는다.
+      player.grounded = next.grounded
 
       // RQ-64: 살아있는(canAct) 플레이어만 이력을 적립한다 — 시신은
       // `moveStates`처럼 위치가 고정되므로(위 `if (!canAct(...))` 분기가
@@ -1226,6 +1233,11 @@ export class GameRoom extends Room<GameState> {
     player.vx = 0
     player.vy = 0
     player.vz = 0
+    // RQ-22: `spawnMoveState`가 항상 `grounded: true`로 시작하므로 공개
+    // 스키마도 맞춰 리셋한다 — 그러지 않으면 공중에서 죽은(grounded:false)
+    // 플레이어가 부활 직후에도 이전 생의 값을 들고 있는다(vx/vy/vz와
+    // 동일한 이유의 리셋).
+    player.grounded = true
     player.hp = PLAYER.MAX_HP
     this.diedAtTick.delete(sessionId)
     this.positionHistory.delete(sessionId) // RQ-64 평가 F2 — 이전 생의 위치 이력을 이어받지 않는다(위 문서 참고)
