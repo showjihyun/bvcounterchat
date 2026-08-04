@@ -7,7 +7,7 @@ import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState, type WallAABB } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
-import { PRODUCTION_BOXES } from '@shared/sim/boxes'
+import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 import {
   applySpread,
   canFire,
@@ -1088,11 +1088,12 @@ export class GameRoom extends Room<GameState> {
       if (input.jump) {
         this.pendingInputs.set(sessionId, { ...input, jump: false })
       }
-      // RQ-30(원장 25a-2): 세 번째 인자로 잠정 벽 목록을 주입한다 — 배치
-      // 근거·"확정 배치 아님" 경고는 `@shared/sim/walls` docblock 참고.
-      // RQ-22(원장 25a-4): 네 번째 인자로 잠정 박스 목록을 주입한다 —
-      // 배치 근거는 `@shared/sim/boxes` docblock 참고.
-      const next = stepMovement(previous, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+      // 원장 25a-5(RQ-21 동시 회수): 세 번째 인자로 벽·박스·사다리
+      // 정본을 단일 값(`PRODUCTION_GEOMETRY`)으로 주입한다 — 배치 근거는
+      // `@shared/sim/walls`·`@shared/sim/boxes`·`@shared/sim/ladders`
+      // docblock 참고. `stepMovement`가 `StaticGeometry` 단일 객체를
+      // 요구하므로(원장 25a-5), 이 주입을 빠뜨리면 타입 에러가 난다.
+      const next = stepMovement(previous, input, PRODUCTION_GEOMETRY)
       this.moveStates.set(sessionId, next)
       player.x = next.x
       player.y = next.y
