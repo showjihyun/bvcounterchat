@@ -391,16 +391,29 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
     })
 
     it('경계값(팀리드 결정) — 직전 높이가 박스 상단과 정확히 같으면(y===topY) "위"로 취급해 차단하지 않는다', () => {
-      // 합성 상태 — 근접면(x=11) 바로 밖(0.2m)에서 높이가 정확히 topY인
+      // 합성 상태 — 근접면(x=11) 바로 밖(0.1m)에서 높이가 정확히 topY인
       // 접지 상태를 직접 구성한다(REV 2026-07-24 "상태는 값의 완전한
       // 스냅샷" 정신 — 이 정확한 조합에 실제로 도달하는 자연스러운
       // 경로가 있는지와 무관하게, 판정은 상태 값만으로 결정돼야 한다).
-      const atTopHeight = createGroundedState({ x: BOX_ALPHA.minX - 0.2, y: BOX_ALPHA.topY, z: 9 })
+      //
+      // **REV(독립 평가 F1 대응)** — 원래 0.2m를 썼으나 1틱 변위가
+      // 정확히 `MOVEMENT.SPEED × TICK_SECONDS = 6 × (1/30) = 0.2`라
+      // `minX-0.2`에서 출발하면 다음 x가 **정확히 minX**가 된다.
+      // `clampAgainstWalls`의 절단 조건(`x > wall.minX`, 개방 구간)은
+      // "근접면을 넘어섰을 때"만 절단하므로, 정확히 minX에서 멈추는
+      // 결과는 차단됐든(clamp) 안 됐든(자연 이동) 동일하다 — 이 테스트가
+      // `y < topY`를 `y <= topY`로 뒤집는 변이를 잡지 못하는 공허한
+      // 그물이었다(평가자 실측: 30/30 통과, 변이해도 그대로 통과).
+      // 0.1m로 시작점을 당기면 다음 x가 minX+0.1(=11.1, 근접면을
+      // 넘어선 값)이 되어 차단 여부에 따라 결과가 갈린다 — 아래
+      // §8.5(REV) 실증 참고.
+      const atTopHeight = createGroundedState({ x: BOX_ALPHA.minX - 0.1, y: BOX_ALPHA.topY, z: 9 })
       const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
       const next = stepMovement(atTopHeight, input, [], TEST_BOXES)
 
-      // 차단됐다면 근접면(minX)에 못 미치거나 그대로 멈췄을 것이다 — 이
-      // 결정("이상"은 차단 없음)에서는 자유롭게 한 틱만큼 전진한다.
+      // 차단됐다면 근접면(minX=11)에 멈췄을 것이다(x=11) — 이 결정("이상"은
+      // 차단 없음)에서는 자유롭게 한 틱만큼 전진해 근접면을 넘어선다
+      // (x=11.1). 기대값은 계산식이라 시작 좌표를 따라간다.
       const tickSeconds = NET.TICK_MS / 1000
       const expectedX = atTopHeight.x + MOVEMENT.SPEED * tickSeconds
       expect(next.x).toBeCloseTo(expectedX, 6)
