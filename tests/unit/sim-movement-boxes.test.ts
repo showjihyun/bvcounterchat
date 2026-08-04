@@ -427,7 +427,7 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
   })
 
   describe('기본값 호환 — 4번째 인자(boxes)를 생략하면 기존 동작(박스 없음) 그대로다(회귀 가드, ADR-0010 하위 호환)', () => {
-    it('GA-55①과 정확히 같은 경로를, boxes 인자를 아예 넘기지 않고(walls만 3-인자) 재생하면 박스를 무시하고 y=0으로 착지한다', () => {
+    it('GA-55①과 정확히 같은 경로를, 지오메트리에서 boxes를 비운 채(walls만 채운 StaticGeometry) 재생하면 박스를 무시하고 y=0으로 착지한다', () => {
       let state: MoveState = START
       for (let i = 0; i < TOTAL_TICKS; i += 1) {
         // 25a-5 REV — 옛 "3-인자(walls만, boxes 생략)" 형태의 정확한 등가는

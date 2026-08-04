@@ -2,7 +2,7 @@
  * RQ-22 박스 점프 — **잠정 프로덕션 배치**(원장 25a-4, `tests/unit/sim
  * -movement-boxes.test.ts` docblock 제안 좌표 그대로). `@shared/sim/walls`와
  * 동일한 성격의 스캐폴드다 — 확정 맵 레이아웃(`.glb` 저작)이 아니라
- * `stepMovement` 네 번째 인자(`BoxAABB[]`) 주입 계약을 실사용으로 배선하기
+ * `stepMovement`의 지오메트리 인자(`StaticGeometry.boxes`, 원장 25a-5 이전에는 네 번째 위치 인자) 주입 계약을 실사용으로 배선하기
  * 위한 잠정 좌표다. `.glb`가 도입되면 이 파일이 내보내는
  * `PRODUCTION_BOXES`의 **출처만** 교체된다(`GameRoom.ts`가 참조하는 이름은
  * 그대로 유지될 수 있다).
@@ -29,6 +29,6 @@ import type { BoxAABB } from '@shared/sim/movement'
  * 정신 — `@shared/sim/walls`의 `WALL_EAST` 등과 동일한 선례). */
 export const BOX_ALPHA: BoxAABB = { minX: 11, maxX: 14, minZ: 8, maxZ: 11, topY: 0.4 }
 
-/** `GameRoom.stepPlayerMovement`가 `stepMovement`의 네 번째 인자로 상시
+/** `GameRoom.stepPlayerMovement`가 `stepMovement`의 지오메트리 인자(`StaticGeometry.boxes`, 원장 25a-5 이전에는 네 번째 위치 인자)로 상시
  * 주입하는 잠정 프로덕션 박스 목록 — 위 docblock 참고. */
 export const PRODUCTION_BOXES: readonly BoxAABB[] = [BOX_ALPHA]
