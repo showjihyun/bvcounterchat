@@ -10,7 +10,7 @@ import {
 import { MOVEMENT, NET } from '@shared/constants'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import { PRODUCTION_BOXES } from '@shared/sim/boxes'
-import { PRODUCTION_LADDERS } from '@shared/sim/ladders'
+import { LADDER_ALPHA, PRODUCTION_LADDERS } from '@shared/sim/ladders'
 import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 
 /**
@@ -223,9 +223,13 @@ const TICK_SECONDS = NET.TICK_MS / 1000
 /** 1틱 동안 사다리 위에서 오르내리는 높이(m). */
 const DY_PER_TICK = CLIMB_SPEED_MPS * TICK_SECONDS
 
-/** 이 라운드의 잠정 사다리 — 실제 프로덕션 후보 좌표(위 docblock "회귀
- * 안전 좌표" 참고). 면의 법선은 +X — `dirX=1` 입력이 상승이다. */
-const LADDER_ALPHA: LadderVolume = { minX: -14, maxX: -13, minZ: 8, maxZ: 11, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
+// `LADDER_ALPHA`는 위에서 `@shared/sim/ladders`의 정본을 그대로 임포트한다
+// (REV — 리뷰/coder 지적: 이 상수를 로컬에 다시 선언하면 값은 같아도
+// 별개 객체 리터럴이 되어, 아래 "PRODUCTION_GEOMETRY는 ... 정본을 그대로
+// 포함" 단언(`toContain`, 참조 동등성)이 production 코드가 무엇을
+// export하든 통과할 수 없는 구조적 결함이 된다. 정본을 임포트하면 참조
+// 동일성이 자동으로 성립하고, 좌표 리터럴 복제도 사라진다(ADR-0010) —
+// 이 파일의 다른 모든 `LADDER_ALPHA` 참조는 이 임포트 값을 그대로 쓴다.
 
 /** 법선 일반성(방향 하드코딩 방지) 전용 — `LADDER_ALPHA`와 반대 부호의
  * 법선(-X)을 가진 별도 사다리. 프로덕션 후보가 아니다(로컬 전용). */
