@@ -60,18 +60,41 @@ import { MOVEMENT, NET } from '@shared/constants'
  *   서서 한 틱이라도 더 있으면 `stepGrounded`→`groundedOutcome` 경로를
  *   타므로, 그 경로가 박스를 모르면 즉시 바닥으로 떨어진다.
  *
- * **명시적으로 정하지 않는 것(스코프 밖, team-lead 지시 — "GA-55 두 명제 +
- * 최소한의 대조군이면 충분하다. 넓히지 마라")**:
- * - **박스 옆면 수평 차단 여부** — 점프하지 않고 걸어서 박스 쪽으로 다가가면
- *   옆면에서 멈추는지(벽처럼), 아니면 박스 범위 안으로 그냥 걸어 들어가
- *   지지 높이만큼 순간적으로 "솟아오르는지"는 이 파일이 시험하지 않는다.
- *   GA-55의 given/when/then 어디에도 "걸어서 접근"·"옆면 충돌" 표현이 없다
- *   — ①·②는 둘 다 **점프를 전제**한다. 이 질문은 진짜 게임 감각 결정이라
- *   판단해 별도로 질문했다(보고서 §질문 1 참고) — 답이 오기 전까지는
- *   추측해 고정하지 않는다.
+ * **REV(팀리드 결정, 질문 1 회신) — 박스는 고체다: 상단보다 낮은 높이에서는
+ * 옆면이 수평 이동을 막는다.** 최초본은 이 질문을 열어 두고 테스트하지
+ * 않았다 — 팀리드가 "RQ-22의 '충돌 형상을 구성해야 한다'가 근거. 충돌
+ * 형상이 수평으로 충돌하지 않으면 그건 충돌 형상이 아니다"로 확정했다.
+ * 규칙(경계 조건까지 이 파일이 확정, 아래 테스트가 그대로 문서화한다):
+ * - 어느 틱이든 플레이어의 **직전 높이**(`state.y`, REV 2026-07-24 "상태는
+ *   값의 완전한 스냅샷" 정신 — 위치가 아니라 상태 값 자체가 판정 기준)가
+ *   박스의 `topY`**보다 낮으면**, 그 박스는 `clampAgainstWalls`
+ *   (`movement.ts`, RQ-30)와 **같은 성질**(근접면 통과 금지 + 고착 금지 —
+ *   벽에 막혀 멈춘 뒤 반대 입력은 정상 반영)로 수평 이동을 막는다. 재사용
+ *   여부(같은 함수 vs 별도 경로)는 구현 자유 — 이 파일은 **관측되는 성질**만
+ *   고정한다.
+ * - **직전 높이가 `topY` "이상"이면 차단이 없다** — 박스 위(또는 그 위를
+ *   지나는 공중 궤적)를 자유롭게 가로지른다. "정확히 `topY`"는 **"위"에
+ *   포함**(차단 없음)으로 정한다 — 박스 표면에 이미 서 있는 상태(y=topY,
+ *   접지)와 그 표면을 걸어 다니는 것을 같은 취급으로 두는 것이 "상단 위는
+ *   막지 않는다"는 문면과 가장 정합적이다(아래 "경계값" 테스트가 이
+ *   결정을 합성 상태로 직접 고정한다 — REV 2026-07-24 정신과 동일하게
+ *   실제로 그 상태에 도달하는 경로의 자연스러움과 무관하게 상태 값만으로
+ *   판정한다).
+ *
+ * **명시적으로 정하지 않는 것(스코프 밖, team-lead 지시 — "위 두 결정을
+ * 덮는 최소한이면 된다. 넓히지 마라")**:
  * - 박스 가장자리에서 걸어 나가는 낙하 물리, RQ-18 낙하 데미지와의 상호작용,
  *   사격 차폐에 박스 포함 여부, 다중 박스 겹침/조합 — 전부 원장 25a-4가
  *   비스코프로 선언했다.
+ * - **레벨 선택**: 수평 차단은 벽 충돌(`clampAgainstWalls`)과 동일하게
+ *   순수 로직(`harness/workflow/tdd.md` "탄도·데미지·이동·낙하 계산 →
+ *   단위")이라 이 파일(단위)에서만 고정한다. `PRODUCTION_BOXES`가
+ *   `stepMovement`에 실제로 주입되는지는 기존 GA-55①·②(통합 레벨,
+ *   `rq-22-box-jump.test.ts`)가 이미 관측한다 — 같은 박스 데이터를 쓰는
+ *   같은 주입 경로이므로 "수평 차단 배선"을 위한 별도 통합 테스트는
+ *   중복이다(`sim-movement-walls.test.ts`가 `clampAgainstWalls` 세부를
+ *   단위 레벨에만 두고 배선 확인은 `rq-30-wall-collision-wiring.test.ts`
+ *   1건으로 충분히 한 선례와 동일).
  *
  * **좌표 선택 — 회귀 안전 대역(런타임 값 기준 재계산, 팀리드 지시)**:
  * `PRODUCTION_WALLS`가 이미 반경 15.8~16.8m를 점유하고, `SPAWN_POINTS`
@@ -169,9 +192,29 @@ function runSequence(start: MoveState, ticks: number, inputAt: (tickIndex: numbe
   return trajectory
 }
 
+/** 같은 입력을 n틱 유지 — 질문1(수평 차단) 테스트는 방향 전환이 없는
+ * 단순 반복이라 `runSequence`(틱별 입력 함수)보다 이 형태가 더 읽기
+ * 쉽다. */
+function runConstant(input: MoveInput, ticks: number, start: MoveState, boxes: readonly BoxAABB[]): MoveState {
+  let state = start
+  for (let i = 0; i < ticks; i += 1) {
+    state = stepMovement(state, input, [], boxes)
+  }
+  return state
+}
+
 /** GA-55 given의 공유 시작점 — 박스(근접면 x=11) 3m 앞, z는 박스 z범위
  * 한가운데(9, [8,11] 중앙 부근)에 서 있다("박스 옆 지면에 서 있고"). */
 const START: MoveState = createGroundedState({ x: 8, z: 9 })
+
+/** 질문1(수평 차단) 테스트의 접근 여유 — `sim-movement-walls.test.ts`의
+ * `WALL_APPROACH_MARGIN_M`과 동일 값·동일 근거(히트박스 반지름 0.3m보다
+ * 넉넉해 반지름 처리 여부와 무관하게 통과한다). */
+const APPROACH_MARGIN_M = 2
+/** 걸어서(비점프) 접근 시 근접면까지 도달하기 충분한 틱 수 — 3m 거리를
+ * 6m/s(0.2m/틱)로 걸으면 15틱, 정지·고착 여부까지 관찰할 여유를 크게
+ * 얹었다. */
+const WALK_APPROACH_TICKS = 60
 
 /** hold 구간(박스 방향으로 이동 유지) 종료 틱 수 — 위 docblock "점프
  * 궤적" 절의 여유 계산 참고. 이 틱에서 x=8+0.2×25=13(박스 원면 14에서
@@ -247,6 +290,28 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
       expect(atEnd!.x).toBeCloseTo(atHoldEnd!.x, 6)
       expect(atEnd!.x).toBeLessThan(BOX_ALPHA.maxX) // 원면을 넘지 않았다(여유 계산 전제 확인)
     })
+
+    it('질문1 경계(팀리드 결정) — 박스 상단보다 높은 고도에서는 수평 이동이 막히지 않는다(박스 위를 그냥 지나간다)', () => {
+      // 이 궤적은 근접면(x=11)을 tick15에서 넘어서고(x=11.0), topY(0.4)
+      // 아래로 내려가는 것은 tick17(§파일 상단 "점프 궤적" 절)이다 —
+      // 그 사이(tick15~16, 아직 공중이면서 y>topY)는 이미 박스 XZ 범위
+      // 안이지만 아직 위쪽이라 차단되면 안 되는 구간이다. 옆면 차단이
+      // (잘못) 높이를 안 보고 항상 걸리면 이 구간의 x가 근접면(11.0)에서
+      // 멈춰 아래 등식이 깨진다.
+      const tickSeconds = NET.TICK_MS / 1000
+      let checkedAtLeastOne = false
+      for (let i = 0; i < trajectory.length; i += 1) {
+        const s = trajectory[i]!
+        if (!s.grounded && s.y > BOX_ALPHA.topY) {
+          checkedAtLeastOne = true
+          const expectedUnblockedX = START.x + MOVEMENT.SPEED * (i + 1) * tickSeconds
+          expect(s.x).toBeCloseTo(expectedUnblockedX, 6)
+        }
+      }
+      // 전제 확인 — 위 조건(공중 + topY보다 높음)을 만족하는 틱이 실제로
+      // 있었다(반복문이 공허하게 통과한 것이 아니다).
+      expect(checkedAtLeastOne).toBe(true)
+    })
   })
 
   describe('GA-55②: 정지 상태에서 제자리 점프 — 박스에 올라서지 못하고 원래 지면(y=0)으로 돌아온다', () => {
@@ -290,6 +355,55 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
       expect(settled).toBeDefined()
       expect(settled!.grounded).toBe(true)
       expect(settled!.y).toBeCloseTo(0, 6) // 박스가 없으니 맨 지면에 착지
+    })
+  })
+
+  describe('질문1(팀리드 결정, 원장 회신) — 박스는 고체다: 상단(topY)보다 낮은 높이에서는 옆면이 수평 이동을 막는다', () => {
+    it('걸어서(점프 없이) 박스로 접근하면 근접면을 넘지 않는다(통과 금지) — 올라타지 못해 y는 0에 머문다', () => {
+      const towardBox: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+      const state = runConstant(towardBox, WALK_APPROACH_TICKS, START, TEST_BOXES)
+
+      // 통과 금지 — 근접면(minX=11)을 넘지 않았다(부동소수 오차만 허용).
+      expect(state.x).toBeLessThanOrEqual(BOX_ALPHA.minX + TOLERANCE_M)
+      // 고착이 아니라 실제로 근접면까지 밀렸다(근접면 2m 이내까지는 접근).
+      expect(state.x).toBeGreaterThan(BOX_ALPHA.minX - APPROACH_MARGIN_M)
+      // 박스 범위에 들어가지 못했으니 지지 높이도 여전히 맨 지면(0)이다
+      // — "차단 없이 걸어 들어가 y가 솟아오른다"는 대안(질문1의 (b))이
+      // 아니라는 것을 직접 확인.
+      expect(state.grounded).toBe(true)
+      expect(state.y).toBeCloseTo(0, 6)
+    })
+
+    it('고착 금지 — 박스 옆면에 막혀 멈춘 뒤 반대 방향 입력은 정상 반영되어 위치가 박스에서 멀어진다', () => {
+      const towardBox: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+      const atBox = runConstant(towardBox, WALK_APPROACH_TICKS, START, TEST_BOXES)
+      // 전제 확인 — 실제로 근접면 근처까지 밀렸어야 다음 단계가 의미를 갖는다.
+      expect(atBox.x).toBeLessThanOrEqual(BOX_ALPHA.minX + TOLERANCE_M)
+      expect(atBox.x).toBeGreaterThan(BOX_ALPHA.minX - APPROACH_MARGIN_M)
+
+      const RELEASE_TICKS = 30
+      const awayFromBox: MoveInput = { dirX: -1, dirZ: 0, mode: 'run', jump: false }
+      const released = runConstant(awayFromBox, RELEASE_TICKS, atBox, TEST_BOXES)
+
+      // 유의미하게 멀어졌다(고착 아님) — 1초 상당(30틱)이면 6m/s×1s=6m
+      // 멀어진다(`sim-movement-walls.test.ts`의 동일 케이스와 같은 여유).
+      expect(released.x).toBeLessThan(atBox.x - 1)
+    })
+
+    it('경계값(팀리드 결정) — 직전 높이가 박스 상단과 정확히 같으면(y===topY) "위"로 취급해 차단하지 않는다', () => {
+      // 합성 상태 — 근접면(x=11) 바로 밖(0.2m)에서 높이가 정확히 topY인
+      // 접지 상태를 직접 구성한다(REV 2026-07-24 "상태는 값의 완전한
+      // 스냅샷" 정신 — 이 정확한 조합에 실제로 도달하는 자연스러운
+      // 경로가 있는지와 무관하게, 판정은 상태 값만으로 결정돼야 한다).
+      const atTopHeight = createGroundedState({ x: BOX_ALPHA.minX - 0.2, y: BOX_ALPHA.topY, z: 9 })
+      const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+      const next = stepMovement(atTopHeight, input, [], TEST_BOXES)
+
+      // 차단됐다면 근접면(minX)에 못 미치거나 그대로 멈췄을 것이다 — 이
+      // 결정("이상"은 차단 없음)에서는 자유롭게 한 틱만큼 전진한다.
+      const tickSeconds = NET.TICK_MS / 1000
+      const expectedX = atTopHeight.x + MOVEMENT.SPEED * tickSeconds
+      expect(next.x).toBeCloseTo(expectedX, 6)
     })
   })
 

@@ -30,7 +30,11 @@ import { BOX_ALPHA } from '@shared/sim/boxes'
  * `stepMovement(previous, input, PRODUCTION_WALLS)` 호출이 4번째 인자로
  * `PRODUCTION_BOXES`를 추가로 받는다(`stepMovement(previous, input,
  * PRODUCTION_WALLS, PRODUCTION_BOXES)`) — 벽이 이미 그렇게 배선된 자리(
- * `GameRoom.ts` 1091행 부근) 바로 옆이다.
+ * `GameRoom.ts` 1091행 부근) 바로 옆이다. 추가로(질문2 회신, 아래 REV
+ * 절) `src/shared/schema/GameState.ts`의 `Player`에 `@type('boolean')
+ * grounded`를 추가하고, `stepPlayerMovement`가 `player.x/y/z`를 쓰는 바로
+ * 그 자리(`GameRoom.ts` 1093-1095행 부근)에 `player.grounded = next
+ * .grounded`도 함께 쓴다.
  *
  * **좌표(`BOX_ALPHA`를 그대로 임포트 — ADR-0010 값 복제 금지)**:
  * `sim-movement-boxes.test.ts`가 회귀 안전 대역으로 계산한 값을 그대로
@@ -40,19 +44,43 @@ import { BOX_ALPHA } from '@shared/sim/boxes'
  * 스윕 전부 재확인)는 `sim-movement-boxes.test.ts` docblock "좌표 선택"
  * 절 참고, 이 파일이 반복하지 않는다.
  *
- * **화이트박스 기법(신규 계약 아님)**: `matchMaker.getLocalRoomById`
- * (`rq-30-wall-collision-wiring.test.ts`·`rq-92-no-air-acceleration
- * .test.ts`가 이미 확립)로 `moveStates`(x·y·z·vx·vy·vz·grounded 7필드,
- * RQ-20 때부터 있던 기존 private map)를 직접 읽는다 — 클라 패치 배치
- * (기본 20Hz)를 거치지 않는 정본이라 배치 지연이 관측 타이밍을 좌우하지
- * 않는다. **`grounded`는 `Player` 공개 스키마에 없다**(21a-2 확정,
- * `GameState.ts` 필드 코멘트 — `grounded===(y===0)` 파생이 안전하다는
- * 전제로 뺐다). 이 라운드는 그 전제를 깨는 라운드이므로(박스 위 착지는
- * y≠0인데 grounded=true) `moveStates.grounded`를 직접 읽는다 — 이미
- * 확립된 화이트박스 기법이지 신규 계약이 아니다(위 두 선례 파일이 이미
- * 이 정확한 방식으로 `grounded`를 관측한다). **이 발견 자체가 보고서
- * §질문 2의 근거다** — `src/client/net/connection.ts:119`의
- * `grounded: player.y === 0` 파생이 이 라운드로 깨진다(별도 절 참고).
+ * **화이트박스 기법(`moveStates`, 신규 계약 아님)**: `matchMaker
+ * .getLocalRoomById`(`rq-30-wall-collision-wiring.test.ts`·`rq-92-no-air
+ * -acceleration.test.ts`가 이미 확립)로 `moveStates`(x·y·z·vx·vy·vz·
+ * grounded 7필드, RQ-20 때부터 있던 기존 private map)를 직접 읽는다 —
+ * 클라 패치 배치(기본 20Hz)를 거치지 않는 정본이라 배치 지연이 관측
+ * 타이밍을 좌우하지 않는다.
+ *
+ * **REV(팀리드 결정, 질문 2 회신) — `grounded`가 이제 공개 스키마에도
+ * 있다.** 최초본은 `Player` 공개 스키마에 `grounded`가 없다(21a-2 확정,
+ * `grounded===(y===0)` 파생이 안전하다는 전제로 뺐다)는 사실을 §질문 2로
+ * 보고했다 — 이 라운드가 그 전제를 깼기 때문이다(박스 위 착지는 y≠0인데
+ * grounded=true). 팀리드가 "서버가 `grounded`를 스키마로 보낸다 —
+ * `GameState.ts`에 필드를 추가하고 서버가 권위 값을 싣는다"로 확정했다
+ * (`src/client/net/connection.ts:119`의 `grounded: player.y === 0` 파생은
+ * coder가 제거 — ADR-0011상 클라 배선은 test-after, 아래 "레벨 판단" 절
+ * 참고). 그래서 이 파일은 **이제 `grounded`를 공개 스키마
+ * (`state.players.get(sessionId).grounded`)에서도 직접 읽어 단언한다** —
+ * `moveStates.grounded`(정본, 화이트박스)와 공개 스키마 `grounded`(서버가
+ * 실제로 브로드캐스트하는 값) **둘 다** 확인해, "정본은 맞는데 스키마
+ * 필드에 실제로 싣지 않았다"는 배선 누락(RQ-30/F1과 같은 종류의 결함)까지
+ * 잡는다.
+ *
+ * **레벨 판단(팀리드 지시 — "그 판단 근거를 보고서에 적어라")**: "박스
+ * 위에 선 플레이어를 클라이언트가 공중으로 오판하지 않는다"는 두 조각으로
+ * 나뉜다. ① **서버가 정확한 권위 `grounded` 값을 공개 스키마에 싣는가**
+ * — `src/shared`(스키마)+서버 판정 로직이라 ADR-0011상 Red-first,
+ * **이 파일이 담당한다**(아래 각 `it()`의 `grounded` 단언). ②
+ * **클라이언트(`connection.ts`)가 그 필드를 `y===0` 파생 대신 직접
+ * 읽도록 고치는가** — `src/client` 배선이라 ADR-0011상 test-after,
+ * **coder 담당**(이 파일이 Red-first하지 않는다). ①이 구조적으로 ②를
+ * 뒷받침한다 — 필드가 존재하고 서버가 정확한 값을 싣는 것이 보장되면,
+ * 클라 쪽 수정은 "파생 대신 그 필드를 그대로 읽는다"는 자명한 한 줄
+ * 변경이라 별도의 Red-first 검증 없이도 안전하게 test-after로 처리할
+ * 수 있다(REV 2026-07-24 이후 반복돼 온 이 저장소의 실 사례 —
+ * `vx`·`vz`·`lastProcessedInputSeq`도 같은 방식으로 "스키마에 존재 →
+ * 클라가 그대로 읽는다"만 처리했고 별도 Red-first 없이 test-after로
+ * 충분했다, `rq-62-prediction.test.ts` §103-112 "스코프 밖" 절 참고).
  *
  * **이함~착지 경합(원장 22f 선례)**: `jump:true`를 보낸 뒤 서버가 실제로
  * 이를 반영(이륙)했음을 화이트박스로 확인한 **뒤에만** `jump:false`를
@@ -163,11 +191,16 @@ interface MoveState {
 /** 화이트박스 접근 대상 계약 — `moveStates`는 RQ-20 때부터 있던 기존
  * private map(신규 아님, 위 docblock 참고). `state.players`(공개 스키마)는
  * `y` 필드가 이미 존재한다(`grounded`는 없다 — 위 docblock 참고). */
+/** REV(질문 2) — `grounded`가 `x`·`y`·`z`와 나란히 공개 스키마 필드가
+ * 됐다(위 docblock 참고). 옵셔널로 두는 이유는 기존 `rq-92-no-air
+ * -acceleration.test.ts`의 `AirSnapshot` 관례와 동일 — 스키마 패치가
+ * 아직 도착하지 않은 순간의 `undefined`를 허용해야 폴링 초반 프레임에서
+ * 타입 단언이 무너지지 않는다. */
 interface BoxJumpSeam {
   moveStates: Map<string, MoveState>
   state: {
     players: {
-      get: (sessionId: string) => { x?: number; y?: number; z?: number } | undefined
+      get: (sessionId: string) => { x?: number; y?: number; z?: number; grounded?: boolean } | undefined
     }
   }
 }
@@ -276,6 +309,13 @@ describe('RQ-22 박스 점프 — 프로덕션 배선(GA-55): 서버가 확정�
         room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: true })
         await waitForServerTakeoff(seam, sessionId, 'RQ-22①: 이함 반영 대기')
 
+        // 질문2 — 공중 상태도 공개 스키마가 정확히 반영한다(항상 true인
+        // 필드가 아니라는 것을 확인 — 아래 착지 후 true와 대비되는 음성
+        // 대조군). moveStates(정본)가 이미 false임을 확인한 바로 그
+        // 순간의 공개 스키마를 함께 읽는다.
+        const airbornePublic = seam.state.players.get(sessionId)
+        expect(airbornePublic?.grounded).toBe(false)
+
         // 확인 후에만 jump:false(유지 입력)로 전환 — 착지 후 재이륙(버니합) 방지.
         room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
 
@@ -305,11 +345,17 @@ describe('RQ-22 박스 점프 — 프로덕션 배선(GA-55): 서버가 확정�
           expect(s.y).toBeCloseTo(BOX_ALPHA.topY, 6)
         }
 
-        // 공개 스키마(player.y)도 같은 값을 확정한다 — moveStates(정본)와
-        // Player 스키마(브로드캐스트 대상) 사이의 배선(`stepPlayerMovement`의
-        // `player.y = next.y`)까지 관측한다.
+        // 공개 스키마(player.y·player.grounded)도 같은 값을 확정한다 —
+        // moveStates(정본)와 Player 스키마(브로드캐스트 대상) 사이의 배선
+        // (`stepPlayerMovement`의 `player.y = next.y`·`player.grounded =
+        // next.grounded`)까지 관측한다. **질문2의 핵심 단언** — `player.y`
+        // (=topY≠0)와 `player.grounded`(=true)가 **동시에** 성립해야
+        // `grounded===(y===0)` 파생이 이 케이스에서 반드시 틀린다는 것이
+        // 증명된다(파생이면 y≠0이니 false가 나와야 하는데, 서버가 보낸
+        // 진짜 값은 true다).
         const publicPlayer = seam.state.players.get(sessionId)
         expect(publicPlayer?.y).toBeCloseTo(BOX_ALPHA.topY, 6)
+        expect(publicPlayer?.grounded).toBe(true)
 
         await leaveRoom(room)
       } catch (err) {
@@ -341,6 +387,10 @@ describe('RQ-22 박스 점프 — 프로덕션 배선(GA-55): 서버가 확정�
         room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: true })
         await waitForServerTakeoff(seam, sessionId, 'RQ-22②: 이함 반영 대기')
 
+        // 질문2 — 공중 상태의 공개 스키마도 정확하다(①과 동일 근거).
+        const airbornePublic = seam.state.players.get(sessionId)
+        expect(airbornePublic?.grounded).toBe(false)
+
         room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
 
         const landed = await waitForMoveStateCondition(
@@ -358,6 +408,13 @@ describe('RQ-22 박스 점프 — 프로덕션 배선(GA-55): 서버가 확정�
         expect(landed.x).toBeCloseTo(START_X_M, 6)
         expect(landed.z).toBeCloseTo(START_Z_M, 6)
         expect(landed.x).toBeLessThan(BOX_ALPHA.minX) // 박스 근접면에 못 미친다(전제 확인)
+
+        // 질문2 — 원래 지면(y=0)으로 돌아온 이 케이스도 공개 스키마
+        // grounded가 true다(이쪽은 y===0과 grounded===true가 우연히도
+        // 일치하는 경우라 파생이어도 통과했을 것 — ①의 단언이 파생과
+        // 실제 값을 가르는 결정적 케이스였다는 대비를 이룬다).
+        const landedPublic = seam.state.players.get(sessionId)
+        expect(landedPublic?.grounded).toBe(true)
 
         await leaveRoom(room)
       } catch (err) {
