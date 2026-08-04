@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import { PRODUCTION_BOXES, BOX_ALPHA } from '@shared/sim/boxes'
+import { LADDER_ALPHA } from '@shared/sim/ladders'
 import {
   createClientPredictor,
   type AuthoritativeMoveState,
@@ -551,5 +552,94 @@ describe('RQ-62/RQ-22 REV(원장 25a-2 F3 재발 방지): 예측·재조정이 �
     expect(reconciled.grounded).toBe(true)
     expect(reconciled.y).toBeCloseTo(BOX_ALPHA.topY, 6)
     expect(reconciled.y).not.toBeCloseTo(0, 6)
+  })
+})
+
+/**
+ * RQ-21 REV(순증, team-lead 지시 — coder 변이 실험 #4 대응, 원장 25a-5
+ * 회수 근거 완결). `src/client/net/prediction.ts`가 `stepMovement`를
+ * 부르는 두 지점(`applyInput`·`reconcile`의 재생 루프) 모두 서버
+ * (`GameRoom.ts`)와 같은 `PRODUCTION_GEOMETRY`(`@shared/sim/geometry`,
+ * 사다리 포함)를 주입해야 한다 — 위 F3(벽)·RQ-22(박스) REV와 완전히 같은
+ * 종류의 결함이다. 그러지 않으면 서버는 사다리를 존중하는 세계를, 클라는
+ * 사다리 없는 세계를 시뮬레이션해 사다리 위 플레이어를 클라가 계속
+ * 낙하시키다가 서버 스냅샷이 도착할 때마다 다시 사다리 물리로 되돌아가는
+ * 발산이 생긴다(RQ-61 위반은 아니다 — 최종 값은 항상 서버가 이긴다 —
+ * 그러나 RQ-62 예측의 목적을 깨뜨린다).
+ *
+ * **왜 필요했는가(coder 변이 #4)**: `prediction.ts`의 `PRODUCTION_GEOMETRY`
+ * 주입을 제거하는 변이는 기존 F3(벽)·RQ-22(박스) 테스트 4건을 죽였지만,
+ * 사다리 전용 예측 배선 테스트가 없어 사다리 주입 누락은 이 파일의 어떤
+ * 테스트도 잡지 못했다 — 25a-5가 "주입 누락이 구조적으로 불가능해졌다"고
+ * 주장하려면 세 지오메트리 종류 각각이 실제로 클라 예측에 반영되는지
+ * 관측돼야 하는데, 사다리 쪽 그물이 비어 있었다.
+ *
+ * **좌표**: `LADDER_ALPHA`(`@shared/sim/ladders`)에서 유도한다(리터럴
+ * 금지, ADR-0010) — 이 좌표 대역(x∈[-14,-13], z∈[8,11])은 `PRODUCTION_WALLS`
+ * ·`PRODUCTION_BOXES`와 겹치지 않는다(`_workspace/RQ-21-ladder/
+ * 01_test-writer_red.md` §6 재확인). 그래서 기대값 계산에 `ladders:
+ * [LADDER_ALPHA]`만 주입해도(벽·박스는 `[]`) 실제 `PRODUCTION_GEOMETRY`
+ * (벽·박스·사다리 전부 포함)로 계산한 값과 정확히 일치한다.
+ *
+ * **시작 상태(합성, REV 2026-07-24 "상태는 값의 완전한 스냅샷" 정신)**:
+ * 사다리 XZ 중심·Y=1(볼륨 범위 [0,4] 안)에서 이미 "볼륨 안에 서 있다"로
+ * 시작한다 — 걸어서 진입하는 과정은 통합 테스트
+ * (`tests/integration/rq-21-ladder-vertical-movement.test.ts`)가 이미
+ * 검증했고, 이 파일의 관심사는 "예측이 서버와 같은 지오메트리를 쓰는가"
+ * 하나다(F3/RQ-22 REV와 동일한 범위 판단).
+ *
+ * **양성 대조(사다리가 실제로 개입했다는 증거)**: 사다리가 주입되지
+ * 않으면 이 시작 상태(`grounded:true`, 발밑에 박스 없음)는 첫 틱부터
+ * `standingHeight(x,z,boxes)=0`으로 즉시 스냅되어 `y`가 1에서 0으로
+ * 떨어진다 — 사다리가 있으면 반대로 상승한다. `y > initial.y`가 사다리
+ * 개입의 직접 증거다.
+ */
+describe('RQ-62/RQ-21 REV(coder 변이 #4 대응, 원장 25a-5 회수 근거 완결): 예측·재조정이 서버와 동일한 프로덕션 사다리를 반영한다', () => {
+  const LADDER_CENTER_X = (LADDER_ALPHA.minX + LADDER_ALPHA.maxX) / 2
+  const LADDER_CENTER_Z = (LADDER_ALPHA.minZ + LADDER_ALPHA.maxZ) / 2
+  const TICKS = 10
+  /** `LADDER_ALPHA.normalX === 1`이므로 dirX=1이 면 쪽(상승) 입력이다. */
+  const TOWARD_LADDER_FACE: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+
+  it('RQ-62/RQ-21: applyInput — 사다리 볼륨 안에서 면 쪽 입력을 유지하면 predicted가 서버와 동일하게 상승한다(서버와 같은 지오메트리)', () => {
+    const initial: MoveState = { x: LADDER_CENTER_X, y: 1, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    let expected = initial
+    let lastPredicted: MoveState = initial
+    for (let i = 0; i < TICKS; i += 1) {
+      expected = stepMovement(expected, TOWARD_LADDER_FACE, { walls: [], boxes: [], ladders: [LADDER_ALPHA] })
+      lastPredicted = predictor.applyInput(TOWARD_LADDER_FACE).predicted
+    }
+
+    expect(lastPredicted).toEqual(expected)
+    // 사다리가 실제로 개입했다는 전제 확인 — 위 docblock "양성 대조" 참고.
+    expect(lastPredicted.grounded).toBe(true)
+    expect(lastPredicted.y).toBeGreaterThan(initial.y)
+  })
+
+  it('RQ-62/RQ-21: reconcile — 미확인 입력을 재생할 때도 프로덕션 사다리를 반영해, 재조정 결과가 서버와 동일하게 상승한다', () => {
+    const initial: MoveState = { x: LADDER_CENTER_X, y: 1, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    const inputs: MoveInput[] = []
+    for (let i = 0; i < TICKS; i += 1) {
+      inputs.push(TOWARD_LADDER_FACE)
+      predictor.applyInput(TOWARD_LADDER_FACE)
+    }
+
+    // 서버가 아직 아무 입력도 확인하지 못했다고 가정한다 — 버퍼의 입력
+    // 전부가 재생 대상이다.
+    const snapshot: AuthoritativeMoveState = { ...initial, lastProcessedInputSeq: 0 }
+    const reconciled = predictor.reconcile(snapshot)
+
+    let expected = initial
+    for (const input of inputs) {
+      expected = stepMovement(expected, input, { walls: [], boxes: [], ladders: [LADDER_ALPHA] })
+    }
+
+    expect(reconciled).toEqual(expected)
+    expect(reconciled.grounded).toBe(true)
+    expect(reconciled.y).toBeGreaterThan(initial.y)
   })
 })
