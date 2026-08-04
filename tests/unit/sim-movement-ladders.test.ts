@@ -549,3 +549,129 @@ describe('RQ-21 사다리 이동 — 순수 틱 함수 주입 계약 (GA-54 뒷�
     })
   })
 })
+
+/**
+ * F1 재현 — 사다리 꼭대기 이탈이 RQ-18을 우회한다(독립 평가 FAIL,
+ * `_workspace/RQ-21-ladder/03_evaluator_report.md` F1 절, ADR-0011 결정 1
+ * "결함 수정 라운드의 재현 테스트" — `src/shared` 결함 재현은 test-writer
+ * 전유물).
+ *
+ * **결함(평가자 실측 그대로 재현)**: 발판 없는 프로덕션 사다리(`LADDER_ALPHA`,
+ * `maxY=4`)에서 상승을 유지해 꼭대기를 넘기면, 현재 `stepMovement`는
+ * 사다리 이탈 폴백에서 원래 `state`(꼭대기 넘기 **직전**, 여전히 사다리
+ * 볼륨 안) 기준으로 `stepGrounded`를 호출한다 — `standingHeight`가 0(발판
+ * 없음)이라 **그 자리에서 즉시 `y=0`으로 스냅**된다(`grounded` 유지 `true`,
+ * 중간 낙하 구간 없음). `GameRoom.trackFallDamage`는 `next.grounded ===
+ * false`인 동안에만 `fallPeakY`를 갱신하므로(`GameRoom.ts:857-862`), 이
+ * 스냅은 착지 전이 자체가 아니라서 낙하 데미지가 전혀 적용되지 않는다.
+ * 그리고 스냅된 위치(x는 그 틱의 접지 이동으로 0.2m 전진, y=0)가 여전히
+ * 사다리 XZ·Y 범위 안이라 **다음 틱에 다시 사다리에 붙잡혀 재상승** —
+ * 4↔0 무한 순환(요요)이 된다(평가자 PROBE_A/PROBE_E 실측과 정확히 일치,
+ * 아래 각 `it()`이 그 재현이다).
+ *
+ * **RQ-21 v1.4 마지막 문장("볼륨을 벗어나면 즉시 중력이 복귀한다")이 이
+ * 경로에서 거짓이다** — 실제로 복귀하는 것은 중력(자유낙하)이 아니라
+ * 즉각적인 접지 스냅이다.
+ *
+ * **이 파일이 고정하는 것(관측 가능한 행동만, 구현 자유)**:
+ * 1. 꼭대기를 넘기는 바로 그 틱의 결과는 `grounded: true`(접지 스냅)가
+ *    아니라 `grounded: false`(공중)여야 한다 — "즉시 중력이 복귀한다"의
+ *    직접 번역.
+ * 2. 그 전이 이후 궤적에 순간이동(한 틱 사이 y가 사다리 범위의 상당 부분을
+ *    건너뛰는 불연속)이 없어야 한다 — 물리적으로 연속적인 낙하여야 한다.
+ * 3. (양성 대조군 — 과잉수정 방지) 경계에 닿지 않는 등반·하강·정지 중에는
+ *    여전히 `grounded: true`가 유지돼야 한다 — 기존 "RQ-18 상호작용" 절의
+ *    명제가 이 수정으로 깨지지 않는지 확인한다.
+ *
+ * **고정하지 않는 것(coder 구현 자유)**: 정확한 이탈 시점의 `y`·`vy` 값,
+ * 정점 높이, 착지까지 걸리는 정확한 틱 수, 착지 이후 같은 입력을 계속
+ * 유지했을 때 사다리에 다시 붙잡혀 재등반하는지 여부(그것은 "요요 버그"가
+ * 아니라 플레이어가 계속 오르려는 정상적 반복이다 — 각 이탈이 실제 낙하와
+ * 데미지를 동반하는 한 문제가 아니다). 데미지 적용 자체(HP 감소)는 통합
+ * 레벨(`tests/integration/rq-21-ladder-vertical-movement.test.ts`)이 맡는다
+ * — `trackFallDamage`가 `GameRoom`에 있어 이 파일(순수 함수)에서는 관측할
+ * 수 없다.
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실 타이머
+ * 없음.
+ */
+describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요요)이 아니라 공중 전이여야 한다', () => {
+  /** 평가자 재현 값과 동일(`LADDER_ALPHA.maxY - 0.15` = 3.85, 상수에서
+   * 유도 — ADR-0010, 리터럴 금지) — 몇 틱 만에 꼭대기를 넘겨 재현 창을
+   * 짧게 유지한다. */
+  const EXIT_TEST_START_Y = LADDER_ALPHA.maxY - 0.15
+  /** 이탈 이후 궤적을 관찰하는 틱 수 — 평가자 실측(자연 정점~착지)보다
+   * 넉넉한 여유(위 docblock 계산 근거: 상승 잔여+낙하 도합 약 24틱 예상,
+   * 2배 이상 여유). */
+  const POST_EXIT_OBSERVE_TICKS = 50
+  /** 한 틱 사이 "물리적으로 그럴듯한" 최대 변위(m) — 사다리 전체 수직
+   * 범위의 절반. 결함의 순간이동(≈3.95m, 범위의 거의 전체)과 정상 낙하
+   * 궤적(중력 가속 하 한 틱 변위, 이 높이대에서는 이 값보다 훨씬 작다)을
+   * 명확히 가르는 문턱이다 — 정확한 중력 상수 없이도(그 상수는
+   * `movement.ts` 비공개 구현값이라 이 파일이 참조할 수 없다) 리터럴을
+   * 새로 발명하지 않고 `LADDER_ALPHA`에서 유도한다(ADR-0010). */
+  const MAX_PLAUSIBLE_TICK_DELTA_M = (LADDER_ALPHA.maxY - LADDER_ALPHA.minY) / 2
+
+  function climbToExit(): MoveState[] {
+    const start = createLadderState({ y: EXIT_TEST_START_Y })
+    const geometry = geometryWithLadders([LADDER_ALPHA])
+    const trajectory: MoveState[] = []
+    let state: MoveState = start
+    for (let i = 0; i < POST_EXIT_OBSERVE_TICKS; i += 1) {
+      state = stepMovement(state, TOWARD_FACE, geometry)
+      trajectory.push(state)
+    }
+    return trajectory
+  }
+
+  it('꼭대기를 넘기는 틱은 grounded:false(공중)를 반환한다 — grounded:true로 접지 스냅되지 않는다', () => {
+    const trajectory = climbToExit()
+    // 전제 확인 — 실제로 꼭대기(maxY)를 넘어서는 지점이 있었다(그 전까지는
+    // 정상 등반이라 이 명제와 무관하다).
+    const exitIndex = trajectory.findIndex((s) => s.y > LADDER_ALPHA.maxY)
+    expect(exitIndex).toBeGreaterThanOrEqual(0)
+
+    const atExit = trajectory[exitIndex]!
+    // 결함 재현 — 현재 구현은 이 틱에서 y=0, grounded=true로 스냅된다.
+    // 고쳐지면 grounded:false(공중)여야 한다.
+    expect(atExit.grounded).toBe(false)
+  })
+
+  it('이탈 이후 궤적에 순간이동(한 틱 사이 사다리 범위 절반을 넘는 불연속 낙하)이 없다 — 물리적으로 연속적인 낙하다', () => {
+    const trajectory = climbToExit()
+    const exitIndex = trajectory.findIndex((s) => s.y > LADDER_ALPHA.maxY)
+    expect(exitIndex).toBeGreaterThanOrEqual(0)
+
+    for (let i = exitIndex + 1; i < trajectory.length; i += 1) {
+      const delta = Math.abs(trajectory[i]!.y - trajectory[i - 1]!.y)
+      expect(delta).toBeLessThan(MAX_PLAUSIBLE_TICK_DELTA_M)
+    }
+  })
+
+  it('궤적은 결국 접지 상태로 안정된다(무한 공중이 아니다) — 착지 후 y는 지지 높이(발판 없음, 0)와 같다', () => {
+    const trajectory = climbToExit()
+    const settled = trajectory[trajectory.length - 1]!
+    expect(settled.grounded).toBe(true)
+    expect(settled.y).toBeCloseTo(0, 6)
+  })
+
+  it('양성 대조군(과잉수정 방지) — 경계에 닿지 않는 등반·하강·정지 중에는 여전히 grounded:true가 유지된다(기존 "RQ-18 상호작용" 명제 재확인)', () => {
+    const geometry = geometryWithLadders([LADDER_ALPHA])
+    let state = createLadderState({ y: EXIT_TEST_START_Y - 1 }) // 꼭대기에서 충분히 먼 지점
+    const observed: boolean[] = []
+    for (let i = 0; i < 5; i += 1) {
+      state = stepMovement(state, TOWARD_FACE, geometry) // 상승, 경계 접근 안 함
+      observed.push(state.grounded)
+    }
+    for (let i = 0; i < 5; i += 1) {
+      state = stepMovement(state, AWAY_FROM_FACE, geometry) // 하강
+      observed.push(state.grounded)
+    }
+    for (let i = 0; i < 5; i += 1) {
+      state = stepMovement(state, NO_INPUT, geometry) // 정지
+      observed.push(state.grounded)
+    }
+    expect(observed.every((g) => g === true)).toBe(true)
+    expect(observed.length).toBe(15) // 전제 확인
+  })
+})

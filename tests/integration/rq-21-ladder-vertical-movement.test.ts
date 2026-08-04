@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
-import { MOVEMENT, NET } from '@shared/constants'
+import { FALL_DAMAGE, MOVEMENT, NET, PLAYER } from '@shared/constants'
 import { LADDER_ALPHA } from '@shared/sim/ladders'
 
 /**
@@ -153,12 +153,17 @@ interface MoveState {
 /** 화이트박스 접근 대상 계약 — `moveStates`는 RQ-20 때부터 있던 기존
  * private map(신규 아님). `state.players`(공개 스키마)의 `grounded`는
  * RQ-22 라운드부터 있다(둘 다 `rq-22-box-jump.test.ts` `BoxJumpSeam`과
- * 동일 계약, 새로 발명하지 않는다). */
+ * 동일 계약, 새로 발명하지 않는다). `hp`는 RQ-14 때부터 있던 기존 공개
+ * 스키마 필드다(`rq-18-fall-damage.test.ts`의 `PlayerSnapshot`과 동일
+ * 계약). `firedSinceSpawn`은 RQ-16 스폰 보호 해제용 기존 private
+ * map(`tests/support/safe-zone.ts`의 `SafeZoneEscapeSeam`과 동일 필드,
+ * 신규 계약 아님) — F1 재현(아래)이 필요로 한다. */
 interface LadderSeam {
   moveStates: Map<string, MoveState>
+  firedSinceSpawn: Map<string, boolean>
   state: {
     players: {
-      get: (sessionId: string) => { x?: number; y?: number; z?: number; grounded?: boolean } | undefined
+      get: (sessionId: string) => { x?: number; y?: number; z?: number; grounded?: boolean; hp?: number } | undefined
     }
   }
 }
@@ -241,6 +246,40 @@ function sampleMoveStateOverWindow(seam: LadderSeam, sessionId: string, windowMs
       clearInterval(interval)
       resolve(samples)
     }, windowMs)
+  })
+}
+
+/** 공개 스키마(`state.players`)의 `hp`가 `threshold` 미만이 될 때까지
+ * 폴링한다 — `waitForMoveStateCondition`과 동일한 폴링 패턴(F1 재현이
+ * 필요로 하는 관측 대상만 다르다, 정본 `moveStates` 대신 서버가 실제로
+ * 브로드캐스트하는 공개 `hp`). */
+function waitForPublicHpBelow(
+  seam: LadderSeam,
+  sessionId: string,
+  threshold: number,
+  label: string,
+  timeoutMs: number,
+): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const tryResolve = (): boolean => {
+      const hp = seam.state.players.get(sessionId)?.hp
+      if (typeof hp === 'number' && hp < threshold) {
+        resolve(hp)
+        return true
+      }
+      return false
+    }
+    if (tryResolve()) return
+    const interval = setInterval(() => {
+      if (tryResolve()) {
+        clearInterval(interval)
+        clearTimeout(timeout)
+      }
+    }, SERVER_POLL_INTERVAL_MS)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`[timeout ${timeoutMs}ms] ${label}`))
+    }, timeoutMs)
   })
 }
 
@@ -414,5 +453,120 @@ describe('RQ-21 사다리 이동 — 프로덕션 배선(GA-54): 서버가 확�
       }
     },
     15_000,
+  )
+})
+
+/**
+ * F1 재현 — 사다리 꼭대기 이탈이 RQ-18 낙하 데미지를 우회한다(독립 평가
+ * FAIL, `_workspace/RQ-21-ladder/03_evaluator_report.md` F1 절). ADR-0011
+ * 결정 1 "결함 수정 라운드의 재현 테스트" — `trackFallDamage`가
+ * `GameRoom`(서버 판정 로직)에 있어 이 상호작용은 통합 레벨에서만
+ * 관측된다(순수 함수 재현은 `tests/unit/sim-movement-ladders.test.ts`의
+ * "F1 재현" describe가 맡는다 — 그쪽은 궤적의 연속성을, 이 파일은 서버가
+ * 확정하는 HP를 각각 고정한다).
+ *
+ * **재현 값(평가자 실측과 동일, 상수에서 유도 — ADR-0010 리터럴 금지)**:
+ * `LADDER_ALPHA.maxY - 0.15`(=3.85m) — 발판 없는 프로덕션 사다리 꼭대기
+ * 근처에서 면 쪽 입력을 유지하면 몇 틱 만에 꼭대기를 넘긴다. 넘긴 지점의
+ * 낙차는 최소 `LADDER_ALPHA.maxY - 0`(발판 없어 지지 높이 0) = 4m로,
+ * `FALL_DAMAGE.SAFE_HEIGHT_M`(3m)를 넘으므로 RQ-18 데미지가 적용돼야
+ * 한다.
+ *
+ * **RQ-16만 해제하고 위치는 옮기지 않는다**: `tests/support/safe-zone.ts`의
+ * `escapeSafeZone`(방사-방향 텔레포트)을 쓰지 않는다 — 그 헬퍼는 플레이어를
+ * 자기 스폰 지점 기준으로 밀어내므로 사다리 위치와 무관해진다. 대신
+ * `firedSinceSpawn`만 화이트박스로 참으로 만든다. **위치를 옮기지 않아도
+ * 안전한 이유**: 사다리 좌표(x∈[-14,-13], z∈[8,11])는 15개 스폰 지점
+ * 중 어느 것의 Safe Zone(반경 4m)에도 들지 않는다(`_workspace/RQ-21-ladder
+ * /01_test-writer_red.md` §6 좌표 전수 확인 — 가장 가까운 스폰(인덱스6,
+ * `{x:-18,z:13}`)까지의 거리도 ≈5.7m로 반경 4m 밖).
+ *
+ * **결함 아래에서 왜 결정론적으로 타임아웃되는가**: `GameRoom
+ * .trackFallDamage`는 `next.grounded === false`인 동안에만 `fallPeakY`를
+ * 갱신하고 착지 전이(`previous.grounded === false && next.grounded ===
+ * true`)에서만 데미지를 적용한다(`if (previous.grounded) return`이 그 외
+ * 모든 틱에서 조기 반환). 현재 `ladderOutcome`은 이탈 시에도 항상
+ * `grounded: true`를 반환하므로 착지 전이 자체가 결코 발생하지 않는다 —
+ * 아무리 오래 기다려도(순수 함수 레벨의 요요를 그대로 반영해) HP가 줄지
+ * 않는다. 이것이 아래 대기가 무기한 보류(타임아웃)되는 정확한 이유다
+ * (rq-18-fall-damage.test.ts의 F1 절 — "버니합 유지 중 첫 착지 데미지
+ * 반영 대기"가 같은 정신으로 무기한 보류를 재현한 선례).
+ *
+ * **고정하지 않는 것**: 정확한 데미지 값(정점 높이가 구현에 따라 4m를
+ * 살짝 넘을 수 있어 정확한 숫자는 구현 자유) — 대신 `LADDER_ALPHA.maxY`
+ * 자체가 이미 안전 높이를 넘는다는 사실에서 유도한 **하한**만 요구한다
+ * (실제 정점은 항상 `maxY` 이상이므로 이 하한은 구현이 무엇이든 성립해야
+ * 한다).
+ *
+ * **결정론 메모**: 실 WebSocket(ADR-0008 §5 허용 예외, 기존 RQ-18/21/22/30/92
+ * 통합 테스트와 동일). 모든 대기에 timeoutMs 상한.
+ */
+describe('F1 재현 — 발판 없는 사다리 꼭대기 이탈이 RQ-18 낙하 데미지를 적용시킨다(서버 확정 HP)', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  /** 재현 시작 높이 — 평가자 실측과 동일한 값을 상수에서 유도(§상단
+   * docblock). */
+  const EXIT_TEST_START_Y = LADDER_ALPHA.maxY - 0.15
+  const LADDER_CENTER_X = (LADDER_ALPHA.minX + LADDER_ALPHA.maxX) / 2
+  /** 낙하 데미지 관측 상한 — 결함 아래에서는 무기한 보류(요요)되므로
+   * 타임아웃 자체가 결함 재현이다. 고쳐지면 낙하(추정 1초 미만)가 이 안에서
+   * 충분히 확정된다. */
+  const FALL_DAMAGE_OBSERVE_TIMEOUT_MS = 10_000
+  /** 최소 기대 데미지(하한, 상수에서 유도) — 실제 정점은 `maxY`보다 약간
+   * 높을 수 있으나(잔여 상승 관성) 그보다 낮을 수는 없으므로, 이 하한은
+   * 구현이 무엇이든 항상 성립해야 한다. */
+  const MIN_EXPECTED_DAMAGE = (LADDER_ALPHA.maxY - FALL_DAMAGE.SAFE_HEIGHT_M) * FALL_DAMAGE.DAMAGE_PER_METER
+
+  it(
+    '꼭대기(발판 없음)를 넘기면 낙하 데미지가 적용돼 HP가 최소 (maxY-SAFE_HEIGHT_M)×DAMAGE_PER_METER만큼 줄어든다',
+    async () => {
+      const room = await joinGame(newClient(server))
+      const seam = getServerRoom(room)
+      const sessionId = room.sessionId
+
+      try {
+        const baselinePublic = seam.state.players.get(sessionId)
+        expect(baselinePublic?.hp).toBe(PLAYER.MAX_HP)
+
+        // RQ-16 스폰 보호만 해제한다(위치는 옮기지 않는다 — 위 docblock 참고).
+        seam.firedSinceSpawn.set(sessionId, true)
+
+        placePlayer(seam, sessionId, { x: LADDER_CENTER_X, y: EXIT_TEST_START_Y, z: START_Z_M })
+        await waitForMoveStateCondition(
+          seam,
+          sessionId,
+          (s) => Math.abs(s.y - EXIT_TEST_START_Y) < 1e-6 && s.grounded,
+          'RQ-21/F1: 화이트박스 순간이동 반영 대기',
+          BASELINE_TIMEOUT_MS,
+        )
+
+        room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
+
+        const finalHp = await waitForPublicHpBelow(
+          seam,
+          sessionId,
+          PLAYER.MAX_HP,
+          'RQ-21/F1: 꼭대기 이탈 낙하 데미지 반영 대기(결함 아래에서는 요요로 무기한 보류)',
+          FALL_DAMAGE_OBSERVE_TIMEOUT_MS,
+        )
+
+        expect(finalHp).toBeLessThan(PLAYER.MAX_HP)
+        expect(finalHp).toBeLessThanOrEqual(PLAYER.MAX_HP - MIN_EXPECTED_DAMAGE)
+
+        await leaveRoom(room)
+      } catch (err) {
+        await leaveRoom(room).catch(() => undefined)
+        throw err
+      }
+    },
+    20_000,
   )
 })
