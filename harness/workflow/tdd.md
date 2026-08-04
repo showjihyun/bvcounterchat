@@ -125,12 +125,22 @@ coder의 대화 내용·설명은 전달하지 않는다 (평가자는 파일과
 격리된 워크트리**에서 수행한다. 메인 워킹트리에서 하지 않는다.
 
 ```bash
-WT=/d/workspace/wt-<라운드>                        # 워크트리 경로 — 한 곳에서만 정의한다
+WT=/d/workspace/wt-<에이전트이름>-<라운드>          # ① 경로에 **자기 이름**을 넣는다(아래 소유권 절)
 git worktree add --detach "$WT" HEAD               # node_modules는 정션/심링크로 공유
 # …실험…
-cmd //c rmdir "$(cygpath -w "$WT/node_modules")"   # ① 정션 링크만 끊는다
-git worktree remove --force "$WT"                  # ② 그 다음에 워크트리를 지운다
+git worktree list                                  # ② 지우기 전에 그 경로가 **내 것인지** 눈으로 확인
+cmd //c rmdir "$(cygpath -w "$WT/node_modules")"   # ③ 정션 링크만 끊는다
+git worktree remove --force "$WT"                  # ④ 그 다음에 워크트리를 지운다
 ```
+
+> ⚠️ **자기가 만든 워크트리만 지운다 — 순서를 지켜도 대상이 틀리면 그대로 사고다.**
+> 여러 세션이 같은 저장소를 공유하므로 `git worktree list`에는 **남의 워크트리도
+> 보인다**. 2026-08-04(RQ-32 라운드) 한 세션이 목록에서 본 낯선 경로를
+> "하네스가 내 경로를 별칭 처리한 것"으로 오판하고 지웠는데, 그것은 **다른
+> 세션의 워크트리**였고 그 안의 `node_modules` 정션이 메인 트리를 가리키고
+> 있었다 — 메인이 비었다(`npm ci`로 복구, 추적 파일 무손상).
+> **`git worktree remove`는 자기가 `add`한 경로에만 쓴다.** 목록에 모르는
+> 경로가 있으면 **지우지 말고 두어라** — 남이 실험 중일 수 있다.
 
 > `cygpath -w`가 필요한 이유: `cmd.exe`의 빌트인 `rmdir`은 `/`를 **스위치
 > 접두사**로 파싱해 슬래시 경로를 주면 `매개 변수가 틀립니다`로 **exit 1**이
