@@ -69,17 +69,37 @@ import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../sup
  * `rq-90-spread-seed-determinism.test.ts`의 `teleportPlayer`가 "틱 경과를
  * 기다릴 필요가 없다"고 이미 명시했다).
  *
- * **공중 상태 주입(화이트박스, y·grounded만 조작 — 위치는 절대 바꾸지
- * 않는다)**: 공중 tier를 시험할 때마다 `seam.moveStates.set(shooterId,
- * { ...현재 x/y/z, grounded: false })`를 **fire 직전 동기 호출**로 매번
- * 다시 세팅한다(한 번 세팅하고 유지하지 않는다) — 자연스러운 점프
- * 물리(`stepAirborne`)가 다음 30Hz 틱(≤33ms)마다 `moveStates`를 다시
- * 계산해 덮어쓰므로(예: `vy:0`은 정점 재해석이라 다음 틱에 즉시 재착지할
- * 수 있다, `@shared/sim/movement` `airborneOutcome` "발밑 오프셋"
- * 코멘트), fire 직전 매번 재주입하면 그 물리 재계산과 경쟁할 필요가
- * 없다(y도 탈출 후 값(0)을 그대로 쓴다, "높이 자체가 진짜 공중이어야
- * 한다"는 물리적 사실성은 이 파일의 검증 대상이 아니다 — `MoveState`는
- * "값의 완전한 스냅샷"이라는 이 저장소의 기존 정신을 그대로 따른다).
+ * **공중 상태 주입(화이트박스) — REV3(§14 flaky 수정, team-lead 지시)**:
+ * 최초 버전은 `y`를 탈출 후 값(0)에 그대로 두고 `grounded:false`·`vy:0`만
+ * 주입했다 — **물리적으로 자기모순**이었다(team-lead가 코드로 확정:
+ * `@shared/sim/movement`에서 `vy===0`은 항상 "궤적 정점"으로 역산되는데,
+ * `y=0`에서의 정점 재해석은 `tookOffFrom`이 음수가 되어 **바로 다음
+ * 틱(≤33ms)에 자동 재착지**한다). 화이트박스 쓰기와 `'fire'` 메시지의
+ * 네트워크 왕복 사이에 서버 틱이 단 한 번이라도 끼어들면 `grounded`가
+ * 이미 `true`로 되돌아간 뒤라 "정지" tier로 오판정됐다 — `npm run check`
+ * 전체 스위트(부하 있음)에서만 재현되고 이 파일 단독 재실행(부하 없음)
+ * 에서는 재현되지 않는 회귀로 실측됐다(격리 5/5 통과 vs 전체 2/2 실패,
+ * `_workspace/RQ-90-spread/01_test-writer_red.md` §14.4).
+ *
+ * **수정**: `y`를 `AIRBORNE_INJECT_Y_M`(고정 상수, 아래)만큼 살짝
+ * 띄운다 — `vy:0`이 여전히 "정점"으로 재해석되지만, 이번엔 정점
+ * **자체가 지면 위**라 재해석된 하강 궤적이 즉시 지면을 뚫지 않는다.
+ * 정점 근방은 속도가 0에 가까워(포물선의 곡률) 첫 몇 틱의 높이 변화가
+ * 아주 작다 — 실측(스크래치, 커밋 안 함): `y=1`에서 tick0 드리프트
+ * ≈0.011m, tick1 ≈0.044m, tick2 ≈0.1m, **300ms(9틱) 동안 재착지 없음**.
+ * 원점이 0.5~1m 높아지므로 **사격 원점 기하가 바뀐다** — 오프라인
+ * 오라클을 그 새 원점으로 다시 계산해야 한다(team-lead 지시대로): 아래
+ * `airborneOrigin`/`airborneAim`이 그 재계산이고, (4)(5)는 `aim` 대신
+ * `airborneAim`을 쏜다. **그런데도 기존 `transitionSeed12`/`23`을 그대로
+ * 재사용할 수 있다** — 원점이 겨우 0.5~1m 높아진 정도로는 이미 탐색해
+ * 둔 두 시드의 분류(공중 콘에서 'miss')가 뒤집히지 않음을 스크래치로
+ * 직접 검증했다(거리 변화 ≤0.13m, 두 시드 모두 재분류 없음). **다만
+ * "겨우 안 바뀐다"에 기대지 않는다** — 아래 (4) 직전에 이 사실 자체를
+ * 실행 시점에 재확인하는 가드를 둔다(전제가 깨지면 즉시·명확하게 실패
+ * 하도록, `F1_SEED_SEQUENCE` 가드와 동일 관례). `MoveState`는 "값의
+ * 완전한 스냅샷"이라는 이 저장소의 기존 정신은 그대로 따른다 — 물리적
+ * 사실성(진짜 점프인가)은 여전히 검증 대상이 아니고, 이번 수정의 목적은
+ * 오직 "재착지 경합 제거"다.
  *
  * **우선순위(확정 — `sim-combat.test.ts` 상단 REV와 동일, team-lead
  * 회신·원장 25a-10 REV, v1.9 판정표에도 유지)**: `grounded===false`면
@@ -151,6 +171,18 @@ const SHOT_GAP_MS = 400
 const DEGRADATION_CONE_MULTIPLIER = 3
 /** 오프라인 오라클 탐색 상한 — 순수 결정론 계산이라 느리지 않다. */
 const SEARCH_LIMIT = 5_000
+
+/** 공중 상태 주입 시 `y`를 이만큼 띄운다 — 파일 상단 "공중 상태 주입
+ * REV3" 절 참고. `vy:0`이 "정점"으로 재해석되는 것 자체는 막지 않지만,
+ * 정점이 지면 위(`y=0` 아님)에 있으면 재해석된 하강 궤적이 즉시 지면을
+ * 뚫지 않는다 — 재착지까지 300ms(9틱, 스크래치 실측) 여유가 생긴다.
+ * 원점이 이만큼 높아져 사격 기하가 바뀌므로 `airborneOrigin`/
+ * `airborneAim`을 별도로 다시 계산한다(아래). 0.5m로도 200ms(6틱)
+ * 여유가 나오지만(스크래치 실측), 부하가 큰 `npm run check` 전체
+ * 스위트에서의 관측된 실패가 "틱 1개 정도"의 지연이었다는 정황에 여유를
+ * 더 두기 위해 1m를 택했다 — 어느 쪽도 시드 재분류를 일으키지 않음을
+ * 아래 가드로 확인한다. */
+const AIRBORNE_INJECT_Y_M = 1
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -353,9 +385,11 @@ function getServerRoom(room: Room): DegradationTestSeam {
  * 그로 인한 물리 이동도 전혀 발생하지 않는다. **fire 직전에 매번 호출해야
  * 한다**(호출과 `roomA.send('fire', ...)` 사이에 `await`/`sleep`을 두지
  * 않는다 — JS 단일 스레드라 그 사이에 서버 틱이 끼어들 수 없다, 공중 상태
- * 주입과 동일한 "fire 직전 동기 재주입" 원칙). `position`은 항상
- * `escapedA`(고정 좌표)를 넘긴다 — 조준 기하·오프라인 오라클이 그 좌표를
- * 전제하기 때문이다. */
+ * 주입과 동일한 "fire 직전 동기 재주입" 원칙). `position`은 호출자가 넘긴
+ * 값을 그대로 쓴다 — 접지 tier((1)(2)(3))는 `escapedA`(고정 좌표, y=0),
+ * 공중 tier((4)(5))는 `airborneShooterFoot`(y가 `AIRBORNE_INJECT_Y_M`만큼
+ * 높다 — "공중 상태 주입 REV3" 절 참고)를 넘긴다. 어느 쪽이든 조준
+ * 기하·오프라인 오라클은 **그 좌표와 일치해야 한다**(호출부가 보장). */
 function setShooterState(
   seam: DegradationTestSeam,
   sessionId: string,
@@ -421,6 +455,31 @@ describe('RQ-90 v1.8/v1.9: 사격 시점 dirX·dirZ·mode·grounded에 따라 �
       // '빗나감'이라 서로 구분되지 않는다).
       const transitionSeed23 = findSeedForBuckets(origin, aim, targetFoot, [movingCone, airborneCone], ['body', 'miss'], SEARCH_LIMIT)
 
+      // 공중 tier((4)(5))는 원점을 AIRBORNE_INJECT_Y_M만큼 띄운다(파일
+      // 상단 "공중 상태 주입 REV3" 절) — 원점이 바뀌므로 조준 방향·오라클을
+      // 이 새 원점 기준으로 다시 계산한다(team-lead 지시). 시드는 재사용
+      // 하되(transitionSeed12/23), 그 재사용이 여전히 유효한지는 아래
+      // 가드가 실행 시점에 재확인한다.
+      const airborneShooterFoot = { x: escapedA.x, y: AIRBORNE_INJECT_Y_M, z: escapedA.z }
+      const airborneOrigin = eyeOrigin(airborneShooterFoot, DEFAULT_HITBOX.eyeHeightM)
+      const { aim: airborneAim } = aimAtBodyWithDistance(airborneShooterFoot, escapedB)
+
+      // 가드 — transitionSeed12/23이 이 새 원점·공중 콘에서도 여전히
+      // 'miss'로 분류되는지 실행 시점에 재확인한다(스크래치 사전 검증은
+      // 이미 통과했으나, 스폰 좌표·오프셋이 바뀌면 이 전제가 조용히
+      // 깨질 수 있다 — `F1_SEED_SEQUENCE` 가드와 동일 관례). 깨지면
+      // AIRBORNE_INJECT_Y_M을 줄이거나(원점 이동 축소) 시드를 다시
+      // 탐색해야 한다.
+      const seed12AtAirborne = classifySpreadSeed(airborneOrigin, airborneAim, targetFoot, airborneCone, transitionSeed12)
+      const seed23AtAirborne = classifySpreadSeed(airborneOrigin, airborneAim, targetFoot, airborneCone, transitionSeed23)
+      if (seed12AtAirborne !== 'miss' || seed23AtAirborne !== 'miss') {
+        throw new Error(
+          `RQ-90 v1.9 저하 테스트 전제 위반 — AIRBORNE_INJECT_Y_M(${AIRBORNE_INJECT_Y_M}m)만큼 원점을 띄운 뒤에도 ` +
+            `transitionSeed12/23이 공중 콘에서 'miss'여야 하는데 각각 '${seed12AtAirborne}'/'${seed23AtAirborne}'였다 ` +
+            `(스폰 기하가 스크래치 검증 때와 달라졌을 수 있다 — AIRBORNE_INJECT_Y_M 축소 또는 시드 재탐색 필요).`,
+        )
+      }
+
       seam.spreadTuningOverride = { coneRadiusRad: baseCone, movingMultiplier: 2, airborneMultiplier: 4 }
 
       // --- (1) 정지·앉기 tier — v1.9 신설 경로: 수평 입력 없음(dirX=dirZ=0)
@@ -462,26 +521,31 @@ describe('RQ-90 v1.8/v1.9: 사격 시점 dirX·dirZ·mode·grounded에 따라 �
       await sleep(SHOT_GAP_MS)
 
       // --- (4) 공중 tier — 이동 입력(dirX=1,walk)은 그대로 두고 grounded만
-      // false로 바꾼다. transitionSeed23은 오프라인 오라클상 공중
-      // 콘(기본×4)에서 반드시 빗나간다 — 이동<공중 증명.
+      // false로 바꾼다(위치는 AIRBORNE_INJECT_Y_M만큼 띄운다 — "공중 상태
+      // 주입 REV3" 절). transitionSeed23은 새 원점·공중 콘(기본×4)에서
+      // 반드시 빗나간다(위 가드로 재확인됨) — 이동<공중 증명. 조준
+      // 방향도 새 원점 기준(`airborneAim`)으로 쏜다 — 이전 원점(`aim`)을
+      // 그대로 쓰면 원점만 바뀌고 조준은 안 바뀌어 애초에 다른 곳을
+      // 겨누게 된다.
       seam.forcedSpreadSeed = transitionSeed23
-      setShooterState(seam, roomA.sessionId, escapedA, 1, 0, 'walk', false)
-      roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
+      setShooterState(seam, roomA.sessionId, airborneShooterFoot, 1, 0, 'walk', false)
+      roomA.send('fire', { dirX: airborneAim.x, dirY: airborneAim.y, dirZ: airborneAim.z })
       await sleep(SHOT_GAP_MS)
       const after4 = readPlayer(roomB, roomB.sessionId)
       expect(after4?.hp).toBe(hp) // 변화 없음 — 오프라인 오라클('miss')과 일치
 
       // --- (5) 우선순위(확정, team-lead 회신) — 정지 조합(dirX=dirZ=0,
       // mode='run', (1)과 정확히 동일)으로 되돌리되 grounded만 false로
-      // 유지한다. transitionSeed12는 (1)에서 이 정지 조합+접지 기본 콘에
-      // 명중했던 바로 그 시드다 — grounded가 dirX·dirZ·mode 전부를
-      // 이긴다면(확정된 해석) 공중 콘이 적용돼 오프라인 오라클('miss',
-      // 위 탐색 조건 그대로)대로 빗나가야 한다. 이 단언이 실패하면(다시
+      // 유지한다(위치는 (4)와 동일하게 AIRBORNE_INJECT_Y_M만큼 띄운다).
+      // transitionSeed12는 (1)에서 이 정지 조합+접지 기본 콘에 명중했던
+      // 바로 그 시드다 — grounded가 dirX·dirZ·mode 전부를 이긴다면(확정된
+      // 해석) 공중 콘이 적용돼 새 원점 기준 오프라인 오라클('miss', 위
+      // 가드로 재확인됨)대로 빗나가야 한다. 이 단언이 실패하면(다시
       // 명중하면) 서버 구현이 확정된 우선순위와 반대로 배선됐다는 뜻이다
       // — 우선순위 확정을 실 서버 배선에서 직접 시험(회귀 그물)한다.
       seam.forcedSpreadSeed = transitionSeed12
-      setShooterState(seam, roomA.sessionId, escapedA, 0, 0, 'run', false)
-      roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
+      setShooterState(seam, roomA.sessionId, airborneShooterFoot, 0, 0, 'run', false)
+      roomA.send('fire', { dirX: airborneAim.x, dirY: airborneAim.y, dirZ: airborneAim.z })
       await sleep(SHOT_GAP_MS)
       const after5 = readPlayer(roomB, roomB.sessionId)
       expect(after5?.hp).toBe(hp) // 변화 없음 — grounded가 이긴다면 공중 콘 적용, 오라클('miss')과 일치
