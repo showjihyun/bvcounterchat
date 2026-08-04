@@ -101,6 +101,27 @@ import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../sup
  * 사실성(진짜 점프인가)은 여전히 검증 대상이 아니고, 이번 수정의 목적은
  * 오직 "재착지 경합 제거"다.
  *
+ * **REV4(§16, evaluator D-1·D-2 지적, team-lead 지시) — "오라클을 새
+ * 원점으로 다시 계산했다"가 사실이 아니었다**: 위 REV3가 그렇게
+ * 서술했지만, `aimAtBodyWithDistance`의 예전 시그니처가 `shooterFoot`을
+ * `{x, z}`(y 없음)로만 받아 `dy`를 사수 `y`와 **무관한 상수**로 계산했다
+ * — `airborneAim`이 `aim`과 **비트 단위로 동일**했다(evaluator가 실행값
+ * `aim`/`airborneAim`을 나란히 찍어 재현). **D-1 수정**: 시그니처를
+ * `{x,y,z}`로 넓히고 `dy = (targetFoot.y + bodyCenterM()) -
+ * (shooterFoot.y + eyeHeightM)`로 바꿔 사수의 실제 높이가 조준에
+ * 반영되게 했다 — 접지 시나리오(`y=0` 양쪽)는 대수적으로 이전 상수로
+ * 그대로 환원되고, 실행값으로도 비트 동일함을 확인했다(§16.2).
+ *
+ * **D-2**: 위 "미스 유지" 가드는 "tier가 낮았다면 명중했을 것인가"라는
+ * **반대쪽 성질**을 보지 않는다 — 조준이 완전히 빗나간 방향이어도(D-1
+ * 결함이 정확히 이런 상태였다) "공중 콘에서 miss"는 tier와 무관하게
+ * 항상 참이 되어 (4)(5)가 아무것도 검증하지 못하는 빈 껍데기가 될 수
+ * 있다(evaluator가 `AIRBORNE_INJECT_Y_M=2`+우선순위 반전 변이로 실제
+ * 재현). 아래 `seed12AtBaseFromAirborneOrigin`/
+ * `seed23AtMovingFromAirborneOrigin` 양성 가드가 이 반대쪽을 막는다 —
+ * "공중 원점에서도 더 낮은 tier 콘이었다면 반드시 명중했을 것"을
+ * 확인해야 그 다음의 "miss" 단언이 실제로 tier 차이를 검증한 것이 된다.
+ *
  * **우선순위(확정 — `sim-combat.test.ts` 상단 REV와 동일, team-lead
  * 회신·원장 25a-10 REV, v1.9 판정표에도 유지)**: `grounded===false`면
  * `dirX`·`dirZ`·`mode`와 무관하게 공중 배율을 쓴다 — 접지 여부가 가장
@@ -304,13 +325,29 @@ function bodyCenterM(): number {
   return (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
 }
 
+/** REV(§16, evaluator D-1 지적·team-lead 지시) — 이전 시그니처는
+ * `shooterFoot`을 `{x, z}`(y 없음)로만 받아 `dy`를 `bodyCenterM() -
+ * eyeHeightM`(사수 y와 무관한 상수)로 계산했다 — 사수가 실제로 얼마나
+ * 높이 있든 조준 벡터가 **절대 바뀌지 않는** 결함이었다(공중 tier
+ * 시나리오에서 `airborneAim`이 `aim`과 비트 단위로 동일했다 — 평가자가
+ * 실행값으로 재현). 이제 `shooterFoot`·`targetFoot` 둘 다 `y`를 받아
+ * `dy = (targetFoot.y + bodyCenterM()) - (shooterFoot.y + eyeHeightM)`로
+ * 계산한다 — 사수의 실제 높이가 조준 벡터에 반영되고, 조준점은 승강과
+ * 무관하게 항상 대상의 바디 중심에 유지된다.
+ *
+ * **하위 호환(대수적 증명 + 실측 둘 다)**: 접지 시나리오는 항상
+ * `shooterFoot.y === 0 && targetFoot.y === 0`이므로 `dy = (0 +
+ * bodyCenterM()) - (0 + eyeHeightM)` = `bodyCenterM() - eyeHeightM` —
+ * 0을 더하는 것은 IEEE-754에서 항등 연산이라 대수적으로 이전 식과
+ * 완전히 같다. 실행값으로도 확인했다(`_workspace/RQ-90-spread/
+ * 01_test-writer_red.md` §16.2 — 수정 전후 aim이 비트 단위로 동일). */
 function aimAtBodyWithDistance(
-  shooterFoot: { x: number; z: number },
-  targetFoot: { x: number; z: number },
+  shooterFoot: { x: number; y: number; z: number },
+  targetFoot: { x: number; y: number; z: number },
 ): { aim: Vec3; distance: number } {
   const dx = targetFoot.x - shooterFoot.x
   const dz = targetFoot.z - shooterFoot.z
-  const dy = bodyCenterM() - DEFAULT_HITBOX.eyeHeightM
+  const dy = targetFoot.y + bodyCenterM() - (shooterFoot.y + DEFAULT_HITBOX.eyeHeightM)
   const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
   return { aim: { x: dx / distance, y: dy / distance, z: dz / distance }, distance }
 }
@@ -477,6 +514,31 @@ describe('RQ-90 v1.8/v1.9: 사격 시점 dirX·dirZ·mode·grounded에 따라 �
           `RQ-90 v1.9 저하 테스트 전제 위반 — AIRBORNE_INJECT_Y_M(${AIRBORNE_INJECT_Y_M}m)만큼 원점을 띄운 뒤에도 ` +
             `transitionSeed12/23이 공중 콘에서 'miss'여야 하는데 각각 '${seed12AtAirborne}'/'${seed23AtAirborne}'였다 ` +
             `(스폰 기하가 스크래치 검증 때와 달라졌을 수 있다 — AIRBORNE_INJECT_Y_M 축소 또는 시드 재탐색 필요).`,
+        )
+      }
+
+      // 양성 가드(§16, evaluator D-2 지적) — 위 가드는 "공중 콘에서
+      // miss인가"만 본다. 그런데 (4)(5)의 검출력을 지탱하는 성질은
+      // **반대쪽**이다 — "이 새(공중) 원점에서, 더 낮은 tier의 콘이었다면
+      // 명중(body)했을 것인가". 이게 성립하지 않으면(예: 조준이 아예
+      // 빗나간 방향을 향해 레이 자체가 대상 근처를 지나지 않으면) 위
+      // "miss" 단언은 tier 판정과 무관하게 **항상** 참이 되어 (4)(5)가
+      // 아무것도 검증하지 못하는 빈 껍데기가 된다 — evaluator가
+      // AIRBORNE_INJECT_Y_M=2에서 우선순위 로직을 반전시킨 변이를 넣어도
+      // 이 파일이 여전히 통과함으로 실증했다(D-1이 원인 — 조준이
+      // 승강과 무관하게 고정돼 있어 레이가 항상 대상을 벗어났다). D-1
+      // 수정(위 `aimAtBodyWithDistance`)과 이 가드는 서로 다른 것을
+      // 막는다 — D-1은 "오늘의 기하"를 고치고, 이 가드는 "명제가
+      // 공허해지지 않음"을 매 실행마다 지킨다.
+      const seed12AtBaseFromAirborneOrigin = classifySpreadSeed(airborneOrigin, airborneAim, targetFoot, baseCone, transitionSeed12)
+      const seed23AtMovingFromAirborneOrigin = classifySpreadSeed(airborneOrigin, airborneAim, targetFoot, movingCone, transitionSeed23)
+      if (seed12AtBaseFromAirborneOrigin !== 'body' || seed23AtMovingFromAirborneOrigin !== 'body') {
+        throw new Error(
+          `RQ-90 v1.9 저하 테스트 공허함 방지 가드 위반 — 공중 원점(y=${AIRBORNE_INJECT_Y_M}m)에서도 ` +
+            `transitionSeed12는 기본 콘에서, transitionSeed23은 이동 콘에서 반드시 'body'여야 (4)(5)의 ` +
+            `'miss' 단언이 실제로 tier를 구분한다는 증거가 되는데, 각각 '${seed12AtBaseFromAirborneOrigin}'/` +
+            `'${seed23AtMovingFromAirborneOrigin}'였다 — 조준이 대상을 벗어나 (4)(5)가 tier와 무관하게 ` +
+            `항상 빗나가는 빈 껍데기 단언이 됐을 가능성이 높다(AIRBORNE_INJECT_Y_M 축소 또는 조준 재계산 점검 필요).`,
         )
       }
 
