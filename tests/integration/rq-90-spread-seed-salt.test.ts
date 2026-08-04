@@ -249,11 +249,28 @@ function waitForTickAtLeast(room: Room, minTick: number, label: string): Promise
  * 의도적으로 선언하지 않는다** — 이 파일의 핵심 전제(제품 발급 경로만
  * 탄다)를 타입 수준에서도 강제한다(실수로도 대입 불가). `spreadSeedCounter`
  * 는 `GameRoom.ts:308`의 기존 private 필드를 이 파일이 처음으로 화이트박스
- * 읽기 대상에 추가한다(그린필드 아님 — 필드 자체는 이미 있었다). */
+ * 읽기 대상에 추가한다(그린필드 아님 — 필드 자체는 이미 있었다).
+ *
+ * **`forcedRoomSalt`(신규, Red 전제 — team-lead 확정 사항, 22v 대응 설계)**:
+ * blocker 1(coder, 룸 인스턴스별 salt 도입)이 노출할 시드 재현용 오버라이드
+ * 필드의 **계약**을 여기서 먼저 선언한다 — `spreadTuningOverride`·
+ * `forcedSpreadSeed`와 정확히 같은 private-field 화이트박스 패턴(coder가
+ * `onCreate(options)` 경유로 구현하려던 초안을 team-lead가 실측으로
+ * 막았다: `MatchMaker.js`의 `merge({}, clientOptions, handler.options)`는
+ * `handler.options`에 없는 키를 클라 값 그대로 통과시킨다 — 옵션 경유였다면
+ * `joinOrCreate('game', { salt: X })`로 클라가 salt를 **직접 지정**할 수
+ * 있었을 것이다, 아래 "옵션 도달 불가" 테스트가 이 함정의 재발을 막는다).
+ * **오늘은 존재하지 않는다**(이 파일의 다른 필드들과 동일한 Red 전제 —
+ * 이 라운드는 이 필드를 쓰는 테스트를 별도로 추가하지 않는다: "고정
+ * salt로 재현"과 "두 룸이 다른 편차"는 team-lead가 명시적으로 나눈
+ * **서로 다른 seam 사용법**이고, 위 메인 테스트는 후자에 속해 이 필드가
+ * 필요 없다 — 재현용 테스트는 coder의 Green 이후, 실제 salt 소비 로직이
+ * 생기면 그 계약에 맞춰 별도로 추가한다). */
 interface SeedSaltTestSeam extends SafeZoneEscapeSeam<unknown> {
   state: { tick: number }
   spreadTuningOverride?: SpreadTuning
   spreadSeedCounter: number
+  forcedRoomSalt?: number
 }
 
 function getServerRoom(room: Room): SeedSaltTestSeam {
@@ -439,6 +456,73 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       // 반드시 같다. salt가 있어야(=이 단언이 요구하는 성질) 서로 달라진다
       // — 그래서 이 단언은 오늘 반드시 실패해야 정상이다(Red, ADR-0011).
       expect(afterA.hp).not.toBe(afterB.hp)
+    },
+  )
+
+  it(
+    '클라 join 옵션에 임의의 salt류 키를 실어 보내도 서버가 실제로 쓰는 시드는 그 옵션과 무관하다' +
+      '(coder가 착수 전 실측한 MatchMaker.js 함정 — merge({}, clientOptions, handler.options)는 ' +
+      'handler.options에 없는 키를 클라 값 그대로 통과시킨다 — 의 재발 방지 그물, team-lead 권고)',
+    async () => {
+      // `spreadSaltOverride`는 실제 프로덕션이 이 이름을 쓰는지와 무관하다
+      // — "handler.options(`index.ts`의 `{ statsDbPath }`)에 없는 키는
+      // 클라 옵션이 가공 없이 onCreate에 도달한다"는 위험 패턴 자체를
+      // 재현하는 대표 키다(team-lead가 `MatchMaker.js:343`·`Utils.js:106`
+      // 실측으로 지적). salt 도입은 확정대로 private-field 화이트박스
+      // (`forcedRoomSalt`, 위 seam)를 쓰므로 이 키가 서버에 도달해도
+      // **아무 영향이 없어야 한다**.
+      //
+      // **`create`를 쓴다(`joinOrCreate` 아님)** — 위 메인 테스트가 만든
+      // 룸 4개(A1·A2·B1·B2)는 `afterAll`에서만 정리되므로 이 `it()` 실행
+      // 시점에도 여전히 열려 있다. `joinOrCreate`였다면 이름이 같은
+      // 기존 룸(A 또는 B)에 합류해 `spreadSeedCounter`가 이미 1인 상태로
+      // 시작했을 것이다(실측: 첫 시도에서 정확히 이 사유로 전제 가드가
+      // 발화했다 — `spreadSeedCounter=1`) — `create`로 항상 새 인스턴스를
+      // 강제해야 "이 룸의 첫 사격"이라는 전제가 구조적으로 보장된다(위
+      // 메인 테스트의 `createRoom`과 동일 이유).
+      const client = newClient(server)
+      const room = await withTimeout(
+        client.create(ROOM_NAME, { spreadSaltOverride: 999999999 }),
+        JOIN_TIMEOUT_MS,
+        `create('${ROOM_NAME}', { spreadSaltOverride }) — 악의적 옵션`,
+      )
+      rooms.push(room)
+      const targetClient = newClient(server)
+      const targetRoom = await joinRoomById(targetClient, room.roomId, 'options 테스트 피격자')
+      rooms.push(targetRoom)
+
+      const baseline = await waitForDefinedPlayer(targetRoom, targetRoom.sessionId)
+      expect(baseline.hp).toBe(PLAYER.MAX_HP)
+
+      const seam = getServerRoom(room)
+      escapeSafeZone(seam, room.sessionId, SHOOTER_BASE)
+      releaseSpawnProtectionAndEscape(seam, targetRoom.sessionId, TARGET_BASE)
+      seam.spreadTuningOverride = { coneRadiusRad: BOUNDARY_CONE_RADIUS_RAD, movingMultiplier: 2, airborneMultiplier: 4 }
+
+      // 이 룸도 첫 사격이므로 spreadSeedCounter=0이 구조적으로 보장된다.
+      if (seam.spreadSeedCounter !== 0) {
+        throw new Error(`RQ-90 22w(옵션 도달 불가) 전제 위반 — 첫 사격 전인데 spreadSeedCounter=${seam.spreadSeedCounter}`)
+      }
+      const tickBeforeFire = seam.state.tick
+
+      room.send('fire', { dirX: AIM.x, dirY: AIM.y, dirZ: AIM.z })
+      await waitForTickAtLeast(room, tickBeforeFire + CONFIRM_TICK_ADVANCE, 'options 테스트 처리 확인(tick 전진)')
+
+      const after = readPlayer(targetRoom, targetRoom.sessionId)
+      if (!after) {
+        throw new Error('RQ-90 22w(옵션 도달 불가) — 사격 후 관측 실패(피격자 상태를 읽지 못했다)')
+      }
+
+      // "옵션이 시드에 전혀 영향을 못 준다"는 오늘의 공식(tick·counter만)
+      // 그대로 예측한 결과와 실제 결과가 정확히 일치해야 한다는 뜻이다 —
+      // 악의적 옵션이 조금이라도 시드에 섞였다면 이 예측이 어긋난다.
+      // 이 단언은 coder의 salt 구현 **이후에도 계속 성립해야 한다**
+      // (private-field 방식은 애초에 options를 읽지 않으므로) — 일회성
+      // Red가 아니라 영구적인 회귀 방지 그물이다.
+      const expectedSeed = ((tickBeforeFire << 16) ^ 0) >>> 0
+      const expectedHit = isHitAtCone(expectedSeed, BOUNDARY_CONE_RADIUS_RAD)
+      const actualHit = after.hp !== PLAYER.MAX_HP
+      expect(actualHit).toBe(expectedHit)
     },
   )
 })
