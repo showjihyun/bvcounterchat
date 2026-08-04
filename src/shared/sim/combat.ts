@@ -20,6 +20,7 @@
 
 import type { SeededRng } from '@shared/sim/rng'
 import { WEAPON } from '@shared/constants'
+import type { WallAABB } from '@shared/sim/movement'
 
 export type HitRegion = 'head' | 'body'
 
@@ -219,13 +220,129 @@ export interface ClosestHit {
   result: HitscanResult
 }
 
+/** 레이 방향의 성분이 이 값보다 작으면 해당 축의 벽 슬랩과 "평행"으로
+ * 취급한다(`intersectWallXZ`) — 레이 뒤쪽 배제(가정 B)와 같은 성격의
+ * 여유값이라 `FORWARD_EPS`와 동일한 크기를 쓴다. */
+const WALL_AXIS_PARALLEL_EPS = 1e-9
+
+/**
+ * 벽(`WallAABB`, 무한 높이 기둥 — `@shared/sim/walls` "2D(XZ) 전용" 문서와
+ * 동일 가정, `minY`/`maxY` 없음)과 레이의 XZ 평면 교차 진입 거리(표준
+ * 슬랩(slab) 알고리즘) — `o`·`dir`은 **월드 좌표계**(대상 포즈로 평행이동하지
+ * 않은 원본, `raycastHitbox`의 `o`와 다르다 — 벽은 절대 좌표로 정의돼
+ * 있으므로) 기준이다. `dir`은 이미 정규화된 단위 벡터여야 결과 거리가
+ * `raycastHitbox`가 반환하는 명중 거리와 같은 단위(월드 미터)로 비교
+ * 가능하다(호출자 `computeWallEntryDistances`가 정규화를 보장한다).
+ *
+ * 레이가 두 슬랩(X·Z) 모두를 지나는 구간(`[tMin, tMax]`)이 없으면(즉
+ * `tMax < tMin`) 교차하지 않는다. 그 구간이 전부 레이 뒤쪽(`tMax`가
+ * 음수)이면 벽은 사수 뒤에 있으므로 차폐 대상이 아니다(가정 B와 동일
+ * 정신). 레이 원점이 이미 슬랩 내부라면(`tMin<0<=tMax`) 진입 거리를 0으로
+ * 취급한다 — 이 라운드의 GA-58 계약이 직접 요구하는 경계는 아니지만,
+ * 음수 거리를 그대로 흘려보내 "더 가까운 벽"비교를 오염시키지 않기 위한
+ * 최소 방어다.
+ */
+function intersectWallXZ(o: Vec3, dir: Vec3, wall: WallAABB): number | undefined {
+  let tMin = -Infinity
+  let tMax = Infinity
+
+  // 결함 수정 2/2 — 평행 축 경계: 레이가 x축 방향으로는 벽에 평행
+  // (dir.x가 사실상 0)하면서 o.x가 벽의 슬랩 경계 **위**(===minX 또는
+  // ===maxX)에 있으면, 그 레이는 벽면(껍데기)을 따라 그대로 스치듯
+  // 지나갈 뿐 벽의 내부(고체, x∈(minX,maxX))로는 한 번도 들어가지 않는다
+  // — "벽면과 나란한 방향" 결함 재현 케이스가 바로 이 배치다(밀착 사수가
+  // 벽을 따라 옆으로 쏘는 흔한 조작). 예전 비교(`o.x < wall.minX`,
+  // 즉 경계값을 "내부"로 포함)는 이 경계 접촉을 x축이 슬랩을 전혀
+  // 제약하지 않는 것으로 취급했고, 그 결과 z축(비평행) 슬랩만으로 유효한
+  // 전방 구간이 나와 진입 거리 0이 흘러나갔다(위 tMax<=0 수정과 같은
+  // 뿌리: 경계 접촉을 "내부 진입"으로 오판). 경계값을 **제외**(`<=`/`>=`)
+  // 하도록 바꾸면 이 접촉 전용 레이는 그 축에서 슬랩 밖으로 판정돼
+  // `undefined`(교차 없음, 차폐 아님)를 반환한다 — 벽 두께 안쪽으로
+  // 엄격히 들어간 배치(예: o.x=15.5, 벽 15~16)는 `<=`/`>=` 어느 쪽으로도
+  // 여전히 "내부"라 기존 GA-58 세 케이스(사이·뒤·경계, 전부 원점 x=0이
+  // 벽의 x구간 안쪽 깊숙이 있다)는 영향받지 않는다.
+  if (Math.abs(dir.x) < WALL_AXIS_PARALLEL_EPS) {
+    if (o.x <= wall.minX || o.x >= wall.maxX) return undefined
+  } else {
+    const t1 = (wall.minX - o.x) / dir.x
+    const t2 = (wall.maxX - o.x) / dir.x
+    tMin = Math.max(tMin, Math.min(t1, t2))
+    tMax = Math.min(tMax, Math.max(t1, t2))
+  }
+
+  if (Math.abs(dir.z) < WALL_AXIS_PARALLEL_EPS) {
+    if (o.z <= wall.minZ || o.z >= wall.maxZ) return undefined
+  } else {
+    const t1 = (wall.minZ - o.z) / dir.z
+    const t2 = (wall.maxZ - o.z) / dir.z
+    tMin = Math.max(tMin, Math.min(t1, t2))
+    tMax = Math.min(tMax, Math.max(t1, t2))
+  }
+
+  // 결함 수정(PR #48 리뷰 blocker, `sim-combat-occlusion.test.ts` "결함
+  // 재현" 블록): 레이 원점이 슬랩 경계 위에 있고 방향이 벽에서 멀어지면
+  // 부동소수점 나눗셈이 tMax를 -0(반대편 두께 배치에서는 +0)으로 낸다.
+  // 이전 가드 `tMax < -FORWARD_EPS`는 "0은 -epsilon보다 작지 않다"는
+  // 이유로 이 경우를 배제하지 못해 진입 거리 0을 흘려보냈다(거리 0은
+  // 모든 후보보다 가까우므로 전 후보가 오탐 차폐됐다). `tMax <= 0`은
+  // 부호에 무관하게 "슬랩 구간이 전방(t>0)으로 조금도 뻗지 않는다"를
+  // 직접 묻는다 — 그 경우 원점 자체는 경계 접촉일 뿐 진행 방향은 이미
+  // 슬랩 밖이므로 실제로 막는 것이 없다. 정상 진입(레이가 슬랩으로
+  // 들어가는 경로)은 tMin<=0이어도 tMax가 진행 방향으로 뚜렷한 양수이므로
+  // 이 조건에 걸리지 않는다 — 기존 GA-58 세 벽(사이·뒤·경계)과 밀착
+  // 사수의 "벽 쪽" 양성 대조군 모두 tMax가 0에서 먼 양수라 영향받지
+  // 않는다(검증 수치: `_workspace/RQ-12-occlusion/05_coder_flush.md`).
+  if (tMax < tMin || tMax <= 0) return undefined
+  return Math.max(tMin, 0)
+}
+
+/** `ray`가 지나는 `walls` 각각의 XZ 슬랩 진입 거리(교차하지 않는 벽은
+ * 제외)를 계산한다 — 벽 목록은 후보(candidate)와 무관하므로 `findClosestHit`
+ * 호출당 한 번만 계산해 재사용한다(틱 예산, RQ-60 — 후보 수만큼 반복
+ * 계산하지 않는다). `ray.direction`이 정규화되지 않았거나 퇴화(크기
+ * ~0)했으면 `raycastHitbox` 쪽도 어차피 명중 없음(`hit:false`)으로 처리되어
+ * 이 결과가 소비되지 않으므로 빈 배열로 안전하게 반환한다. */
+function computeWallEntryDistances(ray: Ray, walls: readonly WallAABB[]): number[] {
+  if (walls.length === 0) return []
+  const dirMagnitude = magnitude(ray.direction)
+  if (!Number.isFinite(dirMagnitude) || dirMagnitude < DEGENERATE_RADIAL_EPS) return []
+  const dir = scale(ray.direction, 1 / dirMagnitude)
+
+  const entries: number[] = []
+  for (const wall of walls) {
+    const t = intersectWallXZ(ray.origin, dir, wall)
+    if (t !== undefined) entries.push(t)
+  }
+  return entries
+}
+
+/** `wallEntryDistances` 중 하나라도 `hitDistance`보다 **엄격히** 가까우면
+ * (같은 거리는 차폐 아님 — 경계 결정, 위 `sim-combat-occlusion.test.ts`
+ * 계약 4) 차폐된 것으로 본다. */
+function isOccludedByWall(hitDistance: number, wallEntryDistances: readonly number[]): boolean {
+  return wallEntryDistances.some((t) => t < hitDistance)
+}
+
 /** 관통 없음(가정 F) — 레이 경로상 여러 후보가 명중 가능해도 가장 가까운
- * 하나만 반환한다. */
-export function findClosestHit(ray: Ray, candidates: HitCandidate[], hitbox: HitboxConfig): ClosestHit | undefined {
+ * 하나만 반환한다. `walls`(RQ-12 v1.7 — 맵 정적 지오메트리에 의한 hitscan
+ * 차폐, 기본값 `[]`로 기존 3-인자 호출부와 완전히 동일하게 동작해 회귀가
+ * 없다): 후보의 명중 거리보다 엄격히 더 가까운 거리에서 레이와 교차하는
+ * 벽이 하나라도 있으면 그 후보는 명중 후보에서 제외된다(관통·도탄·파편은
+ * v1.7 원문이 규정하지 않으므로 만들지 않는다 — 제외될 뿐 벽 표면에 별도
+ * 명중 지점을 만들지 않는다). */
+export function findClosestHit(
+  ray: Ray,
+  candidates: HitCandidate[],
+  hitbox: HitboxConfig,
+  walls: readonly WallAABB[] = [],
+): ClosestHit | undefined {
+  const wallEntryDistances = computeWallEntryDistances(ray, walls)
+
   let closest: ClosestHit | undefined
   for (const candidate of candidates) {
     const result = raycastHitbox(ray, candidate.pose, hitbox)
     if (!result.hit || result.distance === undefined) continue
+    if (isOccludedByWall(result.distance, wallEntryDistances)) continue
     if (!closest || result.distance < (closest.result.distance as number)) {
       closest = { id: candidate.id, result }
     }
