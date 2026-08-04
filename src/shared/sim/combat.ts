@@ -246,8 +246,23 @@ function intersectWallXZ(o: Vec3, dir: Vec3, wall: WallAABB): number | undefined
   let tMin = -Infinity
   let tMax = Infinity
 
+  // 결함 수정 2/2 — 평행 축 경계: 레이가 x축 방향으로는 벽에 평행
+  // (dir.x가 사실상 0)하면서 o.x가 벽의 슬랩 경계 **위**(===minX 또는
+  // ===maxX)에 있으면, 그 레이는 벽면(껍데기)을 따라 그대로 스치듯
+  // 지나갈 뿐 벽의 내부(고체, x∈(minX,maxX))로는 한 번도 들어가지 않는다
+  // — "벽면과 나란한 방향" 결함 재현 케이스가 바로 이 배치다(밀착 사수가
+  // 벽을 따라 옆으로 쏘는 흔한 조작). 예전 비교(`o.x < wall.minX`,
+  // 즉 경계값을 "내부"로 포함)는 이 경계 접촉을 x축이 슬랩을 전혀
+  // 제약하지 않는 것으로 취급했고, 그 결과 z축(비평행) 슬랩만으로 유효한
+  // 전방 구간이 나와 진입 거리 0이 흘러나갔다(위 tMax<=0 수정과 같은
+  // 뿌리: 경계 접촉을 "내부 진입"으로 오판). 경계값을 **제외**(`<=`/`>=`)
+  // 하도록 바꾸면 이 접촉 전용 레이는 그 축에서 슬랩 밖으로 판정돼
+  // `undefined`(교차 없음, 차폐 아님)를 반환한다 — 벽 두께 안쪽으로
+  // 엄격히 들어간 배치(예: o.x=15.5, 벽 15~16)는 `<=`/`>=` 어느 쪽으로도
+  // 여전히 "내부"라 기존 GA-58 세 케이스(사이·뒤·경계, 전부 원점 x=0이
+  // 벽의 x구간 안쪽 깊숙이 있다)는 영향받지 않는다.
   if (Math.abs(dir.x) < WALL_AXIS_PARALLEL_EPS) {
-    if (o.x < wall.minX || o.x > wall.maxX) return undefined
+    if (o.x <= wall.minX || o.x >= wall.maxX) return undefined
   } else {
     const t1 = (wall.minX - o.x) / dir.x
     const t2 = (wall.maxX - o.x) / dir.x
@@ -256,7 +271,7 @@ function intersectWallXZ(o: Vec3, dir: Vec3, wall: WallAABB): number | undefined
   }
 
   if (Math.abs(dir.z) < WALL_AXIS_PARALLEL_EPS) {
-    if (o.z < wall.minZ || o.z > wall.maxZ) return undefined
+    if (o.z <= wall.minZ || o.z >= wall.maxZ) return undefined
   } else {
     const t1 = (wall.minZ - o.z) / dir.z
     const t2 = (wall.maxZ - o.z) / dir.z
@@ -264,7 +279,20 @@ function intersectWallXZ(o: Vec3, dir: Vec3, wall: WallAABB): number | undefined
     tMax = Math.min(tMax, Math.max(t1, t2))
   }
 
-  if (tMax < tMin || tMax < -FORWARD_EPS) return undefined
+  // 결함 수정(PR #48 리뷰 blocker, `sim-combat-occlusion.test.ts` "결함
+  // 재현" 블록): 레이 원점이 슬랩 경계 위에 있고 방향이 벽에서 멀어지면
+  // 부동소수점 나눗셈이 tMax를 -0(반대편 두께 배치에서는 +0)으로 낸다.
+  // 이전 가드 `tMax < -FORWARD_EPS`는 "0은 -epsilon보다 작지 않다"는
+  // 이유로 이 경우를 배제하지 못해 진입 거리 0을 흘려보냈다(거리 0은
+  // 모든 후보보다 가까우므로 전 후보가 오탐 차폐됐다). `tMax <= 0`은
+  // 부호에 무관하게 "슬랩 구간이 전방(t>0)으로 조금도 뻗지 않는다"를
+  // 직접 묻는다 — 그 경우 원점 자체는 경계 접촉일 뿐 진행 방향은 이미
+  // 슬랩 밖이므로 실제로 막는 것이 없다. 정상 진입(레이가 슬랩으로
+  // 들어가는 경로)은 tMin<=0이어도 tMax가 진행 방향으로 뚜렷한 양수이므로
+  // 이 조건에 걸리지 않는다 — 기존 GA-58 세 벽(사이·뒤·경계)과 밀착
+  // 사수의 "벽 쪽" 양성 대조군 모두 tMax가 0에서 먼 양수라 영향받지
+  // 않는다(검증 수치: `_workspace/RQ-12-occlusion/05_coder_flush.md`).
+  if (tMax < tMin || tMax <= 0) return undefined
   return Math.max(tMin, 0)
 }
 
