@@ -160,10 +160,21 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * **REV(RQ-90 v1.8, 2026-08-04) — 정확도 저하 3단계(그린필드 확장, test-writer
  * 지정, `combat.ts`/`combat-tuning.ts`(확장) 태그와 동일 권한)**:
  * `requirements.md` v1.8이 탄퍼짐 콘 반경의 실제값(기본 0.5°)과 이동·공중
- * 시 정확도 저하 배율(이동 ×2, 공중 ×4, 단조 증가)을 확정했다. 판정 근거는
- * 사격 시점의 `mode`(가장 최근 'move' 입력의 값)와 `grounded`(현재 위치의
- * 접지 여부) **둘뿐**이다 — 시점 회전·클라이언트 자기신고 상태는 판정에
- * 쓰지 않는다(RQ-43·RQ-21이 겪은 함정과 같은 계열을 피한다).
+ * 시 정확도 저하 배율(이동 ×2, 공중 ×4, 단조 증가)을 확정했다.
+ *
+ * **REV2(RQ-90 v1.9, 2026-08-04) — "정지" 판정에 수평 입력 추가(coder
+ * 실측 발견 → 오케스트레이터 재개정, 원장 25a-10)**: v1.8이 판정 근거를
+ * `mode`·`grounded` **둘뿐**이라고 적었는데, `MoveInput.mode`는 이동
+ * **속도 설정**(`run`/`walk`/`crouch`)이지 "지금 움직이는 중"이 아니고
+ * `MoveInput`에 idle 값이 없어(`IDLE_MOVE_INPUT.mode === 'run'`) **"정지"
+ * 단계가 도달 불가능**했다 — move를 안 보냈거나 `dirX=dirZ=0`으로 멈춘
+ * 사수가 전부 "이동"(×2)으로 분류되는 구현 결함을 낳았다(coder가 Green
+ * 작업 중 발견, 통합 4파일 회귀로 실증). v1.9는 판정 근거에 **수평 이동
+ * 입력**(`dirX`·`dirZ`)을 추가한다 — "정지"는 `dirX===0 && dirZ===0`인
+ * 상태로 판정한다. 시점 회전·클라이언트 자기신고 상태는 여전히 판정에
+ * 쓰지 않는다(RQ-43·RQ-21이 겪은 함정과 같은 계열을 피한다) — 판정 근거는
+ * `dirX`·`dirZ`·`mode`·`grounded` **넷**으로 늘었을 뿐, 그 성격(서버가
+ * 독립 관측 가능한 값만)은 그대로다.
  *
  * ```ts
  * // src/shared/config/combat-tuning.ts (확장)
@@ -175,29 +186,37 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * export const DEFAULT_SPREAD: SpreadTuning
  * // = { coneRadiusRad: (0.5*Math.PI)/180, movingMultiplier: 2, airborneMultiplier: 4 }
  *
- * // src/shared/sim/combat.ts (확장)
- * // mode·grounded "만"으로 실효 콘 반경을 구한다 — 시그니처에 그 외
- * // 파라미터가 없다는 것 자체가 "판정 근거 제한"의 타입 수준 보증이다
- * // (아래 "판정 근거 제한(타입 잠금)" 테스트가 4번째 인자 추가를 컴파일
- * // 타임에 거부하는지 직접 고정한다).
+ * // src/shared/sim/combat.ts (확장, v1.9로 시그니처 확장)
+ * // dirX·dirZ·mode·grounded "만"으로 실효 콘 반경을 구한다 — 시그니처에
+ * // 그 외 파라미터가 없다는 것 자체가 "판정 근거 제한"의 타입 수준
+ * // 보증이다(아래 "판정 근거 제한(타입 잠금)" 테스트가 6번째 인자 추가를
+ * // 컴파일 타임에 거부하는지 직접 고정한다).
+ * //
+ * // 판정표(v1.9 확정):
+ * //   정지·앉기 | grounded && (dirX===0 && dirZ===0 || mode==='crouch') | ×1
+ * //   이동      | grounded && (dirX!==0 || dirZ!==0) && mode!=='crouch' | ×2
+ * //   공중      | !grounded                                            | ×4
  * export function effectiveSpreadConeRadius(
  *   tuning: SpreadTuning,
+ *   dirX: number,
+ *   dirZ: number,
  *   mode: 'run' | 'walk' | 'crouch', // @shared/sim/movement의 MoveInput['mode']와 동일 유니언
  *   grounded: boolean,
  * ): number
  * ```
  *
- * **우선순위(확정 — team-lead 회신, 원장 25a-10 REV)**: `grounded===false`면
- * `mode`와 무관하게 공중 배율(×4)을 쓴다. 접지 상태에서는 `mode==='crouch'`만
- * 기본 배율(×1, "정지·앉기" tier)이고, 그 외(walk·run)는 전부 이동
- * 배율(×2)이다 — v1.8 원문이 "이동(걷기·달리기)"로 walk·run 둘 다
- * 명시했으므로, mode 유니언 3값 중 남는 것은 crouch뿐이라는 소거법이다.
- * **공중이 최우선인 근거는 스펙 문면 그 자체다** — team-lead가 확인:
- * v1.8이 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"로 나누고 공중을
- * 직접 "비접지"로 정의했으므로, 접지 여부가 먼저 갈리고 그 안에서 `mode`가
- * 갈린다. 단조 증가(정지 ≤ 이동 ≤ 공중) 요구도 공중이 최상위임을 전제한다.
- * (test-writer가 처음엔 "가정"으로 기재해 질문했으나, 이 해석은 스펙
- * 재개정이 아니라 스펙 해석 확인이라 문서만 갱신하고 스펙은 그대로다.)
+ * **우선순위(확정 — team-lead 회신, 원장 25a-10 REV, v1.9 판정표에도 그대로
+ * 유지)**: `grounded===false`면 `dirX`·`dirZ`·`mode`와 무관하게 공중
+ * 배율(×4)을 쓴다 — v1.9가 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"
+ * 로 나누고 공중을 직접 "비접지"로 정의했으므로, 접지 여부가 가장 먼저
+ * 갈린다. 접지 상태에서는 **`mode==='crouch'`이거나 수평 입력이 없으면**
+ * (`dirX===0 && dirZ===0`) 기본 배율(×1, "정지·앉기" tier)이고, 그 외
+ * (walk·run **이면서 실제로 움직이는 중**)는 이동 배율(×2)이다 — 이 OR
+ * 조건이 v1.9의 핵심 추가다: **"앉은 채 이동"(crouch-walk)도 여전히
+ * ×1이다**(`mode==='crouch'`가 단독으로 정지 tier를 트리거하므로 수평
+ * 입력 유무와 무관), 그리고 **"서 있지만 입력이 없음"(예: mode='run'인데
+ * 가만히 있음)도 이제 ×1이다**(v1.8에서는 도달 불가능했던 바로 그 상태).
+ * 단조 증가(정지 ≤ 이동 ≤ 공중) 요구도 공중이 최상위임을 전제한다.
  *
  * **판정 근거 제한 확인 범위(하네스 비대화 방지, 팀리드 지시)**: 위 시그니처
  * 잠금(타입 테스트)이 `effectiveSpreadConeRadius` 자체의 판정 근거를
@@ -205,7 +224,10 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 구현·이 라운드가 건드리지 않는다)이 이미 dirX/dirY/dirZ/rttMs·
  * dirX/dirZ/mode/jump 외 필드를 읽지 않아 시점 회전·자기신고 필드 자체가
  * 두 payload 계약 어디에도 없다 — 통합 레벨 재확인 테스트는 이 라운드에서
- * 생략한다(중복 검증, 사용자 지시 "하네스를 과도하게 키우지 말라").
+ * 생략한다(중복 검증, 사용자 지시 "하네스를 과도하게 키우지 말라"). v1.9가
+ * 추가한 `dirX`·`dirZ`도 **새 payload 필드가 아니다** — `sanitizeMoveInput`이
+ * 이미 `MoveInput.dirX`/`dirZ`를 읽고 있었다(RQ-20, 이 라운드 이전부터).
+ * 달라진 것은 그 값을 탄퍼짐 판정에도 **재사용**하는 것뿐이다.
  * ---
  */
 
@@ -544,7 +566,7 @@ describe('RQ-90 탄퍼짐 구조(콘 반경 내 편차) — applySpread (구조�
   })
 })
 
-describe('RQ-90 v1.8 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 · 공중 ×4) — effectiveSpreadConeRadius + DEFAULT_SPREAD 확정값 (파일 상단 REV 계약)', () => {
+describe('RQ-90 v1.8/v1.9 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 · 공중 ×4) — effectiveSpreadConeRadius + DEFAULT_SPREAD 확정값 (파일 상단 REV 계약, v1.9: "정지" 판정에 수평 입력 추가)', () => {
   const AIM: Vec3 = { x: 0, y: 0, z: 1 }
 
   it('DEFAULT_SPREAD.coneRadiusRad는 0.5°와 같다(라디안 유도값과 비교 — 리터럴 금지 ADR-0010은 프로덕션 값 복제를 막는 것이지, 이 오라클 계산 자체를 막지 않는다)', () => {
@@ -566,25 +588,33 @@ describe('RQ-90 v1.8 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 �
   // 실제값과 별개로 "구조"만 확인한다).
   const TUNING: SpreadTuning = { coneRadiusRad: 0.1, movingMultiplier: 2, airborneMultiplier: 4 }
 
-  it("mode==='crouch'·grounded=true면 기본 콘(×1)이다 — '정지·앉기' tier(우선순위는 파일 상단 REV 참고 — team-lead 확정)", () => {
-    expect(effectiveSpreadConeRadius(TUNING, 'crouch', true)).toBeCloseTo(0.1, 12)
+  it("mode==='crouch'면 수평 입력이 있어도(=앉은 채 이동, crouch-walk) 기본 콘(×1)이다 — '정지·앉기' tier의 OR 조건(v1.9)", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 정지
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 이동(+X) — 그래도 ×1
+    expect(effectiveSpreadConeRadius(TUNING, 0, -1, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 이동(-Z) — 그래도 ×1
   })
 
-  it("mode==='walk'|'run'·grounded=true면 이동 배율(×2)이다 — '이동(걷기·달리기)' tier — v1.8 원문이 walk·run 둘 다 명시", () => {
-    expect(effectiveSpreadConeRadius(TUNING, 'walk', true)).toBeCloseTo(0.2, 12)
-    expect(effectiveSpreadConeRadius(TUNING, 'run', true)).toBeCloseTo(0.2, 12)
+  it("mode==='run'|'walk'이고 수평 입력이 전혀 없으면(dirX=dirZ=0) 기본 콘(×1)이다 — v1.9 신설: v1.8에서는 이 상태가 mode만으로는 표현 불가능해 '이동'으로 오분류됐다(coder 실측 발견, 통합 4파일 회귀의 근본 원인)", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'run', true)).toBeCloseTo(0.1, 12)
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'walk', true)).toBeCloseTo(0.1, 12)
   })
 
-  it('grounded=false면 mode와 무관하게 공중 배율(×4)이다 — mode=crouch여도 접지 여부가 우선한다(파일 상단 REV "우선순위" 확정을 직접 고정, team-lead 회신)', () => {
-    expect(effectiveSpreadConeRadius(TUNING, 'crouch', false)).toBeCloseTo(0.4, 12)
-    expect(effectiveSpreadConeRadius(TUNING, 'walk', false)).toBeCloseTo(0.4, 12)
-    expect(effectiveSpreadConeRadius(TUNING, 'run', false)).toBeCloseTo(0.4, 12)
+  it("mode==='walk'|'run'이고 수평 입력이 있으면(dirX≠0 또는 dirZ≠0) 이동 배율(×2)이다 — '이동(걷기·달리기)' tier — v1.8 원문이 walk·run 둘 다 명시, v1.9가 '실제로 움직이는 중'이라는 조건을 추가했다", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'walk', true)).toBeCloseTo(0.2, 12) // dirX만 0이 아님
+    expect(effectiveSpreadConeRadius(TUNING, 0, 1, 'run', true)).toBeCloseTo(0.2, 12) // dirZ만 0이 아님
+    expect(effectiveSpreadConeRadius(TUNING, 0.7, 0.7, 'run', true)).toBeCloseTo(0.2, 12) // 대각선 입력
+  })
+
+  it('grounded=false면 dirX·dirZ·mode와 전부 무관하게 공중 배율(×4)이다 — 정지 조합·이동 조합 둘 다 접지 여부가 우선한다(파일 상단 REV "우선순위" 확정을 직접 고정, team-lead 회신)', () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'crouch', false)).toBeCloseTo(0.4, 12) // 정지 조합이었을 값
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'run', false)).toBeCloseTo(0.4, 12) // v1.9 신설 정지 조합이었을 값
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'walk', false)).toBeCloseTo(0.4, 12) // 이동 조합이었을 값
   })
 
   it('DEFAULT_SPREAD 실측값 기준으로도 세 tier가 단조 비감소다(정지 ≤ 이동 ≤ 공중)', () => {
-    const stationary = effectiveSpreadConeRadius(DEFAULT_SPREAD, 'crouch', true)
-    const moving = effectiveSpreadConeRadius(DEFAULT_SPREAD, 'run', true)
-    const airborne = effectiveSpreadConeRadius(DEFAULT_SPREAD, 'run', false)
+    const stationary = effectiveSpreadConeRadius(DEFAULT_SPREAD, 0, 0, 'run', true) // v1.9: 정지는 idle로 표현
+    const moving = effectiveSpreadConeRadius(DEFAULT_SPREAD, 1, 0, 'run', true)
+    const airborne = effectiveSpreadConeRadius(DEFAULT_SPREAD, 1, 0, 'run', false)
     expect(stationary).toBeLessThanOrEqual(moving)
     expect(moving).toBeLessThanOrEqual(airborne)
   })
@@ -624,11 +654,11 @@ describe('RQ-90 v1.8 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 �
     }
   })
 
-  it('판정 근거 제한(타입 잠금) — effectiveSpreadConeRadius는 tuning·mode·grounded 세 파라미터만 받는다. 시점 회전·자기신고 같은 4번째 인자를 추가하면 컴파일 타임에 거부된다(이 줄 자체가 타입 에러 나지 않으면 아래 지시문이 "사용되지 않음" 에러로 tsc를 실패시킨다)', () => {
-    // @ts-expect-error — RQ-90 v1.8 "판정 근거 제한": mode·grounded 외
-    // 값(예: 시점 회전 viewYaw)을 판정에 쓰지 않는다는 계약을 초과 인자
-    // 거부로 고정한다.
-    effectiveSpreadConeRadius(DEFAULT_SPREAD, 'run', true, { viewYaw: 1.2 })
+  it('판정 근거 제한(타입 잠금) — effectiveSpreadConeRadius는 tuning·dirX·dirZ·mode·grounded 다섯 파라미터만 받는다(v1.9). 시점 회전·자기신고 같은 6번째 인자를 추가하면 컴파일 타임에 거부된다(이 줄 자체가 타입 에러 나지 않으면 아래 지시문이 "사용되지 않음" 에러로 tsc를 실패시킨다)', () => {
+    // @ts-expect-error — RQ-90 v1.9 "판정 근거 제한": dirX·dirZ·mode·
+    // grounded 외 값(예: 시점 회전 viewYaw)을 판정에 쓰지 않는다는 계약을
+    // 초과 인자 거부로 고정한다.
+    effectiveSpreadConeRadius(DEFAULT_SPREAD, 0, 0, 'run', true, { viewYaw: 1.2 })
     expect(true).toBe(true) // 도달 자체는 관심사가 아니다 — 위 타입 에러가 이 테스트의 본체다.
   })
 })
