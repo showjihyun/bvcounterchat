@@ -13,6 +13,7 @@ import {
   canFire,
   DEGENERATE_RADIAL_EPS,
   damageForRegion,
+  effectiveSpreadConeRadius,
   eyeOrigin,
   findClosestHit,
   type HitCandidate,
@@ -644,9 +645,11 @@ export class GameRoom extends Room<GameState> {
     // 쓰지 않는다 — 서버가 발급(또는 테스트가 강제)한 시드로 콘 편차를
     // 얹은 뒤에 판정한다(RQ-61: 시드·콘 반경 모두 클라이언트 payload에서
     // 읽지 않는다 — `sanitizeFireInput`이 애초에 그런 필드를 받지 않는다).
-    // `spreadTuningOverride`가 없으면 `DEFAULT_SPREAD`(출하 기본값, 반경
-    // 0) 그대로라 `applySpread`가 항등 함수가 되어 기존 정조준 동작과
-    // 완전히 동일하다(`applySpread` docblock, 회귀 방지).
+    // `spreadTuningOverride`가 없으면 `DEFAULT_SPREAD`(출하 기본값, 아래
+    // `effectiveSpreadConeRadius`)를 쓴다 — v1.8부터 기본 콘 반경이 0.5°로
+    // 확정돼(원장 25a-10) 더 이상 정조준 항등 함수가 아니다(과거 이 코멘트가
+    // 서술하던 "반경 0" 전제는 v1.8로 끝났다 — `applySpread` 자체의
+    // `coneRadiusRad===0` 항등 계약은 그대로다, `applySpread` docblock).
     //
     // 리뷰 blocker 수정(`_workspace/review/feat-RQ-90-spread-seed-
     // determinism.md`): `applySpread`의 계약(`combat.ts:255-264`)은
@@ -674,9 +677,26 @@ export class GameRoom extends Room<GameState> {
     if (!Number.isFinite(dirMagnitude) || dirMagnitude < DEGENERATE_RADIAL_EPS) return
     const aimDirection = { x: rawAim.x / dirMagnitude, y: rawAim.y / dirMagnitude, z: rawAim.z / dirMagnitude }
 
+    // RQ-90 v1.9: 정확도 저하 3단계 — 판정 근거는 사격 시점의 `dirX`·
+    // `dirZ`·`mode`(가장 최근 'move' 메시지, `pendingInputs`)와 `grounded`
+    // (현재 `moveStates`, 위에서 이미 읽은 `shooterState`) 넷뿐이다(시점
+    // 회전·클라 자기신고는 배제 — `effectiveSpreadConeRadius` 시그니처
+    // 자체가 그 제한을 타입으로 잠근다). `pendingInputs`에 아직 값이
+    // 없으면(방금 접속) `IDLE_MOVE_INPUT`(dirX:0, dirZ:0, mode:'run')으로
+    // 폴백 — 다른 모든 `pendingInputs` 소비 지점과 동일한 관례. 이 폴백은
+    // `dirX=dirZ=0`이라 v1.9의 "정지" 판정에 정확히 해당한다(v1.8에서는
+    // `mode:'run'`만 보고 "이동"으로 오분류됐던 바로 그 자리).
     const spreadTuning = this.spreadTuningOverride ?? DEFAULT_SPREAD
     const spreadSeed = this.forcedSpreadSeed ?? this.issueSpreadSeed()
-    const spreadDirection = applySpread(aimDirection, createRng(spreadSeed), spreadTuning.coneRadiusRad)
+    const shooterInput = this.pendingInputs.get(shooterId) ?? IDLE_MOVE_INPUT
+    const effectiveConeRadius = effectiveSpreadConeRadius(
+      spreadTuning,
+      shooterInput.dirX,
+      shooterInput.dirZ,
+      shooterInput.mode,
+      shooterState.grounded,
+    )
+    const spreadDirection = applySpread(aimDirection, createRng(spreadSeed), effectiveConeRadius)
 
     const ray: Ray = {
       origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, DEFAULT_HITBOX.eyeHeightM),

@@ -9,7 +9,16 @@ import type { HitboxConfig } from '@shared/sim/combat'
  */
 
 export interface SpreadTuning {
+  /** 기본(정지·앉기) 콘 반경(라디안) — `BASE_CONE_RADIUS_DEG`에서 유도한다
+   * (ADR-0010, 리터럴 금지). */
   coneRadiusRad: number
+  /** 이동(걷기·달리기) 정확도 저하 배율(RQ-90 v1.8) — `coneRadiusRad`에
+   * 곱한다. */
+  movingMultiplier: number
+  /** 공중(비접지) 정확도 저하 배율(RQ-90 v1.8) — `movingMultiplier` 이상이어야
+   * 한다(단조, `effectiveSpreadConeRadius`의 3단계 우선순위는
+   * `@shared/sim/combat` 참고). */
+  airborneMultiplier: number
 }
 
 /**
@@ -47,8 +56,17 @@ export const DEFAULT_HITBOX: HitboxConfig & { eyeHeightM: number } = {
   eyeHeightM: 1.7, // 현실적인 평균 눈높이(RQ-31 비겹침 스폰 도입으로 복원, item E)
 }
 
-/** 탄퍼짐 콘 반경(RQ-90) — 실제 수치는 밸런싱 단계 결정(원장 22a, 이번 RQ
- * 범위 밖). 구조만 먼저 고정하며 기본값은 정조준(반경 0). */
+/** 정지·앉기(기본) 콘 반경 원시값(도) — `requirements.md` v1.8 확정값.
+ * 라디안 변환은 아래 `DEFAULT_SPREAD`에서 유도한다(ADR-0010, 리터럴 금지 —
+ * 프로덕션 코드가 변환된 라디안 값을 직접 복제하지 않는다). */
+const BASE_CONE_RADIUS_DEG = 0.5
+
+/** 탄퍼짐 콘 반경·저하 배율(RQ-90 v1.8) — `requirements.md` v1.8이 실제
+ * 수치를 확정했다(원장 22a가 밸런싱 단계로 미뤘던 것을 이 라운드가
+ * 닫는다). 저하 3단계(정지·앉기 ×1 · 이동 ×2 · 공중 ×4, 단조 증가)의
+ * 판정 로직은 `@shared/sim/combat`의 `effectiveSpreadConeRadius`. */
 export const DEFAULT_SPREAD: SpreadTuning = {
-  coneRadiusRad: 0,
+  coneRadiusRad: (BASE_CONE_RADIUS_DEG * Math.PI) / 180,
+  movingMultiplier: 2,
+  airborneMultiplier: 4,
 }
