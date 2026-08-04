@@ -71,10 +71,13 @@ import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../sup
  * 저장소의 기존 정신, `@shared/sim/movement` 파일 상단 코멘트를 그대로
  * 따른다).
  *
- * **우선순위 가정(스펙 미명시 — `sim-combat.test.ts` 상단 REV와 동일
- * 근거)**: `grounded===false`면 `mode`와 무관하게 공중 배율을 쓴다는
- * `effectiveSpreadConeRadius`의 가정을, 이 파일의 (5)가 실 서버 배선에서도
- * 재확인한다(mode='crouch'인데도 grounded=false면 공중 tier여야 한다).
+ * **우선순위(확정 — `sim-combat.test.ts` 상단 REV와 동일, team-lead
+ * 회신·원장 25a-10 REV)**: `grounded===false`면 `mode`와 무관하게 공중
+ * 배율을 쓴다 — v1.8이 저하 단계를 "정지·앉기 / 이동 / 공중(비접지)"로
+ * 나누고 공중을 직접 "비접지"로 정의했으므로, 접지 여부가 mode보다
+ * 먼저 갈린다는 것이 스펙 문면 자체의 해석이다(재개정 아님). 이 파일의
+ * (5)가 이 확정을 실 서버 배선에서도 재확인한다(mode='crouch'인데도
+ * grounded=false면 공중 tier여야 한다).
  *
  * **기하·오프라인 오라클**: `rq-90-spread-seed-determinism.test.ts`와 동일
  * 기법 — A(사수)→B(피격자) 바디 중심을 겨냥하는 단위 벡터를 실측 좌표로
@@ -335,7 +338,7 @@ describe('RQ-90 v1.8: 사격 시점 mode·grounded에 따라 서버가 실제로
   })
 
   it(
-    'RQ-90 v1.8: crouch+접지(기본 콘)로는 명중하는 시드가 walk+접지(이동 콘)에서는 빗나가고, walk+접지로는 명중하는 다른 시드가 공중(비접지) 콘에서는 빗나간다 — 우선순위(grounded가 mode보다 우선)도 함께 확인',
+    'RQ-90 v1.8: crouch+접지(기본 콘)로는 명중하는 시드가 walk+접지(이동 콘)에서는 빗나가고, walk+접지로는 명중하는 다른 시드가 공중(비접지) 콘에서는 빗나간다 — 우선순위(grounded가 mode보다 우선, team-lead 확정)도 함께 확인',
     async () => {
       const roomA = await joinGame(newClient(server)) // 사수
       const roomB = await joinGame(newClient(server)) // 피격자
@@ -419,13 +422,14 @@ describe('RQ-90 v1.8: 사격 시점 mode·grounded에 따라 서버가 실제로
       const after4 = readPlayer(roomB, roomB.sessionId)
       expect(after4?.hp).toBe(hp) // 변화 없음 — 오프라인 오라클('miss')과 일치
 
-      // --- (5) 우선순위 — mode를 crouch로 되돌리되(=단독이면 기본 tier)
-      // grounded는 계속 false로 유지한다. transitionSeed12는 (1)에서
-      // crouch+접지 기본 콘에 명중했던 바로 그 시드다 — grounded가 mode를
-      // 이긴다면 공중 콘이 적용돼 오프라인 오라클('miss', 위 탐색 조건
-      // 그대로)대로 빗나가야 한다. 만약 mode가 우선한다면(가정이 틀렸다면)
-      // 다시 명중해 이 단언이 실패한다 — 우선순위 가정 자체를 실 서버
-      // 배선에서 직접 시험한다.
+      // --- (5) 우선순위(확정, team-lead 회신) — mode를 crouch로 되돌리되
+      // (=단독이면 기본 tier) grounded는 계속 false로 유지한다.
+      // transitionSeed12는 (1)에서 crouch+접지 기본 콘에 명중했던 바로 그
+      // 시드다 — grounded가 mode를 이긴다면(확정된 해석) 공중 콘이 적용돼
+      // 오프라인 오라클('miss', 위 탐색 조건 그대로)대로 빗나가야 한다.
+      // 이 단언이 실패하면(다시 명중하면) 서버 구현이 확정된 우선순위와
+      // 반대로 배선됐다는 뜻이다 — 우선순위 확정을 실 서버 배선에서
+      // 직접 시험(회귀 그물)한다.
       seam.forcedSpreadSeed = transitionSeed12
       await setShooterMode(roomA, 'crouch')
       markShooterAirborne(seam, roomA.sessionId, escapedA) // mode 메시지 처리 후 다시 grounded:false로 확정(틱 경쟁 방지)

@@ -187,17 +187,17 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * ): number
  * ```
  *
- * **우선순위(test-writer 가정 — 스펙 문면이 명시하지 않아 결정, "가정 A/B"와
- * 동일 성격의 관측 가능한 계약 정의)**: `grounded===false`면 `mode`와
- * 무관하게 공중 배율(×4)을 쓴다. 접지 상태에서는 `mode==='crouch'`만
+ * **우선순위(확정 — team-lead 회신, 원장 25a-10 REV)**: `grounded===false`면
+ * `mode`와 무관하게 공중 배율(×4)을 쓴다. 접지 상태에서는 `mode==='crouch'`만
  * 기본 배율(×1, "정지·앉기" tier)이고, 그 외(walk·run)는 전부 이동
  * 배율(×2)이다 — v1.8 원문이 "이동(걷기·달리기)"로 walk·run 둘 다
  * 명시했으므로, mode 유니언 3값 중 남는 것은 crouch뿐이라는 소거법이다.
- * 저하 3단계("정지·앉기"·"이동"·"공중")는 상호 배타적 집합이라는 문면에서,
- * 공중 중에는 mode가 무엇이든(예: 사다리 이탈 직후 잔여 'crouch') 접지
- * 여부가 우선한다고 읽었다. **이 우선순위 자체는 스펙 문면에 명시되지
- * 않았다 — 다르게 읽는다면 team-lead 확인이 필요하다**(Red 보고서 질문
- * 목록에 별도 기재).
+ * **공중이 최우선인 근거는 스펙 문면 그 자체다** — team-lead가 확인:
+ * v1.8이 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"로 나누고 공중을
+ * 직접 "비접지"로 정의했으므로, 접지 여부가 먼저 갈리고 그 안에서 `mode`가
+ * 갈린다. 단조 증가(정지 ≤ 이동 ≤ 공중) 요구도 공중이 최상위임을 전제한다.
+ * (test-writer가 처음엔 "가정"으로 기재해 질문했으나, 이 해석은 스펙
+ * 재개정이 아니라 스펙 해석 확인이라 문서만 갱신하고 스펙은 그대로다.)
  *
  * **판정 근거 제한 확인 범위(하네스 비대화 방지, 팀리드 지시)**: 위 시그니처
  * 잠금(타입 테스트)이 `effectiveSpreadConeRadius` 자체의 판정 근거를
@@ -566,7 +566,7 @@ describe('RQ-90 v1.8 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 �
   // 실제값과 별개로 "구조"만 확인한다).
   const TUNING: SpreadTuning = { coneRadiusRad: 0.1, movingMultiplier: 2, airborneMultiplier: 4 }
 
-  it("mode==='crouch'·grounded=true면 기본 콘(×1)이다 — '정지·앉기' tier(우선순위 가정은 파일 상단 REV 참고)", () => {
+  it("mode==='crouch'·grounded=true면 기본 콘(×1)이다 — '정지·앉기' tier(우선순위는 파일 상단 REV 참고 — team-lead 확정)", () => {
     expect(effectiveSpreadConeRadius(TUNING, 'crouch', true)).toBeCloseTo(0.1, 12)
   })
 
@@ -575,7 +575,7 @@ describe('RQ-90 v1.8 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 �
     expect(effectiveSpreadConeRadius(TUNING, 'run', true)).toBeCloseTo(0.2, 12)
   })
 
-  it('grounded=false면 mode와 무관하게 공중 배율(×4)이다 — mode=crouch여도 접지 여부가 우선한다(파일 상단 REV "우선순위" 가정을 직접 고정)', () => {
+  it('grounded=false면 mode와 무관하게 공중 배율(×4)이다 — mode=crouch여도 접지 여부가 우선한다(파일 상단 REV "우선순위" 확정을 직접 고정, team-lead 회신)', () => {
     expect(effectiveSpreadConeRadius(TUNING, 'crouch', false)).toBeCloseTo(0.4, 12)
     expect(effectiveSpreadConeRadius(TUNING, 'walk', false)).toBeCloseTo(0.4, 12)
     expect(effectiveSpreadConeRadius(TUNING, 'run', false)).toBeCloseTo(0.4, 12)
