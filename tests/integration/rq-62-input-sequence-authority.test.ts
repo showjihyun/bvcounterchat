@@ -31,9 +31,13 @@ import { MOVEMENT } from '@shared/constants'
  *   - `vz: number` (기본 0) — 수평 속도 z
  *   - `lastProcessedInputSeq: number` (기본 0) — 서버가 처리를 반영한
  *     마지막 입력 시퀀스 번호(ADR-0003)
- * `grounded` 필드는 **추가하지 않는다** — 21a-2가 확정한 목록에 없다(자세한
- * 근거·잠재적 취약점은 `tests/unit/rq-62-prediction.test.ts`의 "참고" 절 —
- * 이 파일이 재론할 권한 밖이며, 이 파일은 그 4개 필드만 검증한다).
+ * `grounded` 필드는 21a-2 당시 **추가하지 않았다** — 확정 목록에 없었다.
+ * ⚠️ **RQ-22(원장 25a-4)가 그 전제를 깨서 이제는 추가돼 있다** — 박스 위
+ * 착지가 `grounded === true && y !== 0`을 만들어 `grounded === (y === 0)`
+ * 파생이 성립하지 않는다. **이 파일은 여전히 그 4개 필드만 검증한다**
+ * (스코프 불변) — `grounded` 배선은 `tests/integration/rq-22-box-jump.test.ts`가
+ * 관측한다. 자세한 경위는 `tests/unit/rq-62-prediction.test.ts`의 "참고"·
+ * "REV" 절 참고.
  *
  * **가정 2(coder에게 — 'move' 메시지 payload 확장)**: 기존 `{ dirX, dirZ,
  * mode, jump }`에 선택적 `seq?: number` 필드가 추가된다. 서버는 유효한
