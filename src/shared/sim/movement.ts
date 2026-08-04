@@ -560,24 +560,61 @@ function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: reado
  * 있으면 지지 높이(`standingHeight`)가 항상 0이라 박스가 전혀 없던 기존
  * 동작과 바이트 동일하다.
  *
- * **`geometry.ladders`(RQ-21, 원장 25a-7)**: 등반 가능한 수직 볼륨.
- * 이번 틱 시작 시점의 위치(`state.x/y/z`)가 어떤 사다리의 볼륨 안이면,
- * 접지/공중 분기(`stepGrounded`/`stepAirborne`) **대신** 사다리 결과
- * (`ladderOutcome`)를 반환한다 — 사다리는 벽·박스와 달리 `grounded`
- * 여부와 무관하게 우선 적용된다. 다만 이번 틱의 사다리 결과가 볼륨을
- * 벗어나면(`isWithinLadderY`가 거짓) 그 결과를 버리고 원래 위치 기준으로
- * 접지/공중 물리를 그대로 적용한다 — "볼륨을 벗어나면 즉시 중력이
- * 복귀한다"(RQ-21 v1.4 마지막 문장)가 같은 틱 안에서 성립한다. */
+ * **`geometry.ladders`(RQ-21, 원장 25a-7, REV 평가 FAIL F1 대응)**: 등반
+ * 가능한 수직 볼륨. 이번 틱 시작 시점의 위치(`state.x/y/z`)가 어떤
+ * 사다리의 볼륨 안이고 **`state.grounded`가 참**이면, 접지/공중 분기
+ * (`stepGrounded`/`stepAirborne`) **대신** 사다리 결과(`ladderOutcome`)를
+ * 반환한다.
+ *
+ * **`state.grounded`가 참일 때만 재포획하는 이유(F1 수정, 아래)**: 사다리
+ * 이탈이 공중 전이를 만드는 이상, 낙하 중인 상태가 여전히 사다리의 XZ×Y
+ * 경계 상자 안(사다리 바로 아래로 떨어지는 경로는 필연적으로 그렇다)에
+ * 있다는 이유만으로 매 틱 다시 사다리에 붙잡히면 낙하가 완주되지 못하고
+ * 사다리 상단 바로 아래 좁은 띠에서 영원히 진동한다(실측 확인, 아래 F1
+ * 절). 접지 상태에서 걸어 들어오는 정상 진입은 이 게이트로 막히지
+ * 않는다(걷는 동안은 항상 `grounded: true`).
+ *
+ * 이번 틱의 사다리 결과가 볼륨을 벗어나면(`isWithinLadderY`가 거짓):
+ * - **지지면이 있으면**(`standingHeight(state.x, state.z, geometry.boxes)`가
+ *   `state.y` 이상 — 예: 사다리 상단과 높이가 맞는 발판) 원래 위치 기준
+ *   접지/공중 물리로 넘어가 그 높이에 붙는다(기존 "발판 있음" 동작 유지).
+ * - **지지면이 없으면** 접지로 즉시 스냅하지 않고 **공중(자유낙하) 상태로
+ *   전이한다**(`grounded: false`) — "볼륨을 벗어나면 즉시 중력이
+ *   복귀한다"(RQ-21 v1.4 마지막 문장)가 문면 그대로 성립하고, `GameRoom
+ *   .trackFallDamage`가 실제 `grounded` 전이를 관측해 낙차만큼 데미지를
+ *   매긴다.
+ *
+ * **REV(독립 평가 FAIL F1, `_workspace/RQ-21-ladder/03_evaluator_report.md`)**:
+ * 최초 구현은 지지면 유무와 무관하게 항상 원래 `state`로 접지 분기를
+ * 다시 호출했다 — 발판 없는 프로덕션 사다리(`LADDER_ALPHA`, `maxY=4`,
+ * 발판 없음)에서 상단을 넘기면 그 자리에서 즉시 `y=0`(맨 지면)으로
+ * 스냅됐다(`grounded` 유지 `true`, 중간 낙하 구간이 아예 없음). 착지
+ * 전이 자체가 없으니 `GameRoom.trackFallDamage`(`next.grounded ===
+ * false`인 동안만 `fallPeakY` 갱신)가 결코 발화하지 않아 3.85m~4m
+ * 낙차에도 데미지가 0이었고, 스냅된 위치가 여전히 사다리 범위 안이라
+ * 다음 틱에 다시 붙잡혀 재상승하는 4↔0 무한 순환(요요)이 됐다. */
 export function stepMovement(state: MoveState, input: MoveInput, geometry: StaticGeometry = EMPTY_GEOMETRY): MoveState {
-  const ladder = findLadderAt(state.x, state.y, state.z, geometry.ladders)
+  const ladder = state.grounded ? findLadderAt(state.x, state.y, state.z, geometry.ladders) : undefined
   if (ladder) {
     const outcome = ladderOutcome(state, input, ladder)
     if (isWithinLadderY(outcome.y, ladder)) {
       return outcome
     }
-    // 이번 틱에 사다리 볼륨을 벗어난다 — 사다리 지배를 포기하고 원래
-    // 위치(`state`, 사다리 판정에 쓰인 시작점) 기준으로 접지/공중 물리를
-    // 그대로 적용한다. `outcome`의 초과된 y는 쓰지 않는다.
+    // 이번 틱에 사다리 볼륨을 벗어난다.
+    const support = standingHeight(state.x, state.z, geometry.boxes)
+    if (support < state.y) {
+      // 지지면이 없다 — 이탈 순간의 사다리 수직 속도(outcome.vy)를 낙하
+      // 궤적의 초기 속도로 인계한다. jumpElapsedSeconds는 stepAirborne이
+      // 이미 쓰는 기존 기법(임의의 vy를 표준 점프 곡선 위의 한 순간으로
+      // 재해석)을 그대로 재사용한다 — 새 궤적 모델을 발명하지 않는다.
+      // 수평 속도는 0(사다리는 수평 관성을 만들지 않는다, `ladderOutcome`
+      // 코멘트 참고).
+      const tPrev = jumpElapsedSeconds(outcome.vy)
+      return airborneOutcome(state, 0, 0, tPrev, geometry.walls, geometry.boxes)
+    }
+    // 지지면이 있다(발판 등) — 원래 위치(`state`, 사다리 판정에 쓰인
+    // 시작점) 기준으로 접지/공중 물리를 그대로 적용해 그 높이로 전환한다.
+    // `outcome`의 초과된 y는 쓰지 않는다.
   }
   return state.grounded
     ? stepGrounded(state, input, geometry.walls, geometry.boxes)
