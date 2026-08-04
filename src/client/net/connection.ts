@@ -74,11 +74,14 @@ function initialPredictionState(): MoveState {
 
 /**
  * `room.state`에서 자기 플레이어의 권위 이동 상태를 읽는다(RQ-62 재조정
- * 배선). `Player` 스키마는 vx·vy·vz·lastProcessedInputSeq 4필드만 노출한다
- * (21a-2 확정) — `grounded`는 와이어에 없다. `@shared/sim/movement`의 현재
- * 구현에서는 `grounded === (y === 0)`이 항상 성립하므로(`rq-62-prediction
- * .test.ts` 참고 절) 이렇게 파생한다 — movement.ts 내부 구현에 대한
- * 암묵적 의존이며, movement.ts가 바뀌면 재확인이 필요하다.
+ * 배선). `Player` 스키마는 vx·vy·vz·grounded·lastProcessedInputSeq 5필드를
+ * 노출한다(RQ-22, `@shared/schema/GameState` 참고) — `grounded`는 서버가
+ * 매 틱 권위 값을 직접 싣는 필드라 여기서 그대로 읽는다. 최초 확정
+ * (21a-2)은 `grounded === (y === 0)`으로 파생했으나, RQ-22 박스 점프가 그
+ * 전제를 깼다(박스 위 착지는 `grounded === true`인데 `y !== 0`) — 그래서
+ * 파생을 걷어내고 스키마 필드를 직접 읽는다(`vx`·`vz`·
+ * `lastProcessedInputSeq`와 동일한 "스키마에 존재 → 그대로 읽는다" 처리,
+ * `rq-62-prediction.test.ts` §103-112 "스코프 밖" 절 참고).
  *
  * 필드가 아직 없거나(패치 도착 전) 자신이 관전자(RQ-41, players 맵 밖)라
  * 위치가 없으면 undefined — 호출자는 이 경우 재조정을 건너뛴다.
@@ -94,6 +97,7 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
             vx?: unknown
             vy?: unknown
             vz?: unknown
+            grounded?: unknown
             lastProcessedInputSeq?: unknown
           }
         | undefined
@@ -107,6 +111,7 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
     typeof player?.vx === 'number' &&
     typeof player?.vy === 'number' &&
     typeof player?.vz === 'number' &&
+    typeof player?.grounded === 'boolean' &&
     typeof player?.lastProcessedInputSeq === 'number'
   ) {
     return {
@@ -116,7 +121,7 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
       vx: player.vx,
       vy: player.vy,
       vz: player.vz,
-      grounded: player.y === 0,
+      grounded: player.grounded,
       lastProcessedInputSeq: player.lastProcessedInputSeq,
     }
   }

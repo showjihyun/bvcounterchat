@@ -1,5 +1,6 @@
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
+import { PRODUCTION_BOXES } from '@shared/sim/boxes'
 
 /**
  * RQ-62 클라이언트 예측 + 재조정(reconciliation) — 순수 로직 (ADR-0003 입력
@@ -24,6 +25,16 @@ import { PRODUCTION_WALLS } from '@shared/sim/walls'
  * 목적 자체가 깨진다). 같은 상수를 공유 임포트하므로 좌표 리터럴 복제가
  * 아니다(ADR-0010). `.glb` 확정으로 `PRODUCTION_WALLS`의 출처가 바뀌어도
  * 이 파일은 손대지 않아도 된다.
+ *
+ * **REV(RQ-22 박스 점프, 원장 25a-4·F3 재발 방지) — 네 번째 인자로
+ * `@shared/sim/boxes`의 `PRODUCTION_BOXES`도 같은 두 지점에 주입한다.**
+ * F3와 완전히 같은 종류의 결함이다 — 서버(`GameRoom.ts`)만 박스를 보고
+ * 클라가 박스 없는 세계를 예측하면, 박스 위에 선 플레이어를 클라가 계속
+ * 낙하시키다가 서버 스냅샷이 도착할 때마다 다시 박스 높이로 되돌아가는
+ * 발산이 생긴다(마찬가지로 RQ-61 위반은 아니다 — 서버 값이 항상 이긴다
+ * — 하지만 그 사이 화면이 흔들린다). `PRODUCTION_WALLS`와 동일하게 공유
+ * 임포트이므로 좌표 리터럴 복제가 아니다. `.glb` 확정으로
+ * `PRODUCTION_BOXES`의 출처가 바뀌어도 이 파일은 손대지 않아도 된다.
  */
 
 export interface AuthoritativeMoveState extends MoveState {
@@ -93,7 +104,7 @@ export function createClientPredictor(initialState: MoveState): ClientPredictor 
       if (buffer.length > BUFFER_CAP) {
         buffer.shift()
       }
-      predicted = stepMovement(predicted, input, PRODUCTION_WALLS)
+      predicted = stepMovement(predicted, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
       return { seq, predicted }
     },
 
@@ -104,7 +115,7 @@ export function createClientPredictor(initialState: MoveState): ClientPredictor 
 
       let state = toMoveState(serverState)
       for (const entry of buffer) {
-        state = stepMovement(state, entry.input, PRODUCTION_WALLS)
+        state = stepMovement(state, entry.input, PRODUCTION_WALLS, PRODUCTION_BOXES)
       }
 
       predicted = state

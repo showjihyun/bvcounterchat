@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
+import { PRODUCTION_BOXES, BOX_ALPHA } from '@shared/sim/boxes'
 import {
   createClientPredictor,
   type AuthoritativeMoveState,
@@ -128,6 +129,15 @@ import {
  * 강제하거나 금지하지 않는다(스키마 결정은 이미 21a-2에서 확정됐고, 이
  * 파일이 재론할 권한 밖이다) — 다만 이 취약점을 기록해 향후 movement.ts가
  * 바뀔 때 조용히 깨지지 않도록 남긴다.
+ *
+ * **REV(RQ-22 박스 점프, 원장 25a-4) — 위 취약점이 실현됐다.** 박스 위
+ * 착지가 `grounded === true && y !== 0`을 만들어 `grounded === (y === 0)`
+ * 파생이 깨졌다. 그래서 `Player` 스키마에 `grounded`가 **추가됐고**
+ * (`GameState.ts`) `connection.ts`의 파생은 **제거됐다**. 위 "참고" 절의
+ * "오늘 기준으로는 안전"·"스키마에 추가할지 여부는 스코프 밖"은 그 시점의
+ * 기록이며 **지금은 둘 다 해소됐다**. ⚠️ 이 주석을 조건부로("…이 성립하므로
+ * 안전하다") 적어 둔 것이 값을 했다 — 조건이 깨지는 순간 무엇을 해야
+ * 하는지가 문서에서 바로 나왔다.
  */
 
 function createGroundedState(): MoveState {
@@ -449,5 +459,89 @@ describe('RQ-62/RQ-30 REV(평가 FAIL F3 대응): 예측·재조정이 서버와
     expect(reconciled).toEqual(expected)
     expect(reconciled.x).toBeLessThanOrEqual(WALL_EAST.minX + 1e-6)
     expect(reconciled.x).toBeGreaterThan(13)
+  })
+})
+
+/**
+ * RQ-22 REV(순증, team-lead 지시 — 원장 25a-2 F3 재발 방지). `src/client/
+ * net/prediction.ts`가 `stepMovement`를 부르는 두 지점(`applyInput`·
+ * `reconcile`의 재생 루프) 모두 서버(`GameRoom.ts`)와 같은 `@shared/sim
+ * /boxes`의 `PRODUCTION_BOXES`를 주입해야 한다 — F3와 완전히 같은 종류의
+ * 결함이다. 그러지 않으면 서버는 박스가 있는 세계를, 클라는 박스 없는
+ * 세계를 시뮬레이션해 박스 위에 선 플레이어를 클라가 계속 낙하시키다가
+ * 서버 스냅샷이 도착할 때마다 다시 박스 높이로 되돌아가는 발산(고무줄
+ * 현상)이 생긴다(RQ-61 위반은 아니다 — 최종 값은 항상 서버가 이긴다 —
+ * 그러나 RQ-62 예측의 목적을 깨뜨린다).
+ *
+ * 좌표는 `tests/unit/sim-movement-boxes.test.ts` GA-55①의 시작점(박스
+ * 근접면 x=11 3m 앞인 x=8, 박스 z 범위([8,11]) 한가운데 z=9)과 입력
+ * 패턴(첫 틱만 점프 + 박스 방향 이동을 HOLD_TICKS까지 유지)을 그대로
+ * 재사용한다 — 이미 회귀 안전 대역으로 전수 검증된 좌표라 이 파일이
+ * 좌표 조사를 반복하지 않는다.
+ *
+ * 아래 두 테스트는 `applyInput`·`reconcile` 각각을 독립적으로 박스 방향
+ * 점프로 스트레스한다 — `PRODUCTION_BOXES` 주입이 빠지면 두 테스트 모두
+ * 즉시 죽는다(예측/재생 결과의 y가 박스 상단(topY)이 아니라 맨 지면(0)
+ * 으로 꺼져 `stepMovement(..., PRODUCTION_WALLS, PRODUCTION_BOXES)`로
+ * 직접 계산한 기대값과 어긋난다).
+ */
+describe('RQ-62/RQ-22 REV(원장 25a-2 F3 재발 방지): 예측·재조정이 서버와 동일한 프로덕션 박스를 반영한다', () => {
+  const HOLD_TICKS = 25
+  const TICKS = 30
+
+  /** `sim-movement-boxes.test.ts`의 `inputTowardBox`와 동일 패턴 — 첫
+   * 틱만 이함(엣지 트리거) + 박스 방향(dirX=1) 유지, hold 종료 후 정지. */
+  function boxwardInput(tickIndex: number): MoveInput {
+    return { dirX: tickIndex < HOLD_TICKS ? 1 : 0, dirZ: 0, mode: 'run', jump: tickIndex === 0 }
+  }
+
+  it('RQ-62/RQ-22: applyInput — 박스 방향으로 이동하며 점프해도 predicted가 박스 상단(topY)에 착지한다(서버와 같은 지오메트리)', () => {
+    // GA-55① given과 동일 시작점 — 박스 근접면(x=11) 3m 앞, 박스 z 범위
+    // ([8,11]) 한가운데.
+    const initial: MoveState = { x: 8, y: 0, z: 9, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    let expected = initial
+    let lastPredicted: MoveState = initial
+    for (let i = 0; i < TICKS; i += 1) {
+      const input = boxwardInput(i)
+      expected = stepMovement(expected, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+      lastPredicted = predictor.applyInput(input).predicted
+    }
+
+    expect(lastPredicted).toEqual(expected)
+    // 박스가 실제로 개입했다는 전제 확인 — 박스가 없다면 y는 맨 지면(0)
+    // 으로 돌아왔을 것이다. y가 박스 상단과 같아야 박스가 실제로
+    // 관측됐다는 뜻이다.
+    expect(lastPredicted.grounded).toBe(true)
+    expect(lastPredicted.y).toBeCloseTo(BOX_ALPHA.topY, 6)
+    expect(lastPredicted.y).not.toBeCloseTo(0, 6)
+  })
+
+  it('RQ-62/RQ-22: reconcile — 미확인 입력을 재생할 때도 프로덕션 박스를 반영해, 재조정 결과가 박스 상단(topY)에 착지한다', () => {
+    const initial: MoveState = { x: 8, y: 0, z: 9, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    const inputs: MoveInput[] = []
+    for (let i = 0; i < TICKS; i += 1) {
+      const input = boxwardInput(i)
+      inputs.push(input)
+      predictor.applyInput(input)
+    }
+
+    // 서버가 아직 아무 입력도 확인하지 못했다고 가정한다 — 버퍼의 30개
+    // 입력 전부가 재생 대상이다.
+    const snapshot: AuthoritativeMoveState = { ...initial, lastProcessedInputSeq: 0 }
+    const reconciled = predictor.reconcile(snapshot)
+
+    let expected = initial
+    for (const input of inputs) {
+      expected = stepMovement(expected, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+    }
+
+    expect(reconciled).toEqual(expected)
+    expect(reconciled.grounded).toBe(true)
+    expect(reconciled.y).toBeCloseTo(BOX_ALPHA.topY, 6)
+    expect(reconciled.y).not.toBeCloseTo(0, 6)
   })
 })
