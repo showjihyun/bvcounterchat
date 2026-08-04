@@ -1099,7 +1099,10 @@ export class GameRoom extends Room<GameState> {
       // 타입이 막는 것은 **필드를 일부만 채운 객체**(`{walls, boxes}` →
       // TS2345)와 **옛 위치 인자 나열**(TS2554)뿐이다. 통째 생략과 잘못된
       // 조립(`{...PRODUCTION_GEOMETRY, ladders: []}`)은 **통합 테스트가
-      // 잡는다** — `rq-21`·`rq-22`·`rq-30` 배선 테스트 3건이 동시에 죽는다.
+      // 잡는다** — **통째 생략**은 `rq-21`·`rq-22`·`rq-30` 배선 테스트
+      // **3건이 동시에** 죽고, **잘못된 조립**은 빠진 종류의 것 **1건만**
+      // 죽는다(벽·박스는 그대로 주입되므로). 정확한 대조표는
+      // `@shared/sim/geometry` docblock에 있다.
       const next = stepMovement(previous, input, PRODUCTION_GEOMETRY)
       this.moveStates.set(sessionId, next)
       player.x = next.x
