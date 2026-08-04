@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { Client, Room } from 'colyseus.js'
-import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { applySpread, eyeOrigin, raycastHitbox, type Vec3 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'

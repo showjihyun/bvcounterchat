@@ -205,6 +205,17 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * ): number
  * ```
  *
+ * **시그니처 최종 확정(team-lead, 위치 인자 5개로 환원)**: 한때 클라
+ * 입력(`dirX`·`dirZ`·`mode`)을 `SpreadBasis` 객체 하나로 묶는 arity-3
+ * 형태가 검토됐으나(초과 프로퍼티 검사가 arity 잠금보다 정확한 잠금이라는
+ * 근거), 격리 tsc 실측으로 **번복**됐다 — 초과 프로퍼티 검사는 fresh
+ * 객체 리터럴에만 걸리고, `handleFire`가 실제로 다루는 형태인 `MoveInput`
+ * **변수**(넓은 타입)를 그대로 넘기면 구조적 호환으로 통과해버려(`declare
+ * const mi: MoveInput; objForm(mi, true)` → 에러 없음) "클라 객체를
+ * 통째로 넘기기"를 막지 못했다. 위치 인자는 호출부마다 `dirX`·`dirZ`·
+ * `mode`로의 분해를 강제해 그 경로를 구조적으로 차단한다 — 그래서
+ * 5-위치인자가 최종이다.
+ *
  * **우선순위(확정 — team-lead 회신, 원장 25a-10 REV, v1.9 판정표에도 그대로
  * 유지)**: `grounded===false`면 `dirX`·`dirZ`·`mode`와 무관하게 공중
  * 배율(×4)을 쓴다 — v1.9가 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"
