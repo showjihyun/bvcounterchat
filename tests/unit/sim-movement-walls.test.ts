@@ -165,7 +165,11 @@ function createGroundedState(overrides: Partial<MoveState> = {}): MoveState {
 function runTicks(input: MoveInput, ticks: number, initial: MoveState, walls: readonly WallAABB[]): MoveState {
   let state = initial
   for (let i = 0; i < ticks; i += 1) {
-    state = stepMovement(state, input, walls)
+    // 25a-5 REV(원장 25a-7 동시 회수) — `stepMovement`의 3번째 인자가
+    // 위치 배열에서 `StaticGeometry` 단일 객체로 바뀌었다. 이 함수의
+    // 파라미터(`walls`)·호출부(아래 전부)의 단언·기대값·좌표는 전혀
+    // 바뀌지 않는다 — 지오메트리를 객체로 감싸는 호출 구문만 바뀐다.
+    state = stepMovement(state, input, { walls, boxes: [], ladders: [] })
   }
   return state
 }
@@ -378,7 +382,9 @@ describe('RQ-30/F2 회귀 — 공중(점프) 상태에서도 벽을 통과하지
     let state = start
     for (let i = 0; i < TICKS_COVERING_FLIGHT; i += 1) {
       const input = i === 0 ? JUMP_LAUNCH : HOLD_TOWARD_WALL
-      state = stepMovement(state, input, walls)
+      // 25a-5 REV — 위 `runTicks`와 동일한 호출 구문 변경(단언·기대값
+      // 무변경).
+      state = stepMovement(state, input, { walls, boxes: [], ladders: [] })
       trajectory.push(state)
     }
     return trajectory

@@ -103,6 +103,50 @@ export interface BoxAABB {
   topY: number
 }
 
+/**
+ * RQ-21 사다리(원장 25a-7, ADR-0013 결정 2 "센서 질의는 주입된 함수/데이터로
+ * 받는다") — 등반 가능한 수직 볼륨을 축 정렬 상자 + 면 법선으로 표현한다.
+ * `WallAABB`·`BoxAABB`와 달리 수직 범위(`minY`/`maxY`)와 법선이 함께
+ * 있다 — "어느 방향이 상승인가"는 벽·박스처럼 기하만으로 정해지지 않고
+ * 사다리가 향한 면이 정한다(`tests/unit/sim-movement-ladders.test.ts`
+ * docblock "법선 일반성" 절).
+ */
+export interface LadderVolume {
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  /** 사다리가 유효한 수직 범위(m) — 이 구간 밖은 사다리가 아니다. */
+  minY: number
+  maxY: number
+  /** 사다리 면을 향하는 단위 법선(XZ 평면, 정규화 전제) — 이동 입력의
+   * (dirX,dirZ)를 이 벡터에 내적한 값이 양수면 상승, 음수면 하강, 0이면
+   * 정지(RQ-21 v1.4 "서버가 관측 가능한 양으로 방향을 정의"). */
+  normalX: number
+  normalZ: number
+}
+
+/**
+ * 원장 25a-5 — 정적 지오메트리 단일 값 주입 계약. `stepMovement(state,
+ * input, walls = [], boxes = [])`처럼 지오메트리 종류마다 기본값 있는
+ * 위치 인자를 추가하면, 호출부가 하나만 빠뜨려도 타입 검사를 통과해
+ * 서버·클라 발산이 재발한다(25a-2 F3 벽 · 25a-4 박스, 원장 25a-5). 사다리를
+ * 세 번째 정적 지오메트리 종류로 얹으면서, 위치 인자를 늘리는 대신 세
+ * 필드를 전부 요구하는 단일 객체로 묶어 **누락이 타입 에러가 되게** 한다
+ * — 필드 하나라도 빠진 리터럴은 이 인터페이스에 대입할 수 없다(옵셔널·
+ * 인덱스 시그니처 금지, `tests/unit/sim-movement-ladders.test.ts` "25a-5
+ * 계약" 절이 `@ts-expect-error`로 이를 직접 고정한다). */
+export interface StaticGeometry {
+  walls: readonly WallAABB[]
+  boxes: readonly BoxAABB[]
+  ladders: readonly LadderVolume[]
+}
+
+/** 지오메트리가 전혀 없는 기본값 — `stepMovement`의 세 번째 인자를
+ * 생략하거나 이 값을 그대로 넘기면 벽·박스·사다리가 전혀 없던 기존 동작
+ * 그대로다(하위 호환, ADR-0010). */
+export const EMPTY_GEOMETRY: StaticGeometry = { walls: [], boxes: [], ladders: [] }
+
 /** 1틱의 경과 시간(초). `NET.TICK_MS`(1000/30, 부동소수점)를 매번 나누지
  * 않도록 모듈 로드 시 한 번만 계산한다. */
 const TICK_SECONDS = NET.TICK_MS / 1000
@@ -118,6 +162,18 @@ const JUMP_GRAVITY_MPS2 = 20
 /** 위 중력으로 `MOVEMENT.JUMP_HEIGHT`에 도달하는 데 필요한 초기 수직
  * 속도(m/s) — h = v0²/2g의 역산. */
 const JUMP_V0_MPS = Math.sqrt(2 * JUMP_GRAVITY_MPS2 * MOVEMENT.JUMP_HEIGHT)
+
+/** 사다리 상승/하강 속도(m/s, RQ-21 v1.4) — 앉기 속도(RQ-92)와 같다.
+ * 리터럴 3을 쓰지 않고 상수에서 유도한다(ADR-0010 값 복제 금지). */
+const LADDER_CLIMB_MPS = MOVEMENT.SPEED * MOVEMENT.CROUCH_MULTIPLIER
+
+/** 사다리 Y 경계 판정의 부동소수점 허용 오차(m). 여러 틱에 걸쳐 `y += vy ×
+ * TICK_SECONDS`를 반복 가산하면 정확히 `minY`/`maxY`에 도달해야 하는
+ * 지점에서 최종 비트 단위 오차가 생긴다(실측: 0에서 0.1m씩 40회 가산한
+ * 결과가 정확히 4가 아니라 `4.000000000000002`). 이 오차가 "볼륨을 실제로
+ * 벗어났다"는 판정을 오염시키지 않도록, 이 파일을 검증하는 테스트가 쓰는
+ * 허용치(`TOLERANCE_M = 1e-9`)와 같은 크기의 여유를 둔다. */
+const LADDER_Y_EPSILON_M = 1e-9
 
 /** `mode`별 이동 속도(m/s). 타입은 리터럴 3종이지만, 서버 경계에서 온
  * 값의 런타임 값까지는 이 함수가 보장할 수 없다 — 알 수 없는 값은 기본
@@ -403,6 +459,63 @@ function airborneOutcome(
   }
 }
 
+/** `y`가 사다리의 수직 범위 안(폐구간, `LADDER_Y_EPSILON_M` 여유 포함)에
+ * 있는지. Y가 폐구간인 이유는 지면에서 걸어 들어온 플레이어가 정확히
+ * `y = minY`(사다리 밑동 = 지면 높이)에 서 있는 순간부터 "볼륨 안"으로
+ * 인정돼야 진입 자체가 성립하기 때문이다(개방 구간이면 진입 지점 자체가
+ * 영원히 "볼륨 밖"이 된다). */
+function isWithinLadderY(y: number, ladder: LadderVolume): boolean {
+  return y >= ladder.minY - LADDER_Y_EPSILON_M && y <= ladder.maxY + LADDER_Y_EPSILON_M
+}
+
+/** 위치 `(x,y,z)`를 포함하는 첫 사다리를 찾는다. XZ는 벽·박스와 동일한
+ * 개방 구간(`clampAgainstWalls`/`standingHeight`와 동일 관례), Y는 위
+ * `isWithinLadderY`(폐구간)를 쓴다. */
+function findLadderAt(x: number, y: number, z: number, ladders: readonly LadderVolume[]): LadderVolume | undefined {
+  return ladders.find(
+    (ladder) => x > ladder.minX && x < ladder.maxX && z > ladder.minZ && z < ladder.maxZ && isWithinLadderY(y, ladder),
+  )
+}
+
+/** 사다리 결과(RQ-21 v1.4) — 입력의 수평 방향(정규화 후)을 사다리 면의
+ * 법선에 내적한 값이 상승/하강/정지를 정한다. `vx`·`vz`는 0이다 — 사다리는
+ * 수직 이동만 허용하고(RQ-21 원문), 수평 관성이라는 개념 자체가 없다.
+ *
+ * **`x`·`z`는 진입 시점 값을 그대로 유지한다(스냅하지 않는다)** — RQ-21
+ * v1.4·GA-54는 사다리 볼륨 안의 수평 위치를 전혀 규정하지 않는다(중력
+ * 미적용·법선 기준 상승/하강/정지·이탈 시 중력 복귀·속도 3m/s가 전부).
+ * 한때 XZ 폭 중심으로 스냅하는 구현이 있었으나, 그 근거는 통합 테스트의
+ * `toBeCloseTo(center, 1)` 단언이었고 — 그 단언 자체가 결함이었다(정밀도
+ * 0.05m가 걷기 보폭 0.2m/틱보다 좁아 "볼륨 안에 들어와 있다"는 느슨한
+ * 위생 점검을 의도치 않게 "정확히 중앙 스냅"이라는 강한 계약으로 만들어
+ * 버렸다). 스펙이 요구하지 않는 동작을 테스트에 맞춰 도입한 것이라 걷어냈다
+ * — 단언은 `tests/integration/rq-21-ladder-vertical-movement.test.ts`(REV,
+ * 볼륨 XZ 범위 안인지만 확인)로 정정됐다. `x`·`z`는 등반 내내(상승·하강·
+ * 정지) 그대로 유지되므로("불변") 진입 경로와 무관하게 안정적이다.
+ *
+ * **`grounded: true`인 이유(RQ-18과의 상호작용, 설계 결정)**: `grounded`를
+ * `false`(공중)로 보고하면 `GameRoom.trackFallDamage`의 `fallPeakY`가
+ * `next.grounded === false`인 동안 러닝 최댓값을 추적하므로, 사다리를
+ * 안전하게 타고 내려오는 것을 낙하로 오귀속해 가짜 낙하 데미지가 붙는다
+ * (`tests/unit/sim-movement-ladders.test.ts` "RQ-18 상호작용" 절 참고).
+ * `grounded: true`를 쓰면 `trackFallDamage`가 애초에 `fallPeakY`를
+ * 갱신하지 않으므로(GameRoom 코드 변경 없이) 이 오귀속이 구조적으로
+ * 발생하지 않는다. */
+function ladderOutcome(state: MoveState, input: MoveInput, ladder: LadderVolume): MoveState {
+  const { dirX, dirZ } = clampDirection(input.dirX, input.dirZ)
+  const projection = dirX * ladder.normalX + dirZ * ladder.normalZ
+  const vy = projection > 0 ? LADDER_CLIMB_MPS : projection < 0 ? -LADDER_CLIMB_MPS : 0
+  return {
+    x: state.x,
+    y: state.y + vy * TICK_SECONDS,
+    z: state.z,
+    vx: 0,
+    vy,
+    vz: 0,
+    grounded: true,
+  }
+}
+
 function stepGrounded(state: MoveState, input: MoveInput, walls: readonly WallAABB[], boxes: readonly BoxAABB[]): MoveState {
   const { vx, vz } = groundVelocity(input)
   if (!input.jump) {
@@ -426,29 +539,84 @@ function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: reado
   return airborneOutcome(state, state.vx, state.vz, tPrev, walls, boxes)
 }
 
-/** 1틱(`NET.TICK_MS`) 전진 — 순수 산술(RQ-20, RQ-92). Rapier 없음,
- * 사다리(RQ-21)·낙하 데미지(RQ-18)는 여전히 스코프 밖이다 — 박스 등반
- * (RQ-22)은 이 함수가 직접 다룬다(아래 `boxes` 인자, 원장 25a-4).
+/** 1틱(`NET.TICK_MS`) 전진 — 순수 산술(RQ-20, RQ-92). Rapier 없음. 박스
+ * 등반(RQ-22)·사다리(RQ-21)는 이 함수가 직접 다룬다(아래 `geometry` 인자,
+ * 원장 25a-4·25a-7). 낙하 데미지(RQ-18)는 여전히 스코프 밖(`GameRoom`이
+ * 이 함수의 출력을 보고 별도로 계산한다).
  *
- * **`walls`(RQ-30, 원장 25a-2/26o) — 세 번째 인자, 기본값 `[]`**: 정적
- * 지오메트리를 축 정렬 상자 목록으로 **주입**받는다(`src/shared`는 파일·
- * 전역·환경에서 벽을 읽지 않는다 — ADR-0010 환경 중립). 생략하거나 빈
- * 배열을 넘기면 벽이 전혀 없던 기존 동작 그대로다(하위 호환 — 기존 13개
- * 호출부가 전부 이 계약을 만족한다). **접지·공중 모두 적용한다**(평가
- * FAIL F2 대응 REV, 위 `airborneOutcome` 코멘트 참고 — 최초 구현은 접지
- * 상태에만 적용해 공중에서 벽을 관통했다).
+ * **`geometry`(`StaticGeometry`, 원장 25a-5) — 세 번째 인자, 기본값
+ * `EMPTY_GEOMETRY`**: 벽·박스·사다리 세 정적 지오메트리를 단일 값으로
+ * **주입**받는다(`src/shared`는 파일·전역·환경에서 지오메트리를 읽지
+ * 않는다 — ADR-0010 환경 중립). 생략하거나 `EMPTY_GEOMETRY`를 그대로
+ * 넘기면 지오메트리가 전혀 없던 기존 동작 그대로다(하위 호환 — 기존
+ * 호출부 전부 이 계약을 만족한다).
  *
- * **`boxes`(RQ-22, 원장 25a-4) — 네 번째 인자, 기본값 `[]`**: 유한 높이
- * 지오메트리를 `walls`와 동일하게 환경 중립으로 주입받는다. 생략하거나
- * 빈 배열을 넘기면 지지 높이(`standingHeight`)가 항상 0이라 박스가 전혀
- * 없던 기존 동작과 바이트 동일하다(하위 호환 — 기존 15개 `stepMovement`
- * 호출 테스트 파일 전부 이 계약을 만족, `tests/unit/sim-movement-boxes
- * .test.ts` "기본값 호환" 절). */
-export function stepMovement(
-  state: MoveState,
-  input: MoveInput,
-  walls: readonly WallAABB[] = [],
-  boxes: readonly BoxAABB[] = [],
-): MoveState {
-  return state.grounded ? stepGrounded(state, input, walls, boxes) : stepAirborne(state, walls, boxes)
+ * **`geometry.walls`(RQ-30, 원장 25a-2/26o)**: 축 정렬 상자 목록. **접지·
+ * 공중 모두 적용한다**(평가 FAIL F2 대응 REV, 아래 `airborneOutcome`
+ * 코멘트 참고 — 최초 구현은 접지 상태에만 적용해 공중에서 벽을
+ * 관통했다).
+ *
+ * **`geometry.boxes`(RQ-22, 원장 25a-4)**: 유한 높이 지오메트리. 비어
+ * 있으면 지지 높이(`standingHeight`)가 항상 0이라 박스가 전혀 없던 기존
+ * 동작과 바이트 동일하다.
+ *
+ * **`geometry.ladders`(RQ-21, 원장 25a-7, REV 평가 FAIL F1 대응)**: 등반
+ * 가능한 수직 볼륨. 이번 틱 시작 시점의 위치(`state.x/y/z`)가 어떤
+ * 사다리의 볼륨 안이고 **`state.grounded`가 참**이면, 접지/공중 분기
+ * (`stepGrounded`/`stepAirborne`) **대신** 사다리 결과(`ladderOutcome`)를
+ * 반환한다.
+ *
+ * **`state.grounded`가 참일 때만 재포획하는 이유(F1 수정, 아래)**: 사다리
+ * 이탈이 공중 전이를 만드는 이상, 낙하 중인 상태가 여전히 사다리의 XZ×Y
+ * 경계 상자 안(사다리 바로 아래로 떨어지는 경로는 필연적으로 그렇다)에
+ * 있다는 이유만으로 매 틱 다시 사다리에 붙잡히면 낙하가 완주되지 못하고
+ * 사다리 상단 바로 아래 좁은 띠에서 영원히 진동한다(실측 확인, 아래 F1
+ * 절). 접지 상태에서 걸어 들어오는 정상 진입은 이 게이트로 막히지
+ * 않는다(걷는 동안은 항상 `grounded: true`).
+ *
+ * 이번 틱의 사다리 결과가 볼륨을 벗어나면(`isWithinLadderY`가 거짓):
+ * - **지지면이 있으면**(`standingHeight(state.x, state.z, geometry.boxes)`가
+ *   `state.y` 이상 — 예: 사다리 상단과 높이가 맞는 발판) 원래 위치 기준
+ *   접지/공중 물리로 넘어가 그 높이에 붙는다(기존 "발판 있음" 동작 유지).
+ * - **지지면이 없으면** 접지로 즉시 스냅하지 않고 **공중(자유낙하) 상태로
+ *   전이한다**(`grounded: false`) — "볼륨을 벗어나면 즉시 중력이
+ *   복귀한다"(RQ-21 v1.4 마지막 문장)가 문면 그대로 성립하고, `GameRoom
+ *   .trackFallDamage`가 실제 `grounded` 전이를 관측해 낙차만큼 데미지를
+ *   매긴다.
+ *
+ * **REV(독립 평가 FAIL F1, `_workspace/RQ-21-ladder/03_evaluator_report.md`)**:
+ * 최초 구현은 지지면 유무와 무관하게 항상 원래 `state`로 접지 분기를
+ * 다시 호출했다 — 발판 없는 프로덕션 사다리(`LADDER_ALPHA`, `maxY=4`,
+ * 발판 없음)에서 상단을 넘기면 그 자리에서 즉시 `y=0`(맨 지면)으로
+ * 스냅됐다(`grounded` 유지 `true`, 중간 낙하 구간이 아예 없음). 착지
+ * 전이 자체가 없으니 `GameRoom.trackFallDamage`(`next.grounded ===
+ * false`인 동안만 `fallPeakY` 갱신)가 결코 발화하지 않아 3.85m~4m
+ * 낙차에도 데미지가 0이었고, 스냅된 위치가 여전히 사다리 범위 안이라
+ * 다음 틱에 다시 붙잡혀 재상승하는 4↔0 무한 순환(요요)이 됐다. */
+export function stepMovement(state: MoveState, input: MoveInput, geometry: StaticGeometry = EMPTY_GEOMETRY): MoveState {
+  const ladder = state.grounded ? findLadderAt(state.x, state.y, state.z, geometry.ladders) : undefined
+  if (ladder) {
+    const outcome = ladderOutcome(state, input, ladder)
+    if (isWithinLadderY(outcome.y, ladder)) {
+      return outcome
+    }
+    // 이번 틱에 사다리 볼륨을 벗어난다.
+    const support = standingHeight(state.x, state.z, geometry.boxes)
+    if (support < state.y) {
+      // 지지면이 없다 — 이탈 순간의 사다리 수직 속도(outcome.vy)를 낙하
+      // 궤적의 초기 속도로 인계한다. jumpElapsedSeconds는 stepAirborne이
+      // 이미 쓰는 기존 기법(임의의 vy를 표준 점프 곡선 위의 한 순간으로
+      // 재해석)을 그대로 재사용한다 — 새 궤적 모델을 발명하지 않는다.
+      // 수평 속도는 0(사다리는 수평 관성을 만들지 않는다, `ladderOutcome`
+      // 코멘트 참고).
+      const tPrev = jumpElapsedSeconds(outcome.vy)
+      return airborneOutcome(state, 0, 0, tPrev, geometry.walls, geometry.boxes)
+    }
+    // 지지면이 있다(발판 등) — 원래 위치(`state`, 사다리 판정에 쓰인
+    // 시작점) 기준으로 접지/공중 물리를 그대로 적용해 그 높이로 전환한다.
+    // `outcome`의 초과된 y는 쓰지 않는다.
+  }
+  return state.grounded
+    ? stepGrounded(state, input, geometry.walls, geometry.boxes)
+    : stepAirborne(state, geometry.walls, geometry.boxes)
 }

@@ -7,7 +7,7 @@ import { createScheduler } from '@shared/sim/scheduler'
 import { createTickDriver } from '@shared/sim/tickDriver'
 import { stepMovement, type MoveInput, type MoveState, type WallAABB } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
-import { PRODUCTION_BOXES } from '@shared/sim/boxes'
+import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 import {
   applySpread,
   canFire,
@@ -1088,11 +1088,22 @@ export class GameRoom extends Room<GameState> {
       if (input.jump) {
         this.pendingInputs.set(sessionId, { ...input, jump: false })
       }
-      // RQ-30(원장 25a-2): 세 번째 인자로 잠정 벽 목록을 주입한다 — 배치
-      // 근거·"확정 배치 아님" 경고는 `@shared/sim/walls` docblock 참고.
-      // RQ-22(원장 25a-4): 네 번째 인자로 잠정 박스 목록을 주입한다 —
-      // 배치 근거는 `@shared/sim/boxes` docblock 참고.
-      const next = stepMovement(previous, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+      // 원장 25a-5(RQ-21 동시 회수): 세 번째 인자로 벽·박스·사다리
+      // 정본을 단일 값(`PRODUCTION_GEOMETRY`)으로 주입한다 — 배치 근거는
+      // `@shared/sim/walls`·`@shared/sim/boxes`·`@shared/sim/ladders`
+      // docblock 참고.
+      //
+      // ⚠️ **이 주입을 빠뜨려도 타입 에러가 나지 않는다** — `stepMovement`의
+      // 세 번째 인자에 `EMPTY_GEOMETRY` 기본값이 있어 `stepMovement(previous,
+      // input)`은 그대로 컴파일된다(PR #52 리뷰 major 1, 격리 tsconfig 실측).
+      // 타입이 막는 것은 **필드를 일부만 채운 객체**(`{walls, boxes}` →
+      // TS2345)와 **옛 위치 인자 나열**(TS2554)뿐이다. 통째 생략과 잘못된
+      // 조립(`{...PRODUCTION_GEOMETRY, ladders: []}`)은 **통합 테스트가
+      // 잡는다** — **통째 생략**은 `rq-21`·`rq-22`·`rq-30` 배선 테스트
+      // **3건이 동시에** 죽고, **잘못된 조립**은 빠진 종류의 것 **1건만**
+      // 죽는다(벽·박스는 그대로 주입되므로). 정확한 대조표는
+      // `@shared/sim/geometry` docblock에 있다.
+      const next = stepMovement(previous, input, PRODUCTION_GEOMETRY)
       this.moveStates.set(sessionId, next)
       player.x = next.x
       player.y = next.y
