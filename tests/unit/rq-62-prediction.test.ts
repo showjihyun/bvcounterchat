@@ -381,7 +381,10 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 재생한 결과.
     let expected = initial
     for (let i = totalInputs - BUFFER_CAP; i < totalInputs; i += 1) {
-      expected = stepMovement(expected, inputs[i]!, PRODUCTION_WALLS)
+      // 25a-5 REV(원장 25a-7 동시 회수) — `stepMovement`의 3번째 인자가
+      // 위치 배열에서 `StaticGeometry` 단일 객체로 바뀌었다. 단언·기대값·
+      // 좌표는 전혀 바뀌지 않는다 — 호출 구문만 바뀐다.
+      expected = stepMovement(expected, inputs[i]!, { walls: PRODUCTION_WALLS, boxes: [], ladders: [] })
     }
     expect(reconciled).toEqual(expected)
 
@@ -392,7 +395,8 @@ describe(`RQ-62 클라이언트 예측 — 예측 버퍼 상한(리뷰 minor 대
     // 구분 불가).
     let unboundedExpected = initial
     for (const input of inputs) {
-      unboundedExpected = stepMovement(unboundedExpected, input, PRODUCTION_WALLS)
+      // 25a-5 REV — 위와 동일한 호출 구문 변경(단언·기대값 무변경).
+      unboundedExpected = stepMovement(unboundedExpected, input, { walls: PRODUCTION_WALLS, boxes: [], ladders: [] })
     }
     expect(expected).not.toEqual(unboundedExpected)
   })
@@ -424,7 +428,8 @@ describe('RQ-62/RQ-30 REV(평가 FAIL F3 대응): 예측·재조정이 서버와
     let expected = initial
     let lastPredicted: MoveState = initial
     for (let i = 0; i < TICKS; i += 1) {
-      expected = stepMovement(expected, input, PRODUCTION_WALLS)
+      // 25a-5 REV — 호출 구문만 객체 형태로 변경(단언·기대값 무변경).
+      expected = stepMovement(expected, input, { walls: PRODUCTION_WALLS, boxes: [], ladders: [] })
       lastPredicted = predictor.applyInput(input).predicted
     }
 
@@ -453,7 +458,8 @@ describe('RQ-62/RQ-30 REV(평가 FAIL F3 대응): 예측·재조정이 서버와
 
     let expected = initial
     for (let i = 0; i < TICKS; i += 1) {
-      expected = stepMovement(expected, input, PRODUCTION_WALLS)
+      // 25a-5 REV — 호출 구문만 객체 형태로 변경(단언·기대값 무변경).
+      expected = stepMovement(expected, input, { walls: PRODUCTION_WALLS, boxes: [], ladders: [] })
     }
 
     expect(reconciled).toEqual(expected)
@@ -505,7 +511,8 @@ describe('RQ-62/RQ-22 REV(원장 25a-2 F3 재발 방지): 예측·재조정이 �
     let lastPredicted: MoveState = initial
     for (let i = 0; i < TICKS; i += 1) {
       const input = boxwardInput(i)
-      expected = stepMovement(expected, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+      // 25a-5 REV — 호출 구문만 객체 형태로 변경(단언·기대값 무변경).
+      expected = stepMovement(expected, input, { walls: PRODUCTION_WALLS, boxes: PRODUCTION_BOXES, ladders: [] })
       lastPredicted = predictor.applyInput(input).predicted
     }
 
@@ -536,7 +543,8 @@ describe('RQ-62/RQ-22 REV(원장 25a-2 F3 재발 방지): 예측·재조정이 �
 
     let expected = initial
     for (const input of inputs) {
-      expected = stepMovement(expected, input, PRODUCTION_WALLS, PRODUCTION_BOXES)
+      // 25a-5 REV — 호출 구문만 객체 형태로 변경(단언·기대값 무변경).
+      expected = stepMovement(expected, input, { walls: PRODUCTION_WALLS, boxes: PRODUCTION_BOXES, ladders: [] })
     }
 
     expect(reconciled).toEqual(expected)

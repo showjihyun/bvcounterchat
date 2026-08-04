@@ -186,7 +186,11 @@ function runSequence(start: MoveState, ticks: number, inputAt: (tickIndex: numbe
   const trajectory: MoveState[] = []
   let state = start
   for (let i = 0; i < ticks; i += 1) {
-    state = stepMovement(state, inputAt(i), [], boxes)
+    // 25a-5 REV(원장 25a-7 동시 회수) — `stepMovement`의 3번째 인자가
+    // 위치 인자(walls, boxes)에서 `StaticGeometry` 단일 객체로 바뀌었다.
+    // 이 함수의 단언·기대값·좌표는 전혀 바뀌지 않는다 — 호출 구문만
+    // 바뀐다.
+    state = stepMovement(state, inputAt(i), { walls: [], boxes, ladders: [] })
     trajectory.push(state)
   }
   return trajectory
@@ -198,7 +202,8 @@ function runSequence(start: MoveState, ticks: number, inputAt: (tickIndex: numbe
 function runConstant(input: MoveInput, ticks: number, start: MoveState, boxes: readonly BoxAABB[]): MoveState {
   let state = start
   for (let i = 0; i < ticks; i += 1) {
-    state = stepMovement(state, input, [], boxes)
+    // 25a-5 REV — 위 `runSequence`와 동일한 호출 구문 변경(단언·기대값 무변경).
+    state = stepMovement(state, input, { walls: [], boxes, ladders: [] })
   }
   return state
 }
@@ -409,7 +414,8 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
       // §8.5(REV) 실증 참고.
       const atTopHeight = createGroundedState({ x: BOX_ALPHA.minX - 0.1, y: BOX_ALPHA.topY, z: 9 })
       const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
-      const next = stepMovement(atTopHeight, input, [], TEST_BOXES)
+      // 25a-5 REV — 호출 구문만 객체 형태로 변경(단언·기대값 무변경).
+      const next = stepMovement(atTopHeight, input, { walls: [], boxes: TEST_BOXES, ladders: [] })
 
       // 차단됐다면 근접면(minX=11)에 멈췄을 것이다(x=11) — 이 결정("이상"은
       // 차단 없음)에서는 자유롭게 한 틱만큼 전진해 근접면을 넘어선다
@@ -424,7 +430,10 @@ describe('RQ-22 박스 점프 — 순수 틱 함수 주입 계약 (GA-55 뒷받�
     it('GA-55①과 정확히 같은 경로를, boxes 인자를 아예 넘기지 않고(walls만 3-인자) 재생하면 박스를 무시하고 y=0으로 착지한다', () => {
       let state: MoveState = START
       for (let i = 0; i < TOTAL_TICKS; i += 1) {
-        state = stepMovement(state, inputTowardBox(i), []) // 3-인자 — boxes 생략
+        // 25a-5 REV — 옛 "3-인자(walls만, boxes 생략)" 형태의 정확한 등가는
+        // 이제 walls·boxes·ladders를 전부 빈 값으로 명시한 geometry 객체다
+        // (단언·기대값 무변경 — 호출 구문만 바뀐다).
+        state = stepMovement(state, inputTowardBox(i), { walls: [], boxes: [], ladders: [] })
       }
       expect(state.grounded).toBe(true)
       expect(state.y).toBeCloseTo(0, 6)
@@ -491,11 +500,12 @@ describe('리뷰 blocker 재현 — 박스 위에서 점프하면 (박스 높이
    * (g=20, `JUMP_HEIGHT`=1.0)에서는 약 0.1997m다 — 결함의 정확한
    * 임계선이며, 매 실행마다 이 함수 자체에서 재도출되므로 물리 상수가
    * 바뀌어도 따라간다. */
+  // 25a-5 REV — 옛 4-인자(walls=[], boxes=[]) 호출의 정확한 등가는
+  // geometry 객체 하나로 감싸는 것이다(단언·기대값 무변경).
   const ONE_TICK_AIRBORNE_HEIGHT_M = stepMovement(
     createGroundedState(),
     { dirX: 0, dirZ: 0, mode: 'run', jump: true },
-    [],
-    [],
+    { walls: [], boxes: [], ladders: [] },
   ).y
 
   const BOX_CENTER_X = (BOX_ALPHA.minX + BOX_ALPHA.maxX) / 2
