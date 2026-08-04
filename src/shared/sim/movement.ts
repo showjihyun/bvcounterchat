@@ -481,16 +481,17 @@ function findLadderAt(x: number, y: number, z: number, ladders: readonly LadderV
  * 법선에 내적한 값이 상승/하강/정지를 정한다. `vx`·`vz`는 0이다 — 사다리는
  * 수직 이동만 허용하고(RQ-21 원문), 수평 관성이라는 개념 자체가 없다.
  *
- * **`x`·`z`는 사다리 XZ 폭의 중심으로 고정한다(걸어 들어온 임의의 진입
- * 좌표를 그대로 들고 있지 않는다)** — 이동 속도(6m/s)와 틱 간격(1/30s)이
- * 만드는 0.2m 단위 걸음 폭 때문에, "걸어 들어온 그대로"는 사다리 폭
- * (1m) 안 어디든 걸릴 수 있어 사다리마다·접근 방향마다 값이 들쭉날쭉하다
- * (`tests/integration/rq-21-ladder-vertical-movement.test.ts` GA-54 본체가
- * 프로덕션 배선으로 실측 — 걸어서 진입한 실제 값은 폭 중심에서 0.3m
- * 벗어났다). 중심으로 스냅하면 사다리 위 위치가 진입 경로·속도와
- * 무관하게 결정적이다 — 레일 위에 서 있는 사다리의 실제 감각과도 맞다.
- * 등반 내내(상승·하강·정지) 같은 값을 반환하므로 "불변"이라는 성질 자체는
- * 유지된다.
+ * **`x`·`z`는 진입 시점 값을 그대로 유지한다(스냅하지 않는다)** — RQ-21
+ * v1.4·GA-54는 사다리 볼륨 안의 수평 위치를 전혀 규정하지 않는다(중력
+ * 미적용·법선 기준 상승/하강/정지·이탈 시 중력 복귀·속도 3m/s가 전부).
+ * 한때 XZ 폭 중심으로 스냅하는 구현이 있었으나, 그 근거는 통합 테스트의
+ * `toBeCloseTo(center, 1)` 단언이었고 — 그 단언 자체가 결함이었다(정밀도
+ * 0.05m가 걷기 보폭 0.2m/틱보다 좁아 "볼륨 안에 들어와 있다"는 느슨한
+ * 위생 점검을 의도치 않게 "정확히 중앙 스냅"이라는 강한 계약으로 만들어
+ * 버렸다). 스펙이 요구하지 않는 동작을 테스트에 맞춰 도입한 것이라 걷어냈다
+ * — 단언은 `tests/integration/rq-21-ladder-vertical-movement.test.ts`(REV,
+ * 볼륨 XZ 범위 안인지만 확인)로 정정됐다. `x`·`z`는 등반 내내(상승·하강·
+ * 정지) 그대로 유지되므로("불변") 진입 경로와 무관하게 안정적이다.
  *
  * **`grounded: true`인 이유(RQ-18과의 상호작용, 설계 결정)**: `grounded`를
  * `false`(공중)로 보고하면 `GameRoom.trackFallDamage`의 `fallPeakY`가
@@ -505,9 +506,9 @@ function ladderOutcome(state: MoveState, input: MoveInput, ladder: LadderVolume)
   const projection = dirX * ladder.normalX + dirZ * ladder.normalZ
   const vy = projection > 0 ? LADDER_CLIMB_MPS : projection < 0 ? -LADDER_CLIMB_MPS : 0
   return {
-    x: (ladder.minX + ladder.maxX) / 2,
+    x: state.x,
     y: state.y + vy * TICK_SECONDS,
-    z: (ladder.minZ + ladder.maxZ) / 2,
+    z: state.z,
     vx: 0,
     vy,
     vz: 0,
