@@ -648,11 +648,32 @@ describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요�
     }
   })
 
-  it('궤적은 결국 접지 상태로 안정된다(무한 공중이 아니다) — 착지 후 y는 지지 높이(발판 없음, 0)와 같다', () => {
+  it('궤적은 결국 접지 상태로 안정된다(무한 공중이 아니다) — 실제로 공중(낙하)을 거친 뒤 지지 높이(발판 없음, 0)로 착지한다', () => {
+    // REV(team-lead 지적) — 원래 단언(`trajectory[마지막].y ≈ 0`)은 이
+    // describe 상단 docblock이 "고정하지 않는다"고 명시한 바로 그
+    // 동작(착지 후 같은 입력을 유지하면 사다리에 다시 붙잡혀 재등반하는
+    // 것 — "정상적 반복", 버그 아님)과 충돌했다. 관찰 창(50틱) 안에서
+    // 재등반이 진행 중이면 마지막 프레임의 y가 0이 아닐 수 있다(coder
+    // 재현: 25틱 재등반 후 y=2.5). 이 단언이 실제로 고정하려던 명제는
+    // 제목 그대로 "무한 공중이 아니다"다 — ①실제로 공중(낙하) 구간을
+    // 거쳤고 ②그 뒤 지지 높이로 착지하는 시점이 존재한다는 것만 확인하고,
+    // 착지 이후(재등반 포함)는 묻지 않는다.
     const trajectory = climbToExit()
-    const settled = trajectory[trajectory.length - 1]!
-    expect(settled.grounded).toBe(true)
-    expect(settled.y).toBeCloseTo(0, 6)
+
+    // 전제 확인 — 실제로 공중(낙하) 구간을 거쳤다. 원버그(공중 전이 없이
+    // 즉시 접지 스냅)에서는 grounded가 한 번도 false가 되지 않으므로
+    // (위 "꼭대기를 넘기는 틱은 grounded:false" 단언이 이미 그것을 직접
+    // 고정한다) 이 인덱스가 -1이 되어 이 단언 자체가 실패한다 — "접지
+    // 스냅"과 "실제 낙하 후 착지"를 가르는 지점.
+    const airborneIndex = trajectory.findIndex((s) => s.grounded === false)
+    expect(airborneIndex).toBeGreaterThanOrEqual(0)
+
+    // 그 공중 구간 이후 처음 접지로 돌아오는 시점 — 그 지점의 y가 지지
+    // 높이(발판 없음, 0)와 같아야 한다. 그 이후(재등반 포함)는 이 단언이
+    // 다루지 않는다(위 REV 코멘트).
+    const landedIndex = trajectory.findIndex((s, i) => i > airborneIndex && s.grounded === true)
+    expect(landedIndex).toBeGreaterThan(airborneIndex)
+    expect(trajectory[landedIndex]!.y).toBeCloseTo(0, 6)
   })
 
   it('양성 대조군(과잉수정 방지) — 경계에 닿지 않는 등반·하강·정지 중에는 여전히 grounded:true가 유지된다(기존 "RQ-18 상호작용" 명제 재확인)', () => {
