@@ -244,7 +244,7 @@ function jumpElapsedSeconds(previousVy: number): number {
  * 소비자가 없고, 클라 예측은 같은 함수를 재생하므로 서버와 정합한다. 다만
  * 속도를 소비하는 첫 코드(달리기 애니메이션·데드레커닝)가 생기면 "벽에 붙어
  * 달리는" 표현이 나온다 — **그때 이것이 결정이었는지 누락이었는지 알 수 있게**
- * 여기 적어 둔다. 속도 처리는 벽 충돌 조각(RQ-32)에서 함께 정한다.
+ * 여기 적어 둔다.
  * (PR #44 리뷰 minor) */
 function clampToWorldBounds(value: number): number {
   if (value > HALF_WORLD_M) return HALF_WORLD_M
@@ -382,7 +382,7 @@ function boxesBlockingAt(y: number, boxes: readonly BoxAABB[]): readonly WallAAB
  * `sim-movement-ladders.test.ts` "사다리를 아예 주입하지 않으면" 테스트
  * — 사다리 중심 합성 상태 `y=1.5`, 박스 없음 — 가 `next.y≈0` 대신
  * 공중 낙하 궤적 값을 반환해 실패했다). 대신 **현재 위치**의 지오메트리
- * 기준 지지 높이(`currentSupport`)를 새로 계산해 새 위치의 지지 높이와
+ * 기준 지지 높이(`previousSupport`)를 새로 계산해 새 위치의 지지 높이와
  * 비교한다 — 두 값 모두 지오메트리에서 직접 유도되므로 `state.y`의
  * 신뢰성과 무관하게 "실제로 지지면이 낮아졌는가"만 순수하게 묻는다.
  *
