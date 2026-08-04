@@ -41,9 +41,16 @@ import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zo
  * 값으로 탄퍼짐 난수를 생성한다")이 **지금 거짓**이다 — 이 파일은 오늘 실행하면
  * **실패해야 정상**이다(Red).
  *
- * **테스트 시드 주입 인터페이스(신규 화이트박스 계약 — 그린필드)**: 출하
- * 기본값 `DEFAULT_SPREAD.coneRadiusRad`는 0(정조준)이며 이번 라운드는 그
- * 기본값을 바꾸지 않는다(팀리드 결정, "시드 배선만 한다") — 그런데 반경 0에서는
+ * **테스트 시드 주입 인터페이스(신규 화이트박스 계약 — 그린필드)**: 이
+ * 라운드 착수 시점 출하 기본값 `DEFAULT_SPREAD.coneRadiusRad`는 0(정조준)
+ * 이었고 이 라운드는 그 기본값을 바꾸지 않았다(팀리드 결정, "시드 배선만
+ * 한다") — **REV(minor 2, 리뷰 blocker 2 delta 대응)**: 그 뒤 RQ-90 v1.8/
+ * v1.9(원장 25a-10)가 그 기본값을 0.5°로 바꿨다 — 아래 서술과 이 파일의
+ * 오버라이드 값(반경 0)은 **이 파일 착수 당시의 사실**이자 **의도적으로
+ * 고정한 테스트 전용 값**이지 지금의 출하 기본값이 아니다(현재값은
+ * `tests/unit/sim-combat.test.ts`의 "DEFAULT_SPREAD.coneRadiusRad는 0.5°와
+ * 같다" 절이 정본). 이 파일이 지금도 반경 0을 계속 쓰는 이유는 아래
+ * 그대로다 — 반경 0에서는
  * `applySpread`가 항등 함수라 시드가 결과에 전혀 드러나지 않는다("공허함
  * 함정"). 그래서 이 테스트는 **테스트 전용 오버라이드 두 개**를 `GameRoom`
  * 인스턴스에 요구한다 — `matchMaker.getLocalRoomById`로 살아있는 서버 룸
@@ -852,7 +859,8 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       await sleep(SHOT_GAP_MS)
 
       // --- (C) 구조 확인(양성, 부록) — 같은(빗나가는) `seedMiss`를 유지한
-      // 채 콘 반경만 0(출하 기본값)으로 되돌리면, `applySpread`의 계약
+      // 채 콘 반경만 0(이 describe 전용 테스트값 — 지금의 출하 기본값은
+      // 0.5°다, minor 2 REV 위 파일 상단 참고)으로 되돌리면, `applySpread`의 계약
       // (coneRadiusRad===0 -> 편차 없음, `tests/unit/sim-combat.test.ts`가
       // 이미 고정)에 따라 다시 정조준 명중이어야 한다 — 콘 반경 오버라이드
       // 자체가 실제로 스프레드를 켜고 끈다는 것을 보여준다(우연한 seed
@@ -897,7 +905,7 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       // movingMultiplier·airborneMultiplier는 `SpreadTuning` 필수 필드라
       // 채운다(A는 이 파일 전체에서 이동하지 않아 "정지" tier(×1)만 타므로
       // 값 자체는 결과에 영향이 없다).
-      seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 } // (1)은 출하 기본값(반경 0)에서도 재현된다.
+      seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 } // (1)은 반경 0(이 it() 전용 테스트값, 지금의 출하 기본값은 0.5°다)에서도 재현된다.
       seam.forcedSpreadSeed = undefined // 22z4 — 이전 `it()`의 값을 물려받지 않도록 명시 초기화(이후 각 발 앞에서 다시 확정한다)
 
       // --- (1) NaN 회귀 — 화이트박스로 B를 A(탈출 후 위치)와 정확히 같은
@@ -1070,7 +1078,11 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       const { aim, distance } = aimAtBodyWithDistance(escapedC, escapedD)
       // GA-49 given: "탄퍼짐 콘 반경은 0이 아닌 값" — 반경 0이면 크기가
       // 결과에 전혀 드러나지 않아 이 골든이 공허해진다(위 describe와 동일
-      // 근거로 `spreadTuningOverride`를 쓴다. 출하 기본값은 불변).
+      // 근거로 `spreadTuningOverride`를 쓴다). 지금은 출하 기본값 자체가
+      // 이미 0이 아니지만(0.5°, minor 2 REV 위 파일 상단 참고), 이 값은
+      // GA-49가 요구하는 "0이 아니기만 하면 되는 값"이 아니라 아래 시드
+      // 탐색이 전제하는 **정확히 이 기하에서 유도한 콘 반경**이므로
+      // `spreadTuningOverride`로 명시 고정하는 것 자체는 여전히 맞다.
       const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
       // movingMultiplier·airborneMultiplier는 `SpreadTuning` 필수 필드라
       // 채운다(C는 이 describe 전체에서 이동하지 않아 "정지" tier(×1)만

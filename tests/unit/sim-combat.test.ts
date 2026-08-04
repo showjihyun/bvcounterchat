@@ -665,6 +665,53 @@ describe('RQ-90 v1.8/v1.9 정확도 저하 3단계(정지·앉기 ×1 · 이동 
     }
   })
 
+  it("u1(1차 nextFloat)→cosTheta·u2(2차 nextFloat)→phi 매핑 자체를 고정한다 — applySpread를 호출하지 않는 독립 오라클(리뷰 22z: 위 균등분포 검정은 u1↔u2를 바꿔도 통과하므로 이 매핑을 잠그지 못한다)", () => {
+    // 22z 공백: 위 "균등분포" 검정은 solidFrac=(1-cosTheta)/(1-cosConeEdge)가
+    // u1과 같다는 사실만 확인한다 — u1·u2는 둘 다 SeededRng에서 독립적으로
+    // 뽑은 [0,1) 균등 표본이라, applySpread 내부에서 이 둘의 **역할을
+    // 통째로 바꿔도**(cosTheta를 u2로, phi를 u1로 계산) solidFrac의 한계
+    // 분포는 여전히 균등이다 — 위 검정은 그 변이를 검출하지 못한다(리뷰어가
+    // 실측 지적, `AIRBORNE_INJECT_Y_M=2`류 변이 주입과 같은 방법론).
+    //
+    // 이 테스트는 `applySpread`를 호출하지 않는 별도 계산으로 AIM=(0,0,1)
+    // 고정 시 기대 벡터를 손으로 유도해 고정한다: `applySpread`의 기저
+    // 구성(`helper = |dir.x|<0.9 ? (1,0,0) : (0,1,0)`, `u=normalize(cross
+    // (helper,dir))`, `v=cross(dir,u)`)에 dir=AIM=(0,0,1)을 대입하면
+    // helper=(1,0,0)이고 u=cross((1,0,0),(0,0,1))=(0,-1,0)(이미 단위벡터),
+    // v=cross((0,0,1),(0,-1,0))=(1,0,0) — 대수로 유도되는 상수이지
+    // `applySpread`를 실행해서 얻은 값이 아니다. 이 기저를
+    //   result = u*localX + v*localY + dir*cosTheta
+    //          = (0,-1,0)*localX + (1,0,0)*localY + (0,0,1)*cosTheta
+    //          = (localY, -localX, cosTheta)
+    // 에 대입하고, `localX=sinTheta*cos(phi)`·`localY=sinTheta*sin(phi)`를
+    // 펼치면:
+    //   result = (sinTheta*sin(phi), -sinTheta*cos(phi), cosTheta)
+    // 이 닫힌 형태가 이 테스트의 오라클이다 — **u1이 cosTheta 쪽에, u2가
+    // phi 쪽에 매핑된다고 고정**한 뒤 그 결과를 아래 표에 리터럴로 박아
+    // 둔다(실행 시점에 이 공식을 다시 계산하지 않는다 — 그러면
+    // `applySpread`와 똑같은 코드를 중복해 "독립 오라클"이라는 목적 자체가
+    // 무너진다). 표의 수치는 실제 프로덕션 상수(`SeededRng.nextFloat`의
+    // mulberry32류 알고리즘, `@shared/sim/rng`)로 u1·u2를 뽑아 위 공식에
+    // 대입해 계산했다(스크래치 스크립트, 커밋 안 함 —
+    // `_workspace/RQ-90-spread/01_test-writer_red.md` §17.5에 유도 과정·
+    // u1↔u2 반전 시 달라지는 값까지 전문 기록, |Δ|=0.045~0.398로 5개 시드
+    // 전부에서 변이가 검출된다).
+    const coneRadiusRad = 0.3
+    const golden: ReadonlyArray<{ seed: number; expected: Vec3 }> = [
+      { seed: 1, expected: { x: 0.004039417748635903, y: -0.2349764253043673, z: 0.9719926762354916 } },
+      { seed: 7, expected: { x: 0.012270698614852932, y: -0.029911659948602974, z: 0.9994772246302677 } },
+      { seed: 42, expected: { x: 0.07347057548935987, y: 0.21811946121080833, z: 0.9731525960394747 } },
+      { seed: 12345, expected: { x: 0.2741724804161466, y: 0.1021317168494663, z: 0.9562418958589077 } },
+      { seed: 999999, expected: { x: 0.009066148483765147, y: 0.056467601583452896, z: 0.9983632680157473 } },
+    ]
+    for (const { seed, expected } of golden) {
+      const actual = applySpread(AIM, createRng(seed), coneRadiusRad)
+      expect(actual.x).toBeCloseTo(expected.x, 9)
+      expect(actual.y).toBeCloseTo(expected.y, 9)
+      expect(actual.z).toBeCloseTo(expected.z, 9)
+    }
+  })
+
   it('판정 근거 제한(타입 잠금) — effectiveSpreadConeRadius는 tuning·dirX·dirZ·mode·grounded 다섯 파라미터만 받는다(v1.9). 시점 회전·자기신고 같은 6번째 인자를 추가하면 컴파일 타임에 거부된다(이 줄 자체가 타입 에러 나지 않으면 아래 지시문이 "사용되지 않음" 에러로 tsc를 실패시킨다)', () => {
     // @ts-expect-error — RQ-90 v1.9 "판정 근거 제한": dirX·dirZ·mode·
     // grounded 외 값(예: 시점 회전 viewYaw)을 판정에 쓰지 않는다는 계약을
