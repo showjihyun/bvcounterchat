@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { stepMovement, type BoxAABB, type MoveInput, type MoveState } from '@shared/sim/movement'
-import { MOVEMENT, NET } from '@shared/constants'
+import { stepMovement, type BoxAABB, type MoveInput, type MoveState, type StaticGeometry } from '@shared/sim/movement'
+import { FALL_DAMAGE, MOVEMENT, NET } from '@shared/constants'
 
 /**
  * RQ-22 박스 점프 — 정적 지오메트리(유한 높이)를 데이터로, 순수 함수가
@@ -578,5 +578,168 @@ describe('리뷰 blocker 재현 — 박스 위에서 점프하면 (박스 높이
     const settled = trajectory[trajectory.length - 1]!
     expect(settled.grounded).toBe(true)
     expect(settled.y).toBeCloseTo(0, 6)
+  })
+})
+
+/**
+ * 원장 25a-6 회수 — 박스 가장자리를 걸어서(비점프) 벗어나면 `grounded`가
+ * 계속 `true`로 남아 공중 전이가 전혀 없다(독립 평가 델타 실측 재현,
+ * ADR-0011 결정 1 "결함 수정 라운드의 재현 테스트" — `src/shared` 결함
+ * 재현은 test-writer 전유물, `_workspace/RQ-32-clusters/01_test-writer
+ * _red.md` §3단계 팀리드 지시).
+ *
+ * **결함(팀리드 실측 재현, 25a-7 델타 평가)**: `groundedOutcome`은 매 틱
+ * `standingHeight(x,z,boxes)`로 y를 다시 계산한다(박스 위에 서 있는 동안
+ * "1틱 반짝임"을 막기 위한 정당한 설계, 원장 25a-4) — 하지만 이 함수는
+ * **항상 `grounded: true`를 반환한다**. `stepGrounded`는 `input.jump`가
+ * 거짓이면 무조건 `groundedOutcome`을 호출하므로, **걸어서(점프 없이)
+ * 박스 가장자리를 벗어나는 경로에는 애초에 공중 전이를 만드는 코드
+ * 경로 자체가 없다**. 그 결과 지지 높이가 큰 폭으로 떨어져도(팀리드
+ * 실측: `topY=4` 박스에서 13.9/4/G → 14.1/0/G — 한 틱 만에 4m 낙차,
+ * `grounded`는 계속 `true`) `GameRoom.trackFallDamage`(`next.grounded
+ * === false`일 때만 `fallPeakY`를 갱신, `GameRoom.ts:856-889`)가 이
+ * 낙하를 전혀 관측하지 못해 **낙하 데미지가 통째로 우회된다**(RQ-18
+ * 회귀 — 원장 25a-6이 처음 지적, 이 라운드가 회수).
+ *
+ * **왜 지금 "src/shared" 레벨 결함인가**: `trackFallDamage` 자체는
+ * `GameRoom.ts`(서버, 이 파일이 다루지 않는다)에 있지만, 그 함수가
+ * 관측하는 신호(`next.grounded`의 `true→false` 전이)는 순수히
+ * `stepMovement`/`groundedOutcome`이 결정한다 — 걸어서 가장자리를
+ * 벗어나는 경로에 전이 자체가 없다는 것이 이 파일(순수 함수) 레벨의
+ * 결함이다. `GameRoom`이 그 신호를 어떻게 소비하는지(HP 차감)는 이
+ * 파일의 관심사가 아니다(`sim-movement-ladders.test.ts`의 "F1 재현"이
+ * 같은 레벨 분리를 이미 썼다).
+ *
+ * **왜 topY=4(합성값, `PRODUCTION_BOXES` 실측 아님)를 쓰는가 — GA-53과의
+ * 관계**: GA-53(`tests/unit/map-box-dimensions.test.ts`)은 실제 맵의
+ * 모든 박스가 1.0m 이하이길 요구한다 — `standingHeight`는 겹치는 박스
+ * 중 **최댓값**만 취하므로(합산이 아니다), GA-53을 지키는 한 어떤 배치를
+ * 쓰든 실제 맵에서 걸어서 벗어날 수 있는 지지 높이 낙차는 수학적으로
+ * 항상 ≤1.0m다(`FALL_DAMAGE.SAFE_HEIGHT_M`=3m 미만 — 이 회귀가 오늘
+ * 제안한 `PRODUCTION_BOXES` 구성에서는 여전히 실피해로 이어지지 않는다는
+ * 뜻, 보고서 §3.4가 이 계산을 직접 싣는다). 하지만 `groundedOutcome`이
+ * 항상 `grounded:true`를 반환한다는 결함 자체는 `topY`가 얼마든 성립하는
+ * **일반 코드 결함**이다 — 팀리드가 평가에서 이미 실측한 값(`topY=4`)을
+ * 그대로 재사용해 재현 범위를 그 실측과 정확히 대응시킨다(리터럴을 새로
+ * 발명하지 않는다는 정신과 같은 이유로, `BOX_ALPHA`의 XZ 발자국은 그대로
+ * 재사용하고 높이만 합성값으로 교체한다 — 위 "리뷰 blocker 재현"
+ * describe의 `boxWithTopY` 패턴과 동일).
+ *
+ * **이 파일이 고정하는 것(관측 가능한 행동만, 구현 자유)**:
+ * 1. 안전 높이(3m)를 넘는 낙차의 가장자리를 걸어서(비점프) 벗어나는
+ *    틱은 `grounded: false`(공중 전이)를 반환해야 한다 — 오늘은
+ *    `grounded: true`로 순간 스냅된다(결함 재현).
+ * 2. 그 전이 이후 궤적에 순간이동(한 틱 사이 낙차의 절반을 넘는
+ *    불연속)이 없어야 한다 — 물리적으로 연속적인 낙하여야 한다.
+ * 3. 궤적은 결국 접지 상태로 안정된다(무한 공중이 아니다) — 새 지지
+ *    높이(맨 지면, 0)로 착지한다.
+ * 4. (양성 대조군, 과잉수정 방지) 가장자리를 넘지 않고 박스 위만 걸어
+ *    다니면 `grounded`는 계속 `true`이고 y는 계속 `topY`다 — 이 수정이
+ *    기존 "접지 지속"(위 GA-55① 테스트)을 깨서는 안 된다.
+ *
+ * **고정하지 않는 것(coder 구현 자유)**: 정확한 전이 시점의 `y`·`vy`
+ * 값, 착지까지 걸리는 정확한 틱 수, 수정 방식(`groundedOutcome`이 직접
+ * 공중 전이를 반환하든 `stepGrounded`가 지지 높이 하강을 감지해
+ * `airborneOutcome`으로 분기하든 — 이 파일은 관측되는 행동만 고정한다).
+ * 데미지 적용 자체(HP 감소)는 `GameRoom`(이 파일이 다루지 않는다)의
+ * 몫이다.
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실
+ * 타이머 없음 — 완전히 재현 가능한 정수 틱 반복이라는 사실 자체로
+ * 증명된다.
+ */
+describe('원장 25a-6 회수 — 박스 가장자리를 걸어서 벗어나면(비점프) grounded가 계속 true로 남는다(공중 전이 없음)', () => {
+  /** 팀리드 실측 재현값 그대로 — `BOX_ALPHA`의 XZ 발자국을 재사용하고
+   * 높이만 합성값(4)으로 교체한다(GA-53 준수 대상 아님, 위 docblock
+   * "왜 topY=4" 절). */
+  const TALL_PLATFORM_TOP_Y = 4
+  const tallPlatform: BoxAABB = {
+    minX: BOX_ALPHA.minX,
+    maxX: BOX_ALPHA.maxX,
+    minZ: BOX_ALPHA.minZ,
+    maxZ: BOX_ALPHA.maxZ,
+    topY: TALL_PLATFORM_TOP_Y,
+  }
+  const PLATFORM_CENTER_Z = (BOX_ALPHA.minZ + BOX_ALPHA.maxZ) / 2
+  const GEOMETRY: StaticGeometry = { walls: [], boxes: [tallPlatform], ladders: [] }
+  /** 박스 안쪽(근접면 minX=11에서 1m, 원면 maxX=14에서 2m)에서 출발해
+   * +X로 계속 걸으면(비점프) 몇 틱 안에 원면을 넘는다. */
+  const WALK_OFF_INPUT: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+
+  function startOnPlatform(): MoveState {
+    return createGroundedState({ x: 12, y: TALL_PLATFORM_TOP_Y, z: PLATFORM_CENTER_Z })
+  }
+
+  function walkOffTrajectory(ticks: number): MoveState[] {
+    let state = startOnPlatform()
+    const trajectory: MoveState[] = [state]
+    for (let i = 0; i < ticks; i += 1) {
+      state = stepMovement(state, WALK_OFF_INPUT, GEOMETRY)
+      trajectory.push(state)
+    }
+    return trajectory
+  }
+
+  it('전제 확인 — 이 낙차(topY - 0)는 안전 높이(FALL_DAMAGE.SAFE_HEIGHT_M=3m)를 넘는다(이 재현이 실제로 데미지가 발생해야 하는 시나리오임을 보증)', () => {
+    expect(TALL_PLATFORM_TOP_Y - 0).toBeGreaterThan(FALL_DAMAGE.SAFE_HEIGHT_M)
+  })
+
+  it('걸어서(비점프) 가장자리를 넘는 틱은 grounded:false(공중)를 반환해야 한다 — 오늘 구현은 grounded:true로 순간 스냅된다(결함)', () => {
+    const trajectory = walkOffTrajectory(20)
+
+    // 전제 확인 — 실제로 원면(maxX)을 넘어 지지 높이가 0으로 떨어지는
+    // 지점이 궤적 안에 있었다.
+    const exitIndex = trajectory.findIndex((s) => s.x > tallPlatform.maxX)
+    expect(exitIndex).toBeGreaterThan(0)
+
+    const atExit = trajectory[exitIndex]!
+    // 결함 재현 — 오늘 구현은 이 틱에서 y=0, grounded=true로 순간
+    // 스냅된다. 고쳐지면 grounded:false(공중)여야 한다.
+    expect(atExit.grounded).toBe(false)
+  })
+
+  it('전이 틱 자체를 포함해 궤적에 순간이동(한 틱 사이 낙차 절반을 넘는 불연속)이 없다 — 물리적으로 연속적인 낙하다', () => {
+    const trajectory = walkOffTrajectory(40)
+
+    const exitIndex = trajectory.findIndex((s) => s.x > tallPlatform.maxX)
+    expect(exitIndex).toBeGreaterThan(0)
+
+    // 낙차의 절반 — 결함의 순간이동(4m, 전이 그 틱에서 발생 — 그래서
+    // 아래 루프는 exitIndex "자체"부터 검사한다, exitIndex+1부터
+    // 시작하면 전이 틱 자체를 건너뛰어 결함을 놓친다)과 정상 낙하
+    // 궤적을 가르는 문턱(리터럴 발명 대신 TALL_PLATFORM_TOP_Y에서
+    // 유도, ADR-0010).
+    const maxPlausibleTickDeltaM = TALL_PLATFORM_TOP_Y / 2
+    for (let i = exitIndex; i < trajectory.length; i += 1) {
+      const delta = Math.abs(trajectory[i]!.y - trajectory[i - 1]!.y)
+      expect(delta).toBeLessThan(maxPlausibleTickDeltaM)
+    }
+  })
+
+  it('궤적은 결국 접지 상태로 안정되고, 새 지지 높이(맨 지면, 0)에 착지한다 — 무한 공중이 아니다', () => {
+    const trajectory = walkOffTrajectory(60)
+
+    const exitIndex = trajectory.findIndex((s) => s.x > tallPlatform.maxX)
+    expect(exitIndex).toBeGreaterThan(0)
+
+    // 전제 확인 — 실제로 공중(낙하) 구간을 거쳤다. 결함(즉시 접지 스냅)
+    // 에서는 grounded가 한 번도 false가 되지 않으므로 이 인덱스가 -1이
+    // 되어 이 단언 자체가 실패한다.
+    const airborneIndex = trajectory.findIndex((s, i) => i >= exitIndex && s.grounded === false)
+    expect(airborneIndex).toBeGreaterThanOrEqual(0)
+
+    const landedIndex = trajectory.findIndex((s, i) => i > airborneIndex && s.grounded === true)
+    expect(landedIndex).toBeGreaterThan(airborneIndex)
+    expect(trajectory[landedIndex]!.y).toBeCloseTo(0, 6)
+  })
+
+  it('양성 대조군(과잉수정 방지) — 가장자리를 넘지 않고 박스 위만 걸어 다니면 grounded는 계속 true이고 y는 계속 topY다', () => {
+    let state = startOnPlatform()
+    for (let i = 0; i < 5; i += 1) {
+      state = stepMovement(state, WALK_OFF_INPUT, GEOMETRY)
+      expect(state.grounded).toBe(true)
+      expect(state.y).toBeCloseTo(TALL_PLATFORM_TOP_Y, 6)
+      expect(state.x).toBeLessThanOrEqual(tallPlatform.maxX) // 전제 확인 — 아직 원면을 넘지 않았다
+    }
   })
 })
