@@ -861,11 +861,12 @@ export class GameRoom extends Room<GameState> {
 
     if (previous.grounded) return // 착지 전이가 아니다 — 계속 접지 상태였다
 
-    // `fallDamageForHeight`의 계약은 절대 y가 아니라 **낙차**다. 오늘은
-    // `groundedOutcome`이 착지 y를 0으로 하드코딩해 두 값이 항상 같지만,
-    // 지형(RQ-21/22/30~32)이 들어와 착지 y가 0이 아니게 되는 순간 이
-    // 뺄셈이 **낙차의 유일한 정의**가 된다 — 빼지 않으면 높은 지대에 서
-    // 있다가 조금만 뛰어도 데미지가 들어가는 형태로 조용히 뒤집힌다
+    // `fallDamageForHeight`의 계약은 절대 y가 아니라 **낙차**다. RQ-22
+    // (원장 25a-4)로 박스가 들어오면서 착지 y가 0이 아닌 경우가 **실제로
+    // 생겼다** — `groundedOutcome`은 이제 지지 높이를 `max(0, 발밑 박스
+    // 상단)`으로 계산한다. 따라서 이 뺄셈이 **낙차의 유일한 정의**다 —
+    // 빼지 않으면 높은 지대에 서 있다가 조금만 뛰어도 데미지가 들어가는
+    // 형태로 조용히 뒤집힌다
     // (리뷰 minor 1). 키 부재는 `next.y`로 폴백해 낙차 0이 되게 한다.
     const peak = this.fallPeakY.get(sessionId) ?? next.y
     const damage = fallDamageForHeight(peak - next.y)
@@ -1115,7 +1116,10 @@ export class GameRoom extends Room<GameState> {
         ),
       )
       // RQ-62(21a-2): 클라이언트 예측 재조정이 공중 상태를 이어받으려면
-      // 속도가 와이어에 실려야 한다(`grounded`는 4필드 확정에 없어 제외).
+      // 속도가 와이어에 실려야 한다. `grounded`는 21a-2 당시 "`grounded ===
+      // (y === 0)`이라 파생 가능"을 근거로 제외했으나, **RQ-22(원장 25a-4)가
+      // 그 전제를 깨서** 이제 아래에서 함께 싣는다 — 박스 위 착지는 y가 0이
+      // 아니면서 접지다.
       player.vx = next.vx
       player.vy = next.vy
       player.vz = next.vz
