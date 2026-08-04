@@ -244,7 +244,7 @@ function jumpElapsedSeconds(previousVy: number): number {
  * 소비자가 없고, 클라 예측은 같은 함수를 재생하므로 서버와 정합한다. 다만
  * 속도를 소비하는 첫 코드(달리기 애니메이션·데드레커닝)가 생기면 "벽에 붙어
  * 달리는" 표현이 나온다 — **그때 이것이 결정이었는지 누락이었는지 알 수 있게**
- * 여기 적어 둔다. 속도 처리는 벽 충돌 조각(RQ-32)에서 함께 정한다.
+ * 여기 적어 둔다.
  * (PR #44 리뷰 minor) */
 function clampToWorldBounds(value: number): number {
   if (value > HALF_WORLD_M) return HALF_WORLD_M
@@ -350,7 +350,70 @@ function boxesBlockingAt(y: number, boxes: readonly BoxAABB[]): readonly WallAAB
  * 벽 + 이번 틱 차단 대상 박스를 합쳐서)을 적용한다 — 둘 다 위치만 절단하고
  * 속도(`vx`/`vz`)는 그대로 보고한다(위 `clampToWorldBounds` 코멘트의
  * "절단 대상은 위치뿐"과 동일한 선택 — 속도 처리는 이 라운드의 스코프가
- * 아니다). */
+ * 아니다).
+ *
+ * **원장 25a-6 회수 — 걸어서(비점프) 지지 높이가 낮아지는 가장자리를
+ * 벗어나면 공중(자유낙하)으로 전이한다.** 옛 구현은 위 재계산이 낮아진
+ * 지지 높이로도 그대로 `grounded: true`를 반환해, 박스 가장자리를
+ * 걸어서 넘는 틱에 y가 순간 하강하면서도 접지 상태가 유지되는 결함이
+ * 있었다 — `GameRoom.trackFallDamage`(`next.grounded === false`일 때만
+ * `fallPeakY` 갱신)가 이 낙하를 전혀 관측하지 못해 낙하 데미지가
+ * 우회됐다(`tests/unit/sim-movement-boxes.test.ts` "원장 25a-6 회수"
+ * describe가 재현·고정). 새 지지 높이(`support`)가 직전 높이(`state.y`)
+ * 보다 **낮아지면**, 그 낮은 높이로 즉시 스냅하지 않고
+ * `airborneOutcome`으로 넘겨 중력 낙하 궤적을 계산한다 — 사다리 이탈
+ * 폴백(`stepMovement`의 "지지면이 없다" 분기, 원장 25a-7 F1 수정)이 이미
+ * 쓰는 것과 같은 기법이다: 현재 수직 속도(`state.vy` — 접지 중에는
+ * 보통 0이지만, 사다리에서 막 지지면으로 전환된 직후처럼 잔여 값이
+ * 있으면 그대로 인계한다)를 표준 점프 곡선 위의 한 순간으로 재해석해
+ * `tPrev`를 구하면, 다음 틱부터 중력 가속으로 매끄럽게 이어지는 낙하
+ * 궤적이 나온다(새 궤적 모델을 발명하지 않는다).
+ *
+ * **"이전 지지 높이"는 `state.y`가 아니라 `standingHeight(state.x,
+ * state.z, boxes)`로 재계산한다(합성 상태 오탐 방지)**: 이 파일·
+ * `sim-movement-ladders.test.ts`는 관례적으로 `y`가 실제 지오메트리와
+ * 무관한 값(예: 사다리 안쪽 합성 상태 `y=1.5`, 박스가 전혀 없는
+ * 지오메트리)을 가진 **합성 접지 상태**를 직접 구성해 특정 분기만
+ * 떼어 검증한다(REV 2026-07-24 "상태는 값의 완전한 스냅샷" 정신 — 그
+ * 상태에 실제로 도달하는 자연스러운 경로가 있는지는 무관하다). `state.y`
+ * 자체를 "직전 지지 높이"로 오인하면, 이런 합성 상태(현재 위치의 실제
+ * `standingHeight`는 0인데 `state.y`가 그보다 큰 경우)에서 실제로는
+ * 아무 것도 벗어난 적이 없는데도 이 분기가 오발화한다(평가 실측:
+ * `sim-movement-ladders.test.ts` "사다리를 아예 주입하지 않으면" 테스트
+ * — 사다리 중심 합성 상태 `y=1.5`, 박스 없음 — 가 `next.y≈0` 대신
+ * 공중 낙하 궤적 값을 반환해 실패했다). 대신 **현재 위치**의 지오메트리
+ * 기준 지지 높이(`previousSupport`)를 새로 계산해 새 위치의 지지 높이와
+ * 비교한다 — 두 값 모두 지오메트리에서 직접 유도되므로 `state.y`의
+ * 신뢰성과 무관하게 "실제로 지지면이 낮아졌는가"만 순수하게 묻는다.
+ *
+ * **`state.grounded` 게이트가 필요한 이유(착지 실패 방지)**:
+ * `airborneOutcome`은 착지 판정 시(`height <= support`) 바로 이
+ * `groundedOutcome`을 다시 호출한다(아래) — 그 호출의 `state`는 직전
+ * 틱의 **공중** 상태라서, 게이트 없이 지지 높이 하강만 봤다면 정상
+ * 착지마다(박스 위든 맨 지면이든, 모든 기존 점프 테스트가 이 경로를
+ * 탄다) 다시 공중으로 튕겨 나가 착지 자체가 성립하지 않았을 것이다.
+ * `state.grounded`가 참일 때만(즉 `stepGrounded`가 직접 부른 경우에만)
+ * 이 분기를 타게 하면, 착지 재호출(`state.grounded === false`)은 이
+ * 분기를 건너뛰고 기존 그대로 스냅한다.
+ *
+ * **`airborneOutcome`에 원래 `state`가 아니라 `{ ...state, grounded:
+ * false }`를 넘기는 이유(무한 재귀 차단, 실측)**: 최초 구현은 원래
+ * `state`(`grounded: true`)를 그대로 `airborneOutcome`에 넘겼다. 사다리
+ * 이탈 폴백(`stepMovement`)이 **원래 `state`**(`grounded: true`)를 이미
+ * 이 함수에 물려주는 경로가 있어(지지면 있음 분기 → `stepGrounded` →
+ * `groundedOutcome`), 낙차가 얕아 **같은 틱 안에서 즉시 착지**하면
+ * `airborneOutcome`이 위 착지 재호출에서 다시 이 `groundedOutcome`을
+ * 부르는데 — 이번에도 여전히 `state.grounded === true`(원래 인자를
+ * 그대로 물려받았으므로)이고 지지 높이 비교도 그대로 참이라(같은
+ * `state`·같은 계산이니 결과가 바뀔 리 없다) **같은 분기를 다시 타
+ * `airborneOutcome`을 다시 부르고, 그게 다시 착지를 재판정해 다시 이
+ * 함수를 부르는** 무한 상호 재귀가 됐다(`RangeError: Maximum call stack
+ * size exceeded`, `sim-movement-ladders.test.ts`의 사다리 이탈 후 접지
+ * 유지 테스트에서 실측). `grounded: false`로 표시한 사본을 넘기면, 착지
+ * 재호출 시점의 `state.grounded`가 `false`가 되어 이 분기 자체를
+ * 건너뛰므로(바로 위 문단) 재귀가 정확히 한 겹에서 끊긴다 — `x`·`y`·
+ * `z`·`vx`·`vz`는 원래 `state`와 값이 같으므로 낙차·궤적 계산에는
+ * 영향이 없다. */
 function groundedOutcome(
   state: MoveState,
   vx: number,
@@ -362,9 +425,19 @@ function groundedOutcome(
   const boundedZ = clampToWorldBounds(state.z + vz * TICK_SECONDS)
   const blockingBoxes = boxesBlockingAt(state.y, boxes)
   const { x, z } = clampAgainstWalls(state.x, state.z, boundedX, boundedZ, [...walls, ...blockingBoxes])
+  const support = standingHeight(x, z, boxes)
+  const previousSupport = standingHeight(state.x, state.z, boxes)
+  if (state.grounded && support < previousSupport) {
+    // 공중 전이 — `grounded: false`로 표시한 상태를 `airborneOutcome`에
+    // 넘긴다(무한 재귀 차단, 위 문단). `x`·`y`·`z`·`vx`·`vz`는 원래
+    // `state`와 동일하게 유지한다 — `tookOffFrom` 계산은 여전히 원래
+    // `state.y`를 참조해야 낙차가 정확하다.
+    const airborneState: MoveState = { ...state, grounded: false }
+    return airborneOutcome(airborneState, vx, vz, jumpElapsedSeconds(state.vy), walls, boxes)
+  }
   return {
     x,
-    y: standingHeight(x, z, boxes),
+    y: support,
     z,
     vx,
     vy: 0,

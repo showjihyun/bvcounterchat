@@ -715,3 +715,150 @@ describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요�
     expect(observed.length).toBe(15) // 전제 확인
   })
 })
+
+/**
+ * 원장 25a-8 — 그물 순증(`_workspace/RQ-32-clusters/01_test-writer_red.md`
+ * §1단계, 팀리드 지시 — 배치 변경 **이전**에 만든다: 그 행의 트리거가
+ * "GA-53 착수 라운드 이전"인 이유는 배치가 실형상으로 바뀌면 두 그물의
+ * 기준 좌표가 통째로 달라지기 때문이다).
+ *
+ * ⚠️ 이 describe는 **새 결함을 재현하지 않는다** — 오늘 코드베이스에서
+ * 이미 그린(통과)이어야 하는 **회귀 방지 그물**이다(F1 재현 describe와
+ * 성격이 다르다). 두 가지가 "지금 아무 테스트도 잡지 못하는" 공백이었다
+ * (팀리드 실측):
+ *
+ * **① 중심 스냅 재도입 0건.** 원장 25a-7이 스펙 밖 동작(RQ-21 v1.4가
+ * 사다리 안 수평 위치를 전혀 규정하지 않는다)으로 판정해 제거한 x·z
+ * 중심 스냅을 다시 넣어도, 이 파일의 기존 모든 사다리 테스트는
+ * **볼륨 중심에서 시작**한다(`createLadderState`의 기본값이
+ * `LADDER_ALPHA_CENTER_X`/`LADDER_ALPHA_CENTER_Z`) — 스냅 유무가 "중심
+ * → 중심"이라는 결과를 바꾸지 않으므로 회귀가 재도입돼도 아무 테스트가
+ * 죽지 않는다. 아래는 중심에서 ±0.3m 벗어난 시작점(여전히 사다리 폭
+ * 1m×깊이 3m의 개방구간 XZ 범위 안 — 경계 0.5m/1.5m에 닿지 않는 여유)
+ * 으로 상승→하강→정지를 그대로 반복해, 매 틱 x·z가 시작 오프셋 값
+ * 그대로 유지되는지(중심으로 스냅되지 않는지) 직접 확인한다.
+ *
+ * **② 공중 진입 불가에 그물 없음.** `stepMovement`는 `state.grounded`가
+ * 참일 때만 사다리를 재포획한다(F1 수정, `movement.ts` "state.grounded가
+ * 참일 때만 재포획하는 이유" 절 — 재포획을 공중에도 허용하면 사다리
+ * 상단 바로 아래에서 무한 진동한다는 것이 근거). RQ-21이 진입 조건에
+ * 침묵하므로 이 좁힘 자체는 스펙 위반이 아니지만, 이 좁힘을 고정하는
+ * 테스트가 지금까지 없었다 — 이 게이트가 사라져도(공중에서도 사다리를
+ * 재포획하도록 되돌려도) 기존 스위트가 무성으로 통과할 수 있다. 아래는
+ * 사다리 볼륨의 XZ(개방구간)×Y(폐구간) 범위 안에 있는 **공중
+ * (grounded:false)** 상태에서 사다리 쪽(면을 향하는) 입력을 줘도 사다리
+ * 물리가 전혀 적용되지 않고(공중 물리 그대로 이어짐) 순수 궤적이
+ * 계속됨을 직접 확인한다.
+ *
+ * **검출력**(팀리드 지시 "각 신규 테스트가 죽는지 확인하고 수치를
+ * 적어라") — Red 보고서 §1에 로컬 변이 실험(①은 `ladderOutcome`이
+ * `state.x/z` 대신 볼륨 중심을 반환하도록, ②는 `stepMovement`의
+ * `state.grounded ?` 게이트를 제거하도록 각각 임시로 바꾼 뒤 `npx vitest
+ * run`)의 실측 결과를 남긴다 — `src/`는 이 파일이 최종적으로 건드리지
+ * 않는다(검증 후 원복).
+ */
+describe('원장 25a-8 — 그물 순증(배치 변경 이전 고정, 결함 재현 아님)', () => {
+  describe('① 중심 스냅 재도입 방지 — 볼륨 중심에서 벗어난 시작점도 상승·하강·정지 내내 x·z가 그대로 유지된다', () => {
+    /** 볼륨 중심에서 x·z 각각 0.3m 벗어난 시작점. */
+    const OFFSET_M = 0.3
+    const offCenterStart: MoveState = createLadderState({
+      x: LADDER_ALPHA_CENTER_X - OFFSET_M,
+      z: LADDER_ALPHA_CENTER_Z + OFFSET_M,
+    })
+
+    it('전제 확인 — 이 시작점은 여전히 사다리 XZ 개방구간 범위 안이다(볼륨을 벗어난 것이 원인이 되어 오염되지 않는다)', () => {
+      expect(offCenterStart.x).toBeGreaterThan(LADDER_ALPHA.minX)
+      expect(offCenterStart.x).toBeLessThan(LADDER_ALPHA.maxX)
+      expect(offCenterStart.z).toBeGreaterThan(LADDER_ALPHA.minZ)
+      expect(offCenterStart.z).toBeLessThan(LADDER_ALPHA.maxZ)
+      // 전제 확인 — 실제로 중심이 아니다(회귀 그물이 무의미해지지 않도록).
+      expect(offCenterStart.x).not.toBeCloseTo(LADDER_ALPHA_CENTER_X, 6)
+      expect(offCenterStart.z).not.toBeCloseTo(LADDER_ALPHA_CENTER_Z, 6)
+    })
+
+    it('상승(8틱) → 하강(5틱) → 정지(5틱) 내내 x·z가 시작 오프셋 값 그대로다(중심으로 스냅되지 않는다)', () => {
+      const geometry = geometryWithLadders([LADDER_ALPHA])
+      const UP_TICKS = 8
+      const DOWN_TICKS = 5
+      const STOP_TICKS = 5
+      let state: MoveState = offCenterStart
+      const trajectory: MoveState[] = []
+      for (let i = 0; i < UP_TICKS; i += 1) {
+        state = stepMovement(state, TOWARD_FACE, geometry)
+        trajectory.push(state)
+      }
+      for (let i = 0; i < DOWN_TICKS; i += 1) {
+        state = stepMovement(state, AWAY_FROM_FACE, geometry)
+        trajectory.push(state)
+      }
+      for (let i = 0; i < STOP_TICKS; i += 1) {
+        state = stepMovement(state, NO_INPUT, geometry)
+        trajectory.push(state)
+      }
+
+      expect(trajectory.length).toBe(UP_TICKS + DOWN_TICKS + STOP_TICKS) // 전제 확인
+
+      for (const s of trajectory) {
+        // 중심 스냅이 재도입되면 이 값이 LADDER_ALPHA_CENTER_X/Z(오프셋
+        // 0)로 튄다 — 아래는 시작 오프셋(중심에서 -0.3/+0.3)이 끝까지
+        // 그대로 유지되는지를 직접 비교한다.
+        expect(s.x).toBeCloseTo(LADDER_ALPHA_CENTER_X - OFFSET_M, 9)
+        expect(s.z).toBeCloseTo(LADDER_ALPHA_CENTER_Z + OFFSET_M, 9)
+        expect(s.grounded).toBe(true) // 전제 확인 — 계속 사다리 물리 안에 있었다
+      }
+    })
+  })
+
+  describe('② 공중 진입 게이트 — 사다리 볼륨의 XZ×Y 범위 안에 있어도 grounded:false(공중) 상태는 사다리 물리에 재포획되지 않는다', () => {
+    /** 볼륨 한가운데(Y 범위 중앙, 2 = (0+4)/2) — XZ는 사다리 중심.
+     * 공중 낙하 임의값(vy=-2, "REV 2026-07-24 상태는 값의 완전한
+     * 스냅샷" 정신 — 실제로 그 값에 도달한 경로와 무관하게 이 상태에서
+     * 판정한다)을 준다 — `jumpElapsedSeconds`가 임의 vy를 표준 포물선
+     * 위의 한 순간으로 재해석하므로(movement.ts 코멘트, `airborneOutcome`
+     * 이 이미 이 기법을 쓴다) 유효한 공중 상태다. */
+    const airborneInsideLadderVolume: MoveState = {
+      x: LADDER_ALPHA_CENTER_X,
+      y: (LADDER_ALPHA.minY + LADDER_ALPHA.maxY) / 2,
+      z: LADDER_ALPHA_CENTER_Z,
+      vx: 0,
+      vy: -2,
+      vz: 0,
+      grounded: false,
+    }
+
+    it('전제 확인 — 이 상태는 실제로 사다리의 XZ(개방구간)×Y(폐구간) 범위 안이다', () => {
+      expect(airborneInsideLadderVolume.x).toBeGreaterThan(LADDER_ALPHA.minX)
+      expect(airborneInsideLadderVolume.x).toBeLessThan(LADDER_ALPHA.maxX)
+      expect(airborneInsideLadderVolume.z).toBeGreaterThan(LADDER_ALPHA.minZ)
+      expect(airborneInsideLadderVolume.z).toBeLessThan(LADDER_ALPHA.maxZ)
+      expect(airborneInsideLadderVolume.y).toBeGreaterThanOrEqual(LADDER_ALPHA.minY)
+      expect(airborneInsideLadderVolume.y).toBeLessThanOrEqual(LADDER_ALPHA.maxY)
+      expect(airborneInsideLadderVolume.grounded).toBe(false) // 전제 확인 — 공중이다
+    })
+
+    it('사다리 쪽(면을 향하는) 입력을 줘도, 사다리를 주입한 결과와 비운(주입하지 않은) 결과가 정확히 같다 — 공중 상태에는 사다리가 전혀 개입하지 않는다', () => {
+      const withLadder = stepMovement(airborneInsideLadderVolume, TOWARD_FACE, geometryWithLadders([LADDER_ALPHA]))
+      const withoutLadder = stepMovement(airborneInsideLadderVolume, TOWARD_FACE, geometryWithLadders([]))
+
+      expect(withLadder).toEqual(withoutLadder)
+      // 사다리에 재포획됐다면 vy가 CLIMB_SPEED_MPS(양수, 상승)로 바뀌고
+      // grounded가 true가 됐을 것이다 — 아래는 그 반대(공중 물리 그대로)를
+      // 직접 확인해 위 `toEqual`이 우연히 두 경로가 같은 값으로 수렴한
+      // 결과가 아님을 보강한다.
+      expect(withLadder.grounded).toBe(false)
+      expect(withLadder.vy).not.toBeCloseTo(CLIMB_SPEED_MPS, 6)
+    })
+
+    it('5틱을 계속 관찰해도(볼륨 XZ×Y 범위 안을 포물선으로 지나는 동안) grounded는 한 번도 true가 되지 않는다', () => {
+      const geometry = geometryWithLadders([LADDER_ALPHA])
+      let state: MoveState = airborneInsideLadderVolume
+      const observed: boolean[] = []
+      for (let i = 0; i < 5; i += 1) {
+        state = stepMovement(state, TOWARD_FACE, geometry)
+        observed.push(state.grounded)
+      }
+      expect(observed.every((g) => g === false)).toBe(true)
+      expect(observed.length).toBe(5) // 전제 확인
+    })
+  })
+})
