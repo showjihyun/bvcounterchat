@@ -1109,9 +1109,10 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       const escapedD = escapeSafeZone(seam, roomD.sessionId, baselineD)
       await sleep(SHOT_GAP_MS)
 
-      // 이 it()이 쏘는 6발(3 바디 + 3 미스)은 기본 탄창(10발)으로도
-      // 충분하지만, 재장전(RQ-11) 타이밍을 이 테스트의 관심사에서 완전히
-      // 배제하기 위해 명시적으로 채운다(위 describe의 F1 수정과 동일 근거).
+      // 이 it()이 쏘는 12발(3 바디 + 3 미스 + 추가 miss 시드 2 × 3)은
+      // 기본 탄창(10발)을 넘어 자연 재장전을 유발하므로, 재장전(RQ-11)
+      // 타이밍을 이 테스트의 관심사에서 완전히 배제하기 위해 명시적으로
+      // 채운다(위 describe의 F1 수정과 동일 근거).
       seam.magazines.set(roomC.sessionId, AMPLE_MAGAZINE)
 
       const origin = eyeOrigin({ x: escapedC.x, y: escapedC.y, z: escapedC.z }, DEFAULT_HITBOX.eyeHeightM)
