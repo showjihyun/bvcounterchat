@@ -868,6 +868,11 @@ export class GameRoom extends Room<GameState> {
     // `forcedSpreadSeed`(시드 고정)와 역할이 분명히 갈린다(salt 고정 vs
     // 시드 고정).
     const salt = this.forcedRoomSalt ?? this.spreadSalt
+    // 2차 리뷰 minor 4 — `fork(this.state.tick)`은 tick이 2^32 이상이면
+    // `RangeError`를 던진다(`rng.ts`의 `assertValidSeed`, 17e-1① 신설
+    // 경로). 30Hz 기준 약 4.5년 연속 가동해야 도달한다 — 의도된 동작이며,
+    // 그 전에 서버가 재시작된다는 전제다(이전 `>>> 0` 공식은 조용히
+    // 랩어라운드했으나 이 델타가 처음으로 이 예외 경로를 만들었다).
     return createRng(salt).fork(this.state.tick).fork(counter).nextU32()
   }
 
