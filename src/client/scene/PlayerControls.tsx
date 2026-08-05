@@ -82,7 +82,14 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
 
   useEffect(() => {
     const canvas = gl.domElement
+    // 원장 24e-2 — 락 실패를 조용히 넘기지 않는다. 시점이 안 도는 증상의
+    // 원인이 여기라는 것을 사용자·개발자 양쪽이 알 수 있어야 한다.
     const detachPointerLock = attachPointerLock(canvas)
+    function onLockChange(): void {
+      uiStore.getState().setPointerLocked(document.pointerLockElement === canvas)
+    }
+    document.addEventListener('pointerlockchange', onLockChange)
+    onLockChange()
     const mouseLook = createMouseLookController(canvas)
     mouseLookRef.current = mouseLook
 
@@ -140,6 +147,8 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
 
     return () => {
       detachPointerLock()
+      document.removeEventListener('pointerlockchange', onLockChange)
+      uiStore.getState().setPointerLocked(false)
       mouseLook.dispose()
       mouseLookRef.current = null
       movementTracker.dispose()

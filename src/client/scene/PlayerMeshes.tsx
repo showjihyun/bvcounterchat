@@ -5,11 +5,13 @@ import type { StoreApi } from 'zustand/vanilla'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
 import type { InterpolationPosition } from '@client/net/interpolation'
+import { SCENE } from '@client/config/design-tokens'
 
 const BOX_WIDTH = 0.8
 const BOX_HEIGHT = 1.8
-const SELF_COLOR = '#5b8dd6'
-const OTHER_COLOR = '#c65b5b'
+// 원장 24c — 색 정본은 `SCENE`이다. 값은 그대로다(이관이지 재도색이 아니다).
+const SELF_COLOR = SCENE.self
+const OTHER_COLOR = SCENE.other
 
 interface PlayerMeshesProps {
   store: StoreApi<GameStoreState>

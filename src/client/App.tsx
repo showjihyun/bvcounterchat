@@ -8,6 +8,7 @@ import { getOrCreateStatsUuid, readUuidStorage } from '@client/identity/statsUui
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
 import { Crosshair } from '@client/hud/Crosshair'
+import { LockHint } from '@client/hud/LockHint'
 import { ChatPanel } from '@client/hud/ChatPanel'
 
 /**
@@ -109,7 +110,7 @@ export function App() {
                 그 값은 `@client/hud/crosshair`가 계산한다. 22b의 임시 점을
                 대체한다. `aria-hidden` — 조준점은 스크린리더에 의미가 없다. */}
             <Crosshair uiStore={uiStore} />
-            <span className="hud__placeholder">ChatStrike — 접속됨</span>
+            <LockHint uiStore={uiStore} />
             {/* RQ-40/41/95 최소 채팅 패널(RQ-52 자리) — ChatPanel.tsx 참고. */}
             <ChatPanel store={store} connection={connection} uiStore={uiStore} />
           </div>

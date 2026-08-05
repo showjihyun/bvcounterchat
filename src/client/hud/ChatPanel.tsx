@@ -71,7 +71,13 @@ export function ChatPanel({ store, connection, uiStore }: ChatPanelProps) {
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
     const text = draft.trim()
-    if (text.length === 0) return
+    if (text.length === 0) {
+      // 원장 24f — 빈 채로 Enter를 치면 **빠져나올 수 없었다**. 보낼 말이
+      // 없어 입력을 그만두는 것도 정상 조작인데, 포커스가 남아 이동·사격이
+      // 계속 차단되고(RQ-40 게이트) 탈출 경로는 캔버스 클릭뿐이었다.
+      inputRef.current?.blur()
+      return
+    }
     connection.room.send('chat', { text })
     setDraft('')
     // 리뷰 minor m5 — 전송 후에도 포커스가 남으면 이동·사격 게이트가 계속
@@ -101,6 +107,11 @@ export function ChatPanel({ store, connection, uiStore }: ChatPanelProps) {
           placeholder="채팅..."
           autoComplete="off"
           onChange={(event) => setDraft(event.target.value)}
+          // ESC로 채팅에서 빠져나온다(원장 24f) — FPS의 표준 관례이고,
+          // 스펙 확장이 아니라 RQ-40 게이트에 갇히는 상태를 여는 것이다.
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') inputRef.current?.blur()
+          }}
           onFocus={() => uiStore.getState().setChatFocused(true)}
           onBlur={() => uiStore.getState().setChatFocused(false)}
         />
