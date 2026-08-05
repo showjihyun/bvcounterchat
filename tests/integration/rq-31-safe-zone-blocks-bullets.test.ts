@@ -243,7 +243,14 @@ interface MoveStateSnapshot {
 }
 
 /** 화이트박스 접근 대상 계약 — `rq-31-safe-zone.test.ts`의
- * `SafeZoneTestSeam`과 동일한 근거(그린필드가 아니다). */
+ * `SafeZoneTestSeam`과 동일한 근거(그린필드가 아니다).
+ *
+ * **`spreadTuningOverride`(RQ-90 v1.8 회귀 대응 추가)**: 이 필드는
+ * `rq-90-spread-seed-determinism.test.ts`/`rq-90-spread-degradation
+ * .test.ts`가 이미 확립한 이름·형태를 그대로 재사용한다(그린필드 아님).
+ * 이 파일이 이 필드를 쓰는 이유는 아래 (2) 양성 대조군 직전 코멘트 참고 —
+ * **이 파일의 검증 대상(Safe Zone 몸통의 총알 차단)과 무관한 축(탄퍼짐)을
+ * 끄기 위해서**이지 스프레드 자체를 이 파일이 검증하는 것이 아니다. */
 interface BulletBlockTestSeam {
   state: {
     players: {
@@ -253,6 +260,7 @@ interface BulletBlockTestSeam {
   moveStates: Map<string, MoveStateSnapshot>
   positionHistory: Map<string, unknown[]>
   firedSinceSpawn: Map<string, boolean>
+  spreadTuningOverride?: { coneRadiusRad: number; movingMultiplier: number; airborneMultiplier: number }
 }
 
 function getServerRoom(room: Room): BulletBlockTestSeam {
@@ -408,6 +416,17 @@ describe('RQ-31 v1.6: Safe Zone 플레이어의 총알 차단 — 사수-Safe Zo
         // 확정된다.
         const aim = aimHorizontalAtSameHeight(ORIGIN, cPoint)
 
+        // RQ-90 v1.8 회귀 대응 — 이 파일의 검증 대상(Safe Zone 몸통의
+        // 총알 차단, 관통 없음)은 탄퍼짐과 무관한 축이다. 콘 반경을
+        // 명시적으로 0으로 고정하지 않으면 출하 기본값(0.5°)에서
+        // 원점→C 거리(≈28m) 헤드샷 판정이 간헐 실패한다(worst-case 편차
+        // ≈0.245m > 헤드 반경 0.15m, 마진 ≈-0.095m —
+        // `_workspace/RQ-90-spread/01_test-writer_red.md` §5.4 실측).
+        // "스프레드를 회피했다"가 아니라 이 파일이 검증할 축이 애초에
+        // 아니라서 끈다 — (1)·(2) 두 사격 모두에 적용되도록 여기서 한 번만
+        // 설정한다(둘 다 같은 조준선을 재사용하므로).
+        seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 }
+
         // --- (1) 핵심 관측 — B가 사선을 막고 있을 때 ---
         roomA.send('fire', aim)
         await sleep(NO_DAMAGE_OBSERVE_MS)
@@ -428,7 +447,8 @@ describe('RQ-31 v1.6: Safe Zone 플레이어의 총알 차단 — 사수-Safe Zo
         teleportPlayer(seam, roomB.sessionId, bOffAxis)
         await sleep(TELEPORT_SETTLE_MS)
         // A·C는 그대로 — 조준도 그대로 재사용한다(B만 치웠다는 것을
-        // 최소 변경으로 보이기 위함).
+        // 최소 변경으로 보이기 위함). `spreadTuningOverride`(콘 0)는 위
+        // (1) 앞에서 이미 설정했고 계속 유지된다 — 재설정 불필요.
         roomA.send('fire', aim)
         const cAfterControlShot = await waitForServerCondition(
           seam,

@@ -111,6 +111,19 @@ export function buildServer(options: BuildOptions = {}) {
   // (`node_modules/@colyseus/core/build/MatchMaker.js` 실측, `onCreate`
   // 호출부) — 악의적 클라이언트가 join 옵션에 같은 키를 실어 보내도 이
   // 값이 이긴다.
+  // ⚠️ **이 우선순위는 이 키에 한정된다(RQ-90 22v 대응, 리뷰 blocker 1
+  // 준비 중 실측)**: `merge({}, clientOptions, handler.options)`(위
+  // `MatchMaker.js`)는 `handler.options`에 **실제로 들어 있는 키만**
+  // 클라 값을 덮어쓴다 — `statsDbPath`가 여기 있어서 이기는 것이지, 이
+  // 3번째 인자를 거치는 값 일반이 안전해지는 게 아니다. `handler.options`에
+  // 없는 키는 `clientOptions` 쪽 값이 가공 없이 `onCreate`로 전달된다.
+  // 서버 전용 값을 옵션 경유로 받으려면 **반드시 이 객체에 그 키를 넣어야
+  // 한다** — 넣지 않으면 클라이언트가 `joinOrCreate('game', { 그키: 값 })`
+  // 로 직접 지정할 수 있다(예: 탄퍼짐 시드 salt를 이 경로로 받았다면
+  // "서버만 아는 값"이 아니라 "클라가 고르는 값"이 된다 — RQ-90 v1.9
+  // Green 세션이 착수 전에 실측으로 발견해 이 패턴을 피했다, 대신 salt는
+  // `spreadTuningOverride`/`forcedSpreadSeed`와 같은 private-field
+  // 화이트박스 seam을 쓴다).
   gameServer.define('game', GameRoom, { statsDbPath })
 
   // RQ-04 종료 드레인 — app.close()가 반환되는 시점에 이 인스턴스가 열었던

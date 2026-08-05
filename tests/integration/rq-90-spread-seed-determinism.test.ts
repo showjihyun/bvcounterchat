@@ -6,7 +6,7 @@ import { buildServer } from '@server/index'
 import { applySpread, DEGENERATE_RADIAL_EPS, eyeOrigin, raycastHitbox, type Vec3 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
 import { type PositionSnapshot } from '@shared/sim/rewind'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { DEFAULT_HITBOX, type SpreadTuning } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
 import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
@@ -41,9 +41,16 @@ import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zo
  * 값으로 탄퍼짐 난수를 생성한다")이 **지금 거짓**이다 — 이 파일은 오늘 실행하면
  * **실패해야 정상**이다(Red).
  *
- * **테스트 시드 주입 인터페이스(신규 화이트박스 계약 — 그린필드)**: 출하
- * 기본값 `DEFAULT_SPREAD.coneRadiusRad`는 0(정조준)이며 이번 라운드는 그
- * 기본값을 바꾸지 않는다(팀리드 결정, "시드 배선만 한다") — 그런데 반경 0에서는
+ * **테스트 시드 주입 인터페이스(신규 화이트박스 계약 — 그린필드)**: 이
+ * 라운드 착수 시점 출하 기본값 `DEFAULT_SPREAD.coneRadiusRad`는 0(정조준)
+ * 이었고 이 라운드는 그 기본값을 바꾸지 않았다(팀리드 결정, "시드 배선만
+ * 한다") — **REV(minor 2, 리뷰 blocker 2 delta 대응)**: 그 뒤 RQ-90 v1.8/
+ * v1.9(원장 25a-10)가 그 기본값을 0.5°로 바꿨다 — 아래 서술과 이 파일의
+ * 오버라이드 값(반경 0)은 **이 파일 착수 당시의 사실**이자 **의도적으로
+ * 고정한 테스트 전용 값**이지 지금의 출하 기본값이 아니다(현재값은
+ * `tests/unit/sim-combat.test.ts`의 "DEFAULT_SPREAD.coneRadiusRad는 0.5°와
+ * 같다" 절이 정본). 이 파일이 지금도 반경 0을 계속 쓰는 이유는 아래
+ * 그대로다 — 반경 0에서는
  * `applySpread`가 항등 함수라 시드가 결과에 전혀 드러나지 않는다("공허함
  * 함정"). 그래서 이 테스트는 **테스트 전용 오버라이드 두 개**를 `GameRoom`
  * 인스턴스에 요구한다 — `matchMaker.getLocalRoomById`로 살아있는 서버 룸
@@ -233,6 +240,23 @@ import { computeRadialEscape, type SafeZoneEscapeSeam } from '../support/safe-zo
  * 밖으로 옮긴다. "정규화되지 않은 조준 벡터" 재현 테스트는 B를 A(탈출
  * 후 위치) 기준 상대 좌표로 재배치하므로 A만 탈출시키면 B도 자연히
  * Safe Zone 밖이 된다(둘 다 원점에서 스폰 반경보다 훨씬 먼 지점에 놓인다).
+ *
+ * **REV(RQ-90 v1.8 회귀 수정, coder 재현·team-lead 지시)**: 위 §"테스트
+ * 시드 주입 인터페이스"가 기록한 `spreadTuningOverride?: { coneRadiusRad:
+ * number }`는 **역사적 서술**이다 — v1.8이 `SpreadTuning`에
+ * `movingMultiplier`·`airborneMultiplier`를 추가하면서, 이 파일 전용
+ * 손수 작성 타입이 그 확장을 반영하지 못해 `{ coneRadiusRad }`(부분
+ * 객체)가 계속 타입 검사를 통과했다 — 런타임에는 나머지 필드가
+ * `undefined`가 되어 `coneRadiusRad * undefined = NaN`이 `applySpread`를
+ * 전부 오염시켰다(이 파일의 모든 사격이 항상 빗나가 3개 `it()` 전부
+ * 타임아웃). `SpreadTestSeam.spreadTuningOverride`를 실제
+ * `SpreadTuning`(`@shared/config/combat-tuning`) 타입으로 바꾸고 4곳의
+ * 대입부 전부에 `movingMultiplier`·`airborneMultiplier`(프로덕션
+ * 기본값과 동일한 2·4)를 채웠다 — 이 파일의 모든 사수는 실제 이동을
+ * 전혀 하지 않아(RQ-90 v1.9 "정지" 판정 — 수평 입력 없음) 항상 "정지"
+ * tier(×1, `coneRadiusRad` 그대로 적용)만 타므로 이 두 배율의 **값
+ * 자체는 결과에 영향이 없다** — 그래도 `SpreadTuning`의 필수 필드라
+ * 채워야 한다. 상세 diff는 각 대입부 인라인 코멘트 참고.
  */
 
 const ROOM_NAME = 'game'
@@ -496,7 +520,21 @@ function findSeedWithBucket(
  * 직접 배치하는 데 함께 쓴다 — 둘 다 갱신해야 하는 이유는 아래
  * `teleportPlayer` 코멘트 참고. */
 interface SpreadTestSeam extends SafeZoneEscapeSeam<PositionSnapshot> {
-  spreadTuningOverride?: { coneRadiusRad: number }
+  // RQ-90 v1.8 회귀 수정(coder 재현, team-lead 지시) — 이전에는
+  // `{ coneRadiusRad: number }`라는 이 파일 전용 손수 작성 타입을 썼다.
+  // v1.8이 `SpreadTuning`에 `movingMultiplier`·`airborneMultiplier`를
+  // 추가했을 때, 이 손수 작성 타입은 그 확장을 **자동으로 반영하지
+  // 않아서**(별개 타입 선언이라 원본과 구조적으로만 우연히 겹쳤다) 아래
+  // `seam.spreadTuningOverride = { coneRadiusRad }` 대입이 계속 타입
+  // 검사를 통과했다 — 런타임에는 `movingMultiplier`·`airborneMultiplier`가
+  // `undefined`가 되어 `coneRadiusRad * undefined = NaN`이 `applySpread`
+  // 전체를 오염시켰다(이 파일의 모든 사격이 항상 빗나가 3개 `it()` 전부
+  // 타임아웃 — coder 재현 100%). 실제 `SpreadTuning`(`@shared/config/
+  // combat-tuning`, 프로덕션 필드와 동일 소스)을 그대로 임포트해 쓰면,
+  // 그 타입이 앞으로 또 확장돼도 이 파일의 대입부가 자동으로 타입 에러를
+  // 내 같은 결함이 재발하지 않는다 — 값 복제가 아니라 타입 복제가
+  // 문제였다(ADR-0010의 정신을 타입에도 적용).
+  spreadTuningOverride?: SpreadTuning
   // `| undefined`를 명시한다(단순 `?:`가 아니라) — `exactOptionalPropertyTypes`
   // 아래서는 `seam.forcedSpreadSeed = undefined`(22z4 회수, 명시 초기화)가
   // 그냥 `?:`로는 타입 에러(TS2412)가 난다. 실제 프로덕션 필드
@@ -749,7 +787,12 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
       const seedMiss = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', SEARCH_LIMIT)
 
-      seam.spreadTuningOverride = { coneRadiusRad }
+      // movingMultiplier·airborneMultiplier는 이 파일의 시나리오와 무관하다
+      // (A는 이 테스트 내내 실제 이동을 전혀 하지 않아 서버가 항상 "정지"
+      // tier(×1, coneRadiusRad 그대로)로 판정한다 — RQ-90 v1.9) — 그래도
+      // `SpreadTuning`의 필수 필드라 값을 채운다(프로덕션 기본값과 동일하게
+      // 2·4를 써서 "임의값"으로 오인되지 않게 한다).
+      seam.spreadTuningOverride = { coneRadiusRad, movingMultiplier: 2, airborneMultiplier: 4 }
       // F1 수정 — 오라클 열이 A에게 26발(12*2 + (B) 1 + (C) 1)을 요구한다.
       // RQ-10/11(탄창 10발·재장전 2초)이 이 파일의 관심사를 가리지 않도록
       // 미리 넉넉히 채운다(위 `SpreadTestSeam.magazines` 코멘트 참고).
@@ -816,12 +859,14 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       await sleep(SHOT_GAP_MS)
 
       // --- (C) 구조 확인(양성, 부록) — 같은(빗나가는) `seedMiss`를 유지한
-      // 채 콘 반경만 0(출하 기본값)으로 되돌리면, `applySpread`의 계약
+      // 채 콘 반경만 0(이 describe 전용 테스트값 — 지금의 출하 기본값은
+      // 0.5°다, minor 2 REV 위 파일 상단 참고)으로 되돌리면, `applySpread`의 계약
       // (coneRadiusRad===0 -> 편차 없음, `tests/unit/sim-combat.test.ts`가
       // 이미 고정)에 따라 다시 정조준 명중이어야 한다 — 콘 반경 오버라이드
       // 자체가 실제로 스프레드를 켜고 끈다는 것을 보여준다(우연한 seed
-      // 궁합이 아니라).
-      seam.spreadTuningOverride = { coneRadiusRad: 0 }
+      // 궁합이 아니라). movingMultiplier·airborneMultiplier는 위와 동일
+      // 이유로 무관(A는 이동하지 않는다) — `SpreadTuning` 필수 필드라 채운다.
+      seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 }
       roomA.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z })
       const afterRadiusZero = await waitForHpChange(roomB, roomB.sessionId, hpAfterPass2, 'RQ-90 콘 반경 0 복귀 후 hp 변화 대기')
       expect(afterRadiusZero.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY * 3) // 50 -> 25, 다시 명중
@@ -857,7 +902,10 @@ describe('RQ-90/GA-17: 서버가 발급한 시드로 탄퍼짐을 적용하며, 
       // (22z4 회수, 재리뷰 minor N-3: 이전 버전은 `forcedSpreadSeed`를
       // 재설정하지 않아 이 주석이 사실과 어긋났다 — 아래 줄로 명시
       // 재설정해 주석을 사실로 만든다).
-      seam.spreadTuningOverride = { coneRadiusRad: 0 } // (1)은 출하 기본값(반경 0)에서도 재현된다.
+      // movingMultiplier·airborneMultiplier는 `SpreadTuning` 필수 필드라
+      // 채운다(A는 이 파일 전체에서 이동하지 않아 "정지" tier(×1)만 타므로
+      // 값 자체는 결과에 영향이 없다).
+      seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 } // (1)은 반경 0(이 it() 전용 테스트값, 지금의 출하 기본값은 0.5°다)에서도 재현된다.
       seam.forcedSpreadSeed = undefined // 22z4 — 이전 `it()`의 값을 물려받지 않도록 명시 초기화(이후 각 발 앞에서 다시 확정한다)
 
       // --- (1) NaN 회귀 — 화이트박스로 B를 A(탈출 후 위치)와 정확히 같은
@@ -1030,9 +1078,16 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       const { aim, distance } = aimAtBodyWithDistance(escapedC, escapedD)
       // GA-49 given: "탄퍼짐 콘 반경은 0이 아닌 값" — 반경 0이면 크기가
       // 결과에 전혀 드러나지 않아 이 골든이 공허해진다(위 describe와 동일
-      // 근거로 `spreadTuningOverride`를 쓴다. 출하 기본값은 불변).
+      // 근거로 `spreadTuningOverride`를 쓴다). 지금은 출하 기본값 자체가
+      // 이미 0이 아니지만(0.5°, minor 2 REV 위 파일 상단 참고), 이 값은
+      // GA-49가 요구하는 "0이 아니기만 하면 되는 값"이 아니라 아래 시드
+      // 탐색이 전제하는 **정확히 이 기하에서 유도한 콘 반경**이므로
+      // `spreadTuningOverride`로 명시 고정하는 것 자체는 여전히 맞다.
       const coneRadiusRad = Math.atan(DEFAULT_HITBOX.bodyRadiusM / distance) * SPREAD_CONE_MULTIPLIER
-      seam.spreadTuningOverride = { coneRadiusRad }
+      // movingMultiplier·airborneMultiplier는 `SpreadTuning` 필수 필드라
+      // 채운다(C는 이 describe 전체에서 이동하지 않아 "정지" tier(×1)만
+      // 타므로 값 자체는 결과에 영향이 없다).
+      seam.spreadTuningOverride = { coneRadiusRad, movingMultiplier: 2, airborneMultiplier: 4 }
 
       // 오프라인 오라클로 이 정확한 기하·반경에서 '바디 명중'·'빗나감'을
       // 내는 시드를 각각 하나씩 확정한다 — 두 버킷 모두에서 크기 무관성을

@@ -458,6 +458,25 @@ describe('시신은 총알을 막지 않는다 (리뷰 minor-3, 사용자 결정
         // baselineDamage와 정확히 같은 피해를(시신 유무와 무관하게
         // 동일하게) 다시 입는다.
         const aimAtAlignedC = aimAtBody(escapedA, cAligned)
+
+        // RQ-90 v1.8 회귀 대응 — 이 단언은 스프레드와 무관한 축(시신은
+        // hitscan 후보가 아니어야 한다)을 본다. C는 A→B 연장선을 따라
+        // 월드 경계 근처까지 이동해(위 "C를 A→B 방향의 연장선을 따라..."
+        // 절) A로부터 수십 미터(스폰 인덱스·각도 조합에 따라 최대 ~50m대)
+        // 떨어질 수 있다 — 콘 반경을 명시적으로 0으로 고정하지 않으면
+        // 출하 기본값(0.5°)에서 이 거리의 바디 판정이 간헐 실패할 수
+        // 있다(바디 안전 상한 ≈34.38m를 초과할 개연성 —
+        // `_workspace/RQ-90-spread/01_test-writer_red.md` §5.4 실측 기록).
+        // "스프레드를 회피했다"가 아니라 이 파일이 검증할 축이 애초에
+        // 아니라서 끈다 — `spreadTuningOverride`는
+        // `rq-90-spread-seed-determinism.test.ts`가 이미 확립한 이름·
+        // 형태를 그대로 재사용한다(그린필드 아님).
+        ;(
+          seam as unknown as {
+            spreadTuningOverride?: { coneRadiusRad: number; movingMultiplier: number; airborneMultiplier: number }
+          }
+        ).spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 2, airborneMultiplier: 4 }
+
         roomA.send('fire', aimAtAlignedC)
         const cAfterCorpseShot = await waitForPlayerCondition(
           roomC,

@@ -20,7 +20,8 @@
 
 import type { SeededRng } from '@shared/sim/rng'
 import { WEAPON } from '@shared/constants'
-import type { WallAABB } from '@shared/sim/movement'
+import type { MoveInput, WallAABB } from '@shared/sim/movement'
+import type { SpreadTuning } from '@shared/config/combat-tuning'
 
 export type HitRegion = 'head' | 'body'
 
@@ -404,6 +405,40 @@ export function applySpread(direction: Vec3, rng: SeededRng, coneRadiusRad: numb
   const localY = sinTheta * Math.sin(phi)
 
   return add(add(scale(u, localX), scale(v, localY)), scale(direction, cosTheta))
+}
+
+/**
+ * 사격 시점의 `dirX`·`dirZ`(수평 이동 입력)·`mode`·`grounded` **넷으로만**
+ * 실효 탄퍼짐 콘 반경을 구한다(RQ-90 v1.9 정확도 저하 3단계). 시그니처에
+ * 그 외 파라미터가 없다는 것 자체가 "판정 근거 제한"(시점 회전·클라
+ * 자기신고 배제)의 타입 수준 보증이다 — 초과 인자를 넘기면 컴파일 타임에
+ * 거부된다(`tests/unit/sim-combat.test.ts` "판정 근거 제한(타입 잠금)" 테스트).
+ *
+ * **v1.9(정지 판정에 수평 입력 추가)**: `mode`는 이동 *속도 설정*
+ * (`run`/`walk`/`crouch`)이지 "지금 움직이는 중"이 아니고, `MoveInput`에
+ * idle 값이 없어(`IDLE_MOVE_INPUT.mode==='run'`) `mode`만으로는 "정지"를
+ * 표현할 수 없었다(v1.8 결함, coder가 Green 작업 중 통합 4파일 회귀로
+ * 실측 발견 — 원장 25a-10 REV). "정지"는 이제 수평 이동 입력이 없는
+ * 상태(`dirX===0 && dirZ===0`)로 판정한다.
+ *
+ * 우선순위(확정 — team-lead 회신, 원장 25a-10 REV, v1.9 판정표에도 유지):
+ * `grounded===false`면 `dirX`·`dirZ`·`mode`와 무관하게 공중 배율을 쓴다 —
+ * v1.9 원문이 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"로 나누고
+ * 공중을 직접 "비접지"로 정의했으므로, 접지 여부가 가장 먼저 갈린다.
+ * 접지 상태에서는 `mode==='crouch'`이거나 수평 입력이 없으면(OR 조건)
+ * 기본 배율(×1, "정지·앉기" tier)이고, 그 외(walk·run이면서 실제로
+ * 움직이는 중)는 이동 배율이다.
+ */
+export function effectiveSpreadConeRadius(
+  tuning: SpreadTuning,
+  dirX: number,
+  dirZ: number,
+  mode: MoveInput['mode'],
+  grounded: boolean,
+): number {
+  if (!grounded) return tuning.coneRadiusRad * tuning.airborneMultiplier
+  if (mode === 'crouch' || (dirX === 0 && dirZ === 0)) return tuning.coneRadiusRad
+  return tuning.coneRadiusRad * tuning.movingMultiplier
 }
 
 /** nowMs·lastFireAtMs는 호출자(서버)가 조달한다 — 이 함수 자신은

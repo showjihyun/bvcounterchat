@@ -4,6 +4,7 @@ import {
   applySpread,
   canFire,
   damageForRegion,
+  effectiveSpreadConeRadius,
   eyeOrigin,
   findClosestHit,
   raycastHitbox,
@@ -14,7 +15,7 @@ import {
   type Vec3,
 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
-import { DEFAULT_HITBOX, DEFAULT_SPREAD } from '@shared/config/combat-tuning'
+import { DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
 
 /**
@@ -154,6 +155,91 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 아니고(ADR-0008 §6), 그 브랜치가 이 브랜치와 합쳐질 때 리뷰가 확인해야
  * 한다. `_workspace/RQ-15-16/01_test-writer_red.md` §12에 이 한계를
  * 상세히 남겼다.
+ *
+ * ---
+ * **REV(RQ-90 v1.8, 2026-08-04) — 정확도 저하 3단계(그린필드 확장, test-writer
+ * 지정, `combat.ts`/`combat-tuning.ts`(확장) 태그와 동일 권한)**:
+ * `requirements.md` v1.8이 탄퍼짐 콘 반경의 실제값(기본 0.5°)과 이동·공중
+ * 시 정확도 저하 배율(이동 ×2, 공중 ×4, 단조 증가)을 확정했다.
+ *
+ * **REV2(RQ-90 v1.9, 2026-08-04) — "정지" 판정에 수평 입력 추가(coder
+ * 실측 발견 → 오케스트레이터 재개정, 원장 25a-10)**: v1.8이 판정 근거를
+ * `mode`·`grounded` **둘뿐**이라고 적었는데, `MoveInput.mode`는 이동
+ * **속도 설정**(`run`/`walk`/`crouch`)이지 "지금 움직이는 중"이 아니고
+ * `MoveInput`에 idle 값이 없어(`IDLE_MOVE_INPUT.mode === 'run'`) **"정지"
+ * 단계가 도달 불가능**했다 — move를 안 보냈거나 `dirX=dirZ=0`으로 멈춘
+ * 사수가 전부 "이동"(×2)으로 분류되는 구현 결함을 낳았다(coder가 Green
+ * 작업 중 발견, 통합 4파일 회귀로 실증). v1.9는 판정 근거에 **수평 이동
+ * 입력**(`dirX`·`dirZ`)을 추가한다 — "정지"는 `dirX===0 && dirZ===0`인
+ * 상태로 판정한다. 시점 회전·클라이언트 자기신고 상태는 여전히 판정에
+ * 쓰지 않는다(RQ-43·RQ-21이 겪은 함정과 같은 계열을 피한다) — 판정 근거는
+ * `dirX`·`dirZ`·`mode`·`grounded` **넷**으로 늘었을 뿐, 그 성격(서버가
+ * 독립 관측 가능한 값만)은 그대로다.
+ *
+ * ```ts
+ * // src/shared/config/combat-tuning.ts (확장)
+ * export interface SpreadTuning {
+ *   coneRadiusRad: number      // 기본(정지·앉기) 콘 반경 — 0.5°에서 유도(라디안). 리터럴 금지(ADR-0010).
+ *   movingMultiplier: number   // 이동(걷기·달리기) 배율 — 2
+ *   airborneMultiplier: number // 공중(비접지) 배율 — 4. movingMultiplier 이상이어야 한다(단조).
+ * }
+ * export const DEFAULT_SPREAD: SpreadTuning
+ * // = { coneRadiusRad: (0.5*Math.PI)/180, movingMultiplier: 2, airborneMultiplier: 4 }
+ *
+ * // src/shared/sim/combat.ts (확장, v1.9로 시그니처 확장)
+ * // dirX·dirZ·mode·grounded "만"으로 실효 콘 반경을 구한다 — 시그니처에
+ * // 그 외 파라미터가 없다는 것 자체가 "판정 근거 제한"의 타입 수준
+ * // 보증이다(아래 "판정 근거 제한(타입 잠금)" 테스트가 6번째 인자 추가를
+ * // 컴파일 타임에 거부하는지 직접 고정한다).
+ * //
+ * // 판정표(v1.9 확정):
+ * //   정지·앉기 | grounded && (dirX===0 && dirZ===0 || mode==='crouch') | ×1
+ * //   이동      | grounded && (dirX!==0 || dirZ!==0) && mode!=='crouch' | ×2
+ * //   공중      | !grounded                                            | ×4
+ * export function effectiveSpreadConeRadius(
+ *   tuning: SpreadTuning,
+ *   dirX: number,
+ *   dirZ: number,
+ *   mode: 'run' | 'walk' | 'crouch', // @shared/sim/movement의 MoveInput['mode']와 동일 유니언
+ *   grounded: boolean,
+ * ): number
+ * ```
+ *
+ * **시그니처 최종 확정(team-lead, 위치 인자 5개로 환원)**: 한때 클라
+ * 입력(`dirX`·`dirZ`·`mode`)을 `SpreadBasis` 객체 하나로 묶는 arity-3
+ * 형태가 검토됐으나(초과 프로퍼티 검사가 arity 잠금보다 정확한 잠금이라는
+ * 근거), 격리 tsc 실측으로 **번복**됐다 — 초과 프로퍼티 검사는 fresh
+ * 객체 리터럴에만 걸리고, `handleFire`가 실제로 다루는 형태인 `MoveInput`
+ * **변수**(넓은 타입)를 그대로 넘기면 구조적 호환으로 통과해버려(`declare
+ * const mi: MoveInput; objForm(mi, true)` → 에러 없음) "클라 객체를
+ * 통째로 넘기기"를 막지 못했다. 위치 인자는 호출부마다 `dirX`·`dirZ`·
+ * `mode`로의 분해를 강제해 그 경로를 구조적으로 차단한다 — 그래서
+ * 5-위치인자가 최종이다.
+ *
+ * **우선순위(확정 — team-lead 회신, 원장 25a-10 REV, v1.9 판정표에도 그대로
+ * 유지)**: `grounded===false`면 `dirX`·`dirZ`·`mode`와 무관하게 공중
+ * 배율(×4)을 쓴다 — v1.9가 저하 단계를 "정지·앉기 / 이동 / 공중(**비접지**)"
+ * 로 나누고 공중을 직접 "비접지"로 정의했으므로, 접지 여부가 가장 먼저
+ * 갈린다. 접지 상태에서는 **`mode==='crouch'`이거나 수평 입력이 없으면**
+ * (`dirX===0 && dirZ===0`) 기본 배율(×1, "정지·앉기" tier)이고, 그 외
+ * (walk·run **이면서 실제로 움직이는 중**)는 이동 배율(×2)이다 — 이 OR
+ * 조건이 v1.9의 핵심 추가다: **"앉은 채 이동"(crouch-walk)도 여전히
+ * ×1이다**(`mode==='crouch'`가 단독으로 정지 tier를 트리거하므로 수평
+ * 입력 유무와 무관), 그리고 **"서 있지만 입력이 없음"(예: mode='run'인데
+ * 가만히 있음)도 이제 ×1이다**(v1.8에서는 도달 불가능했던 바로 그 상태).
+ * 단조 증가(정지 ≤ 이동 ≤ 공중) 요구도 공중이 최상위임을 전제한다.
+ *
+ * **판정 근거 제한 확인 범위(하네스 비대화 방지, 팀리드 지시)**: 위 시그니처
+ * 잠금(타입 테스트)이 `effectiveSpreadConeRadius` 자체의 판정 근거를
+ * 고정한다. `sanitizeFireInput`/`sanitizeMoveInput`(`GameRoom.ts`, 기존
+ * 구현·이 라운드가 건드리지 않는다)이 이미 dirX/dirY/dirZ/rttMs·
+ * dirX/dirZ/mode/jump 외 필드를 읽지 않아 시점 회전·자기신고 필드 자체가
+ * 두 payload 계약 어디에도 없다 — 통합 레벨 재확인 테스트는 이 라운드에서
+ * 생략한다(중복 검증, 사용자 지시 "하네스를 과도하게 키우지 말라"). v1.9가
+ * 추가한 `dirX`·`dirZ`도 **새 payload 필드가 아니다** — `sanitizeMoveInput`이
+ * 이미 `MoveInput.dirX`/`dirZ`를 읽고 있었다(RQ-20, 이 라운드 이전부터).
+ * 달라진 것은 그 값을 탄퍼짐 판정에도 **재사용**하는 것뿐이다.
+ * ---
  */
 
 function magnitude(v: Vec3): number {
@@ -454,11 +540,11 @@ describe('ADR-0005 발사 속도 제한(rate-limit) 판정 — canFire', () => {
 describe('RQ-90 탄퍼짐 구조(콘 반경 내 편차) — applySpread (구조만, 값 튜닝은 범위 밖)', () => {
   const AIM: Vec3 = { x: 0, y: 0, z: 1 } // 이미 정규화된 조준 방향
 
-  it('콘 반경 0(DEFAULT_SPREAD 기본값)이면 방향이 정확히 그대로 유지된다(정조준, 결정론)', () => {
+  it('콘 반경 0이면 방향이 정확히 그대로 유지된다(정조준, 결정론) — REV(v1.8): 리터럴 0을 직접 넘긴다. 이전 버전은 DEFAULT_SPREAD.coneRadiusRad를 넘겼는데, v1.8부터 그 기본값 자체가 0이 아니게 되어(아래 "RQ-90 v1.8" describe) 이 테스트가 검증하려던 성질(coneRadiusRad===0 ⇒ 정조준)과 "DEFAULT_SPREAD의 현재 값"이라는 별개 관심사가 섞여 있었다 — 분리한다. DEFAULT_SPREAD.coneRadiusRad의 실제값 검증은 아래 새 describe로 이동했다.', () => {
     // 서로 다른 시드를 줘도(rng를 소비하는지 여부와 무관하게) 결과가 흔들리지
     // 않아야 한다 — "반경 0 = 정조준"이라는 계약을 시드에 결합하지 않는다.
     for (const seed of [1, 2, 42]) {
-      const result = applySpread(AIM, createRng(seed), DEFAULT_SPREAD.coneRadiusRad)
+      const result = applySpread(AIM, createRng(seed), 0)
       expect(result.x).toBeCloseTo(AIM.x, 9)
       expect(result.y).toBeCloseTo(AIM.y, 9)
       expect(result.z).toBeCloseTo(AIM.z, 9)
@@ -488,5 +574,149 @@ describe('RQ-90 탄퍼짐 구조(콘 반경 내 편차) — applySpread (구조�
     const b = applySpread(AIM, createRng(2), 0.3)
 
     expect(a).not.toEqual(b)
+  })
+})
+
+describe('RQ-90 v1.8/v1.9 정확도 저하 3단계(정지·앉기 ×1 · 이동 ×2 · 공중 ×4) — effectiveSpreadConeRadius + DEFAULT_SPREAD 확정값 (파일 상단 REV 계약, v1.9: "정지" 판정에 수평 입력 추가)', () => {
+  const AIM: Vec3 = { x: 0, y: 0, z: 1 }
+
+  it('DEFAULT_SPREAD.coneRadiusRad는 0.5°와 같다(라디안 유도값과 비교 — 리터럴 금지 ADR-0010은 프로덕션 값 복제를 막는 것이지, 이 오라클 계산 자체를 막지 않는다)', () => {
+    const expectedRad = (0.5 * Math.PI) / 180
+    expect(DEFAULT_SPREAD.coneRadiusRad).toBeCloseTo(expectedRad, 12)
+  })
+
+  it('DEFAULT_SPREAD.movingMultiplier는 2, airborneMultiplier는 4다(v1.8 확정값)', () => {
+    expect(DEFAULT_SPREAD.movingMultiplier).toBe(2)
+    expect(DEFAULT_SPREAD.airborneMultiplier).toBe(4)
+  })
+
+  it('저하 배율은 단조 비감소다(정지 ≤ 이동 ≤ 공중) — DEFAULT_SPREAD 설정값 자체의 불변식(미래에 값이 뒤집히는 회귀를 막는다)', () => {
+    expect(DEFAULT_SPREAD.movingMultiplier).toBeGreaterThanOrEqual(1)
+    expect(DEFAULT_SPREAD.airborneMultiplier).toBeGreaterThanOrEqual(DEFAULT_SPREAD.movingMultiplier)
+  })
+
+  // 손으로 검산 가능한 임의 튜닝(TEST_HITBOX와 동일 정신 — DEFAULT_SPREAD의
+  // 실제값과 별개로 "구조"만 확인한다).
+  const TUNING: SpreadTuning = { coneRadiusRad: 0.1, movingMultiplier: 2, airborneMultiplier: 4 }
+
+  it("mode==='crouch'면 수평 입력이 있어도(=앉은 채 이동, crouch-walk) 기본 콘(×1)이다 — '정지·앉기' tier의 OR 조건(v1.9)", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 정지
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 이동(+X) — 그래도 ×1
+    expect(effectiveSpreadConeRadius(TUNING, 0, -1, 'crouch', true)).toBeCloseTo(0.1, 12) // 앉아서 이동(-Z) — 그래도 ×1
+  })
+
+  it("mode==='run'|'walk'이고 수평 입력이 전혀 없으면(dirX=dirZ=0) 기본 콘(×1)이다 — v1.9 신설: v1.8에서는 이 상태가 mode만으로는 표현 불가능해 '이동'으로 오분류됐다(coder 실측 발견, 통합 4파일 회귀의 근본 원인)", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'run', true)).toBeCloseTo(0.1, 12)
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'walk', true)).toBeCloseTo(0.1, 12)
+  })
+
+  it("mode==='walk'|'run'이고 수평 입력이 있으면(dirX≠0 또는 dirZ≠0) 이동 배율(×2)이다 — '이동(걷기·달리기)' tier — v1.8 원문이 walk·run 둘 다 명시, v1.9가 '실제로 움직이는 중'이라는 조건을 추가했다", () => {
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'walk', true)).toBeCloseTo(0.2, 12) // dirX만 0이 아님
+    expect(effectiveSpreadConeRadius(TUNING, 0, 1, 'run', true)).toBeCloseTo(0.2, 12) // dirZ만 0이 아님
+    expect(effectiveSpreadConeRadius(TUNING, 0.7, 0.7, 'run', true)).toBeCloseTo(0.2, 12) // 대각선 입력
+  })
+
+  it('grounded=false면 dirX·dirZ·mode와 전부 무관하게 공중 배율(×4)이다 — 정지 조합·이동 조합 둘 다 접지 여부가 우선한다(파일 상단 REV "우선순위" 확정을 직접 고정, team-lead 회신)', () => {
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'crouch', false)).toBeCloseTo(0.4, 12) // 정지 조합이었을 값
+    expect(effectiveSpreadConeRadius(TUNING, 0, 0, 'run', false)).toBeCloseTo(0.4, 12) // v1.9 신설 정지 조합이었을 값
+    expect(effectiveSpreadConeRadius(TUNING, 1, 0, 'walk', false)).toBeCloseTo(0.4, 12) // 이동 조합이었을 값
+  })
+
+  it('DEFAULT_SPREAD 실측값 기준으로도 세 tier가 단조 비감소다(정지 ≤ 이동 ≤ 공중)', () => {
+    const stationary = effectiveSpreadConeRadius(DEFAULT_SPREAD, 0, 0, 'run', true) // v1.9: 정지는 idle로 표현
+    const moving = effectiveSpreadConeRadius(DEFAULT_SPREAD, 1, 0, 'run', true)
+    const airborne = effectiveSpreadConeRadius(DEFAULT_SPREAD, 1, 0, 'run', false)
+    expect(stationary).toBeLessThanOrEqual(moving)
+    expect(moving).toBeLessThanOrEqual(airborne)
+  })
+
+  it('같은 시드에서 콘 반경이 커지면(=저하가 심해지면) applySpread의 편차각은 감소하지 않는다(단조 — "저하"라는 말의 실제 물리적 근거를 순수 수식 수준에서 고정한다)', () => {
+    for (const seed of [1, 5, 17, 100, 777]) {
+      const thetaBase = angleBetween(AIM, applySpread(AIM, createRng(seed), 0.1))
+      const thetaMoving = angleBetween(AIM, applySpread(AIM, createRng(seed), 0.2))
+      const thetaAirborne = angleBetween(AIM, applySpread(AIM, createRng(seed), 0.4))
+      expect(thetaMoving).toBeGreaterThanOrEqual(thetaBase - 1e-9)
+      expect(thetaAirborne).toBeGreaterThanOrEqual(thetaMoving - 1e-9)
+    }
+  })
+
+  it('콘 내부 균등분포(입체각 기준) — 결정론적 시드 2000개 표본의 입체각 비율이 4개 구간에 고르게 분산된다(랜덤 통계 검정이 아니다, ADR-0008 — 고정 시드·고정 표본수라 실행마다 항상 같은 결과를 낸다)', () => {
+    // applySpread의 공식(cosTheta = 1 - u1*(1-cosConeEdge))에서, 입체각
+    // 비율 (1-cosTheta)/(1-cosConeEdge)는 정의상 u1과 같다 — u1이
+    // [0,1)에서 균등이면 이 비율도 균등해야 한다. 4개 구간(버킷)에 표본이
+    // 고르게 흩어지는지로 이를 간접 확인한다(결정론적 시드 1..2000 고정 —
+    // 매 실행 항상 같은 카운트).
+    const coneRadiusRad = 0.3
+    const cosConeEdge = Math.cos(coneRadiusRad)
+    const SAMPLE = 2000
+    const BUCKETS = 4
+    const counts = new Array(BUCKETS).fill(0) as number[]
+    for (let seed = 1; seed <= SAMPLE; seed++) {
+      const theta = angleBetween(AIM, applySpread(AIM, createRng(seed), coneRadiusRad))
+      const cosTheta = Math.cos(theta)
+      const solidFrac = (1 - cosTheta) / (1 - cosConeEdge)
+      const bucket = Math.min(BUCKETS - 1, Math.max(0, Math.floor(solidFrac * BUCKETS)))
+      counts[bucket] = (counts[bucket] ?? 0) + 1
+    }
+    const expectedPerBucket = SAMPLE / BUCKETS
+    for (const count of counts) {
+      expect(count).toBeGreaterThan(expectedPerBucket * 0.5)
+      expect(count).toBeLessThan(expectedPerBucket * 1.5)
+    }
+  })
+
+  it("u1(1차 nextFloat)→cosTheta·u2(2차 nextFloat)→phi 매핑 자체를 고정한다 — applySpread를 호출하지 않는 독립 오라클(리뷰 22z: 위 균등분포 검정은 u1↔u2를 바꿔도 통과하므로 이 매핑을 잠그지 못한다)", () => {
+    // 22z 공백: 위 "균등분포" 검정은 solidFrac=(1-cosTheta)/(1-cosConeEdge)가
+    // u1과 같다는 사실만 확인한다 — u1·u2는 둘 다 SeededRng에서 독립적으로
+    // 뽑은 [0,1) 균등 표본이라, applySpread 내부에서 이 둘의 **역할을
+    // 통째로 바꿔도**(cosTheta를 u2로, phi를 u1로 계산) solidFrac의 한계
+    // 분포는 여전히 균등이다 — 위 검정은 그 변이를 검출하지 못한다(리뷰어가
+    // 실측 지적, `AIRBORNE_INJECT_Y_M=2`류 변이 주입과 같은 방법론).
+    //
+    // 이 테스트는 `applySpread`를 호출하지 않는 별도 계산으로 AIM=(0,0,1)
+    // 고정 시 기대 벡터를 손으로 유도해 고정한다: `applySpread`의 기저
+    // 구성(`helper = |dir.x|<0.9 ? (1,0,0) : (0,1,0)`, `u=normalize(cross
+    // (helper,dir))`, `v=cross(dir,u)`)에 dir=AIM=(0,0,1)을 대입하면
+    // helper=(1,0,0)이고 u=cross((1,0,0),(0,0,1))=(0,-1,0)(이미 단위벡터),
+    // v=cross((0,0,1),(0,-1,0))=(1,0,0) — 대수로 유도되는 상수이지
+    // `applySpread`를 실행해서 얻은 값이 아니다. 이 기저를
+    //   result = u*localX + v*localY + dir*cosTheta
+    //          = (0,-1,0)*localX + (1,0,0)*localY + (0,0,1)*cosTheta
+    //          = (localY, -localX, cosTheta)
+    // 에 대입하고, `localX=sinTheta*cos(phi)`·`localY=sinTheta*sin(phi)`를
+    // 펼치면:
+    //   result = (sinTheta*sin(phi), -sinTheta*cos(phi), cosTheta)
+    // 이 닫힌 형태가 이 테스트의 오라클이다 — **u1이 cosTheta 쪽에, u2가
+    // phi 쪽에 매핑된다고 고정**한 뒤 그 결과를 아래 표에 리터럴로 박아
+    // 둔다(실행 시점에 이 공식을 다시 계산하지 않는다 — 그러면
+    // `applySpread`와 똑같은 코드를 중복해 "독립 오라클"이라는 목적 자체가
+    // 무너진다). 표의 수치는 실제 프로덕션 상수(`SeededRng.nextFloat`의
+    // mulberry32류 알고리즘, `@shared/sim/rng`)로 u1·u2를 뽑아 위 공식에
+    // 대입해 계산했다(스크래치 스크립트, 커밋 안 함 —
+    // `_workspace/RQ-90-spread/01_test-writer_red.md` §17.5에 유도 과정·
+    // u1↔u2 반전 시 달라지는 값까지 전문 기록, |Δ|=0.045~0.398로 5개 시드
+    // 전부에서 변이가 검출된다).
+    const coneRadiusRad = 0.3
+    const golden: ReadonlyArray<{ seed: number; expected: Vec3 }> = [
+      { seed: 1, expected: { x: 0.004039417748635903, y: -0.2349764253043673, z: 0.9719926762354916 } },
+      { seed: 7, expected: { x: 0.012270698614852932, y: -0.029911659948602974, z: 0.9994772246302677 } },
+      { seed: 42, expected: { x: 0.07347057548935987, y: 0.21811946121080833, z: 0.9731525960394747 } },
+      { seed: 12345, expected: { x: 0.2741724804161466, y: 0.1021317168494663, z: 0.9562418958589077 } },
+      { seed: 999999, expected: { x: 0.009066148483765147, y: 0.056467601583452896, z: 0.9983632680157473 } },
+    ]
+    for (const { seed, expected } of golden) {
+      const actual = applySpread(AIM, createRng(seed), coneRadiusRad)
+      expect(actual.x).toBeCloseTo(expected.x, 9)
+      expect(actual.y).toBeCloseTo(expected.y, 9)
+      expect(actual.z).toBeCloseTo(expected.z, 9)
+    }
+  })
+
+  it('판정 근거 제한(타입 잠금) — effectiveSpreadConeRadius는 tuning·dirX·dirZ·mode·grounded 다섯 파라미터만 받는다(v1.9). 시점 회전·자기신고 같은 6번째 인자를 추가하면 컴파일 타임에 거부된다(이 줄 자체가 타입 에러 나지 않으면 아래 지시문이 "사용되지 않음" 에러로 tsc를 실패시킨다)', () => {
+    // @ts-expect-error — RQ-90 v1.9 "판정 근거 제한": dirX·dirZ·mode·
+    // grounded 외 값(예: 시점 회전 viewYaw)을 판정에 쓰지 않는다는 계약을
+    // 초과 인자 거부로 고정한다.
+    effectiveSpreadConeRadius(DEFAULT_SPREAD, 0, 0, 'run', true, { viewYaw: 1.2 })
+    expect(true).toBe(true) // 도달 자체는 관심사가 아니다 — 위 타입 에러가 이 테스트의 본체다.
   })
 })
