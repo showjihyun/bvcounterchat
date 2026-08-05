@@ -304,6 +304,16 @@ const OVERSIZED_AIM_SCALE = 1000
  * 것이 되어 GA-49의 대상에서 벗어난다. `OVERSIZED_AIM_SCALE`(부풀리기)과
  * 대칭인 축소 방향을 덮는다. */
 const UNDERSIZED_AIM_SCALE = 1e-6
+/** GA-49 miss 버킷에서 확보할 시드 개수(원장 22ac, 델타 재평가 지적 대응)
+ * — 리뷰어 제시값 3을 그대로 쓴다. 근거는 오프라인 스크래치 실측(격리
+ * 워크트리, `_workspace/RQ-90-spread/01_test-writer_red.md` §32) — 이
+ * 기하·콘 반경에서 `×1000`(`OVERSIZED_AIM_SCALE`) 방향 MUT-A(정규화 가드
+ * 되돌림)를 준 뒤 miss로 분류된 시드 표본을 순차로 뽑아 검사했더니
+ * **거의 전부가 뒤집혔다**(개별 시드의 검출력이 매우 높다) — 따라서 K개를
+ * **독립적으로** 뽑으면 "K개 전부가 우연히 검출력 없는 시드였을" 확률이
+ * 급격히 낮아진다. body 버킷은 그대로 1개다 — 생존 산술(3발×25=75<100)
+ * 이 정확히 "3발"을 전제해 늘리면 피격자가 죽는다. */
+const MISS_BUCKET_K = 3
 
 /** N7 그물(2차 델타 재평가 지적) — `GameRoom.ts`의 정규화 가드
  * (`dirMagnitude < DEGENERATE_RADIAL_EPS`이면 조기 return)가 실제로
@@ -501,6 +511,37 @@ function findSeedWithBucket(
   throw new Error(
     `RQ-90 테스트 셋업 실패 — coneRadiusRad=${coneRadiusRad}에서 '${wanted}' 결과를 내는 시드를 1..${searchLimit} 범위에서 찾지 못했다(콘 반경 배율 조정 필요 — 실제 스폰 기하가 스크래치 검증 때와 달라졌을 수 있다).`,
   )
+}
+
+/** `findSeedWithBucket`의 K개 버전(원장 22ac) — 첫 매치 하나로 멈추지
+ * 않고 [1, searchLimit] 범위를 계속 훑어 `wanted` 버킷 시드를 최대
+ * `count`개 순서대로 모은다. **GA-49 miss 버킷 전용** — 리뷰가 실측한
+ * "×1000 방향의 MUT-A(정규화 가드 되돌림) 검출이 miss 버킷 한 시드의
+ * 궁합에 의존한다"는 지적에 대응한다. body 버킷은 여기 쓰지 않는다 —
+ * `WEAPON.DAMAGE_BODY * 3 = 75 < PLAYER.MAX_HP`인 생존 산술이 정확히
+ * "3발"을 전제하므로(GA-49 describe 상단 docblock 참고), body 버킷을
+ * K개로 늘리면 피격자가 죽어 시나리오 자체가 깨진다 — miss는 hp를
+ * 소모하지 않으므로 이 제약이 없다. */
+function findSeedsWithBucket(
+  origin: Vec3,
+  aim: Vec3,
+  targetFoot: Vec3,
+  coneRadiusRad: number,
+  wanted: Extract<SpreadBucket, 'body' | 'miss'>,
+  count: number,
+  searchLimit: number,
+): number[] {
+  const found: number[] = []
+  for (let seed = 1; seed <= searchLimit && found.length < count; seed += 1) {
+    if (classifySpreadSeed(origin, aim, targetFoot, coneRadiusRad, seed) === wanted) found.push(seed)
+  }
+  if (found.length < count) {
+    throw new Error(
+      `RQ-90 테스트 셋업 실패 — coneRadiusRad=${coneRadiusRad}에서 '${wanted}' 결과를 내는 시드를 ${count}개 모으지 못했다` +
+        `(1..${searchLimit} 범위 안에서 ${found.length}개만 찾음) — 탐색 상한을 늘려야 한다.`,
+    )
+  }
+  return found
 }
 
 /** RQ-90 화이트박스 접근 대상 계약 — 파일 상단 "테스트 시드 주입 인터페이스"
@@ -1089,11 +1130,13 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       // 타므로 값 자체는 결과에 영향이 없다).
       seam.spreadTuningOverride = { coneRadiusRad, movingMultiplier: 2, airborneMultiplier: 4 }
 
-      // 오프라인 오라클로 이 정확한 기하·반경에서 '바디 명중'·'빗나감'을
-      // 내는 시드를 각각 하나씩 확정한다 — 두 버킷 모두에서 크기 무관성을
-      // 확인해야 "우연히 한쪽 판정에만 무해했다"는 반쪽 결론을 피한다.
+      // 오프라인 오라클로 이 정확한 기하·반경에서 '바디 명중' 시드 1개·
+      // '빗나감' 시드 `MISS_BUCKET_K`개를 확정한다(원장 22ac — miss만
+      // K개로 넓히는 이유는 `findSeedsWithBucket` 코멘트·아래 miss 버킷
+      // 절 참고). 두 버킷 모두에서 크기 무관성을 확인해야 "우연히 한쪽
+      // 판정에만 무해했다"는 반쪽 결론을 피한다.
       const seedBody = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'body', SEARCH_LIMIT)
-      const seedMiss = findSeedWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', SEARCH_LIMIT)
+      const seedsMiss = findSeedsWithBucket(origin, aim, targetFoot, coneRadiusRad, 'miss', MISS_BUCKET_K, SEARCH_LIMIT)
 
       // ============================================================
       // 바디 버킷 3연발(단위 → 과대 → 과소) — 셋 다 정확히 같은 시드·
@@ -1150,6 +1193,7 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       // 읽는다 — 파일 상단 "결정론 메모"가 이미 명시한 기존 예외와 동일한
       // 이유(그 자체가 확인 대상이라 이벤트 기반 대기가 부적합하다).
       // ============================================================
+      const seedMiss = seedsMiss[0]
       seam.forcedSpreadSeed = seedMiss
       const hpBeforeMissUnit = afterBodyUndersized.hp
       roomC.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z }) // 단위 벡터(양성 대조)
@@ -1176,6 +1220,47 @@ describe('RQ-90/GA-49: 조준 벡터의 크기(magnitude)는 명중 여부·탄�
       await sleep(SHOT_GAP_MS)
       const afterMissUndersized = readPlayer(roomD, roomD.sessionId)
       expect(afterMissUndersized?.hp).toBe(hpBeforeMissUnit) // 줄여도 여전히 빗나감 — GA-49 then(축소 방향, miss 버킷)
+
+      // ============================================================
+      // 원장 22ac 추가분 — 나머지 `MISS_BUCKET_K - 1`개 miss 시드에서도
+      // 위와 똑같은 3연발(단위 → 과대 → 과소)을 반복한다. 리뷰어가 변이
+      // 실측으로 "×1000 방향의 MUT-A(정규화 가드 되돌림) 검출이 body
+      // 버킷에서는 안 잡히고 miss 버킷 시드 하나의 궁합에만 의존한다"는
+      // 것을 찾았다 — 위 seedMiss(= seedsMiss[0]) 한 시드만으로는 "이
+      // 시드가 우연히 검출력이 있었을 뿐"이라는 반론을 배제할 수 없다.
+      // body 버킷은 생존 산술(위 describe 상단 docblock, 3발×25=75<100)이
+      // 정확히 "3발"을 전제해 늘릴 수 없으므로, miss 버킷만 넓힌다 —
+      // miss는 hp를 소모하지 않아 몇 발을 더 쏘아도 생존 산술이 깨지지
+      // 않는다. `_workspace/RQ-90-spread/01_test-writer_red.md` §32에 K
+      // 선택 근거·격리 워크트리 변이 재현 전문을 기록했다.
+      // ============================================================
+      for (const seedMissExtra of seedsMiss.slice(1)) {
+        seam.forcedSpreadSeed = seedMissExtra
+        roomC.send('fire', { dirX: aim.x, dirY: aim.y, dirZ: aim.z }) // 단위 벡터(양성 대조, 추가 시드)
+        await sleep(SHOT_GAP_MS)
+        const afterMissUnitExtra = readPlayer(roomD, roomD.sessionId)
+        expect(afterMissUnitExtra?.hp).toBe(hpBeforeMissUnit) // 오라클 예측('miss')과 일치 — 추가 시드에서도 반복 검증(원장 22ac)
+
+        seam.forcedSpreadSeed = seedMissExtra
+        roomC.send('fire', {
+          dirX: aim.x * OVERSIZED_AIM_SCALE,
+          dirY: aim.y * OVERSIZED_AIM_SCALE,
+          dirZ: aim.z * OVERSIZED_AIM_SCALE,
+        })
+        await sleep(SHOT_GAP_MS)
+        const afterMissOversizedExtra = readPlayer(roomD, roomD.sessionId)
+        expect(afterMissOversizedExtra?.hp).toBe(hpBeforeMissUnit) // 부풀려도 여전히 빗나감 — 추가 시드에서도 반복 검증(원장 22ac)
+
+        seam.forcedSpreadSeed = seedMissExtra
+        roomC.send('fire', {
+          dirX: aim.x * UNDERSIZED_AIM_SCALE,
+          dirY: aim.y * UNDERSIZED_AIM_SCALE,
+          dirZ: aim.z * UNDERSIZED_AIM_SCALE,
+        })
+        await sleep(SHOT_GAP_MS)
+        const afterMissUndersizedExtra = readPlayer(roomD, roomD.sessionId)
+        expect(afterMissUndersizedExtra?.hp).toBe(hpBeforeMissUnit) // 줄여도 여전히 빗나감 — 추가 시드에서도 반복 검증(원장 22ac)
+      }
 
       await Promise.all([leaveRoom(roomC), leaveRoom(roomD)])
     },
