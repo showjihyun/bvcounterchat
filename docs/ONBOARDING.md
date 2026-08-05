@@ -172,7 +172,7 @@ CI 실패, reviewer의 REQUEST_CHANGES, 스펙 동결 게이트 — 급하다는
 | 1 | `harness/specs/requirements.md` | 요구사항(RQ). 여기 없으면 안 만든다 |
 | 2 | `harness/adr/` | 아키텍처 결정. 모순 구현 금지 |
 | 3 | `CLAUDE.md` | 최상위 규칙, 게임 특화 불변식 |
-| 4 | `docs/design/DESIGN.md` | UI 디자인 (🟡 아직 없음) |
+| 4 | `docs/design/DESIGN.md` | UI 디자인 (✅ 2026-08-05 신설 — 토큰 정본은 `src/client/config/design-tokens.ts`) |
 | 5 | `docs/req/` | 원본 요구사항 — 1번의 입력 |
 
 **바꾸려면**: 스펙은 개정, ADR은 새 ADR로 대체. 둘 다 코드와 같은 PR에서.

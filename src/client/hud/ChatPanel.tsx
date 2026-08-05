@@ -16,7 +16,8 @@ interface ChatPanelProps {
  * RQ-40(Global Chat) + RQ-41(관전자 참여) + RQ-95(금칙어 필터, 서버가 이미
  * 적용한 값을 그대로 표시) 최소 채팅 패널 — HUD 레이어(캔버스 밖 DOM,
  * `harness/workflow/fe.md`). RQ-52 자리(좌하단)의 기능 최소 구현이다 —
- * 시각 디자인은 `docs/design/DESIGN.md`(🟡 아직 없음) 확정 이후로 유예한다
+ * 시각 디자인은 `docs/design/DESIGN.md` §3.3이 정한다(2026-08-05 확정) — 현재는
+ * 그 토큰만 적용한 상태이고 RQ-52 정식 레이아웃 구현은 다음 라운드다
  * (22b 임시 크로스헤어 선례와 동일한 절제).
  *
  * **읽기(리뷰 M1, `_workspace/review/feat-RQ-40-chat.md`)**: 이 컴포넌트는

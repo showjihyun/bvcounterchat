@@ -102,7 +102,8 @@ export function App() {
           <div className="hud" aria-live="polite">
             {/* 22b 임시 크로스헤어(RQ-54 자리표시) — 조준점이 없으면 어디를
                 쏘는지 알 수 없어 사격 자체를 확인할 수 없다. 정식 디자인·
-                탄퍼짐 시각화는 DESIGN.md 확정 이후(fe.md HUD 체크리스트). */}
+                탄퍼짐 시각화(크로스헤어 확장)는 DESIGN.md §3.1이 확정했다 — 간격 =
+                    기본 간격 × 콘 배율. 구현은 RQ-54 라운드. */}
             <span className="hud__crosshair" aria-hidden="true" />
             <span className="hud__placeholder">ChatStrike — 접속됨</span>
             {/* RQ-40/41/95 최소 채팅 패널(RQ-52 자리) — ChatPanel.tsx 참고. */}

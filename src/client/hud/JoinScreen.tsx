@@ -9,7 +9,7 @@ interface JoinScreenProps {
 
 /**
  * 닉네임 입장 화면(캔버스 밖 DOM, `harness/workflow/fe.md` HUD 레이어).
- * 시각 디자인은 `docs/design/DESIGN.md`(🟡 아직 없음) 확정 전까지 유예 —
+ * 시각 디자인 토큰은 `docs/design/DESIGN.md` §2가 정한다(2026-08-05 확정) —
  * 기능 최소(입력 + 버튼)만 구현한다.
  */
 export function JoinScreen({ connecting, error, onJoin }: JoinScreenProps) {
