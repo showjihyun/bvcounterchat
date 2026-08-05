@@ -285,8 +285,13 @@ export class GameRoom extends Room<GameState> {
    * 설계 결정, `_workspace/RQ-15-16/01_test-writer_red.md` §2.1). */
   private spawnCursor: number | undefined
   /** RQ-90: 탄퍼짐 콘 반경 오버라이드(테스트 전용, 화이트박스) — 값이 있으면
-   * 이 룸 인스턴스의 사격 판정에서 `DEFAULT_SPREAD`(출하 기본값, 반경 0)
-   * 대신 이 값을 쓴다. 이 필드에 값을 대입하는 프로덕션 코드 경로는 없다 —
+   * 이 룸 인스턴스의 사격 판정에서 `DEFAULT_SPREAD`(출하 기본값 — v1.9부터
+   * 0.5°, `@shared/config/combat-tuning` 정본) 대신 이 값을 쓴다. **minor 1
+   * REV(리뷰 지적)**: 이 코멘트가 한동안 "반경 0"이라고 적고 있었는데
+   * v1.8/v1.9(원장 25a-10)가 그 값을 0.5°로 바꾼 뒤에도 정정되지 않았다 —
+   * `GameRoom.ts` 안의 다른 자리(`handleFire` 코멘트)는 이미 정정됐으나
+   * 이 필드 코멘트만 남아 있었다. 이 필드에 값을 대입하는 프로덕션 코드
+   * 경로는 없다 —
    * 오직 통합 테스트만 화이트박스로 값을 쓴다. **이름을 바꾸지 않는다** —
    * 통합 테스트(`rq-90-spread-seed-determinism.test.ts`의 `SpreadTestSeam`)가
    * `matchMaker.getLocalRoomById`로 이 정확한 필드명을 화이트박스 주입
@@ -302,10 +307,55 @@ export class GameRoom extends Room<GameState> {
   private forcedSpreadSeed: number | undefined
   /** RQ-90: `forcedSpreadSeed`가 없을 때 서버가 스스로 발급하는 탄퍼짐 시드의
    * 재료 — 이 룸이 처리한 사격 발수(세션 무관, 룸 전역)만큼 전진하는 순수
-   * 카운터. `issueSpreadSeed()`가 `state.tick`과 섞어 매 사격을 서로 다른
-   * 시드로 만드는 데 쓴다 — `Math.random()`을 직접 부르지 않는다(ADR-0008,
-   * `issueSpreadSeed` 코멘트 참고). */
+   * 카운터. `issueSpreadSeed()`가 `state.tick`·`spreadSalt`와 섞어 매 사격을
+   * 서로 다른 시드로 만드는 데 쓴다. */
   private spreadSeedCounter = 0
+  /** RQ-90 v1.9(22v/22w) — 이 룸 인스턴스만 아는 탄퍼짐 시드 salt. 클래스
+   * 필드 초기화 시점(=생성자, `handleCreateRoom`이 `new handler.klass()`를
+   * 호출하는 순간 — `onCreate`보다 먼저다)에 정확히 1회 발급하고 그 뒤로는
+   * 바꾸지 않는다. **`onCreate(options)` 경유로 받지 않는다** — Colyseus의
+   * 옵션 병합(`merge({}, clientOptions, handler.options)`,
+   * `node_modules/@colyseus/core/build/MatchMaker.js` 실측)은 서버
+   * `defaultOptions`(`src/server/index.ts`의 `define()` 3번째 인자)에
+   * **실제로 있는 키만** 클라 값을 이긴다 — 이 필드를 옵션으로 받으면
+   * `defaultOptions`에 넣지 않는 한 클라이언트가 `joinOrCreate('game',
+   * { ... })`로 값을 직접 지정할 수 있다(리뷰 blocker 1 준비 중 발견,
+   * `src/server/index.ts:108-125` 코멘트 참고). 그래서 **스키마 필드도
+   * 아니고**(`GameState`에 없다 — 클라에 동기화되지 않는다, 여기 두면
+   * `state.tick`처럼 관측 가능해져 salt의 의미가 없어진다) 옵션도 아닌,
+   * 클래스 자체의 private 필드로만 존재한다 — `spreadTuningOverride`·
+   * `forcedSpreadSeed`와 동일한 결합 방식이지만, 저 둘과 달리 이 필드는
+   * 프로덕션 코드 경로(이 초기화식)가 실제로 값을 쓰는 유일한 지점이다.
+   *
+   * `issueSpreadSeed()`가 `createRng(spreadSalt)`를 기반으로 `fork(tick)`·
+   * `fork(counter)`를 거쳐 최종 시드를 만든다 — `Math.random()` 자체는
+   * 여기(룸 생성, 시뮬레이션 루프 밖의 1회성 이벤트)에서만 호출된다.
+   * ADR-0008이 금지하는 것은 "시뮬레이션 코드"(매 틱·매 사격마다 실행)의
+   * 직접 호출이다(기존 `handleFire`의 rate-limit이 `Date.now()`를 쓰는
+   * 것과 같은 근거) — 여기는 그 경로가 아니다. **결정론이 필요한 것은
+   * "같은 salt·같은 tick·같은 counter가 같은 시드를 내는가"이지 "salt
+   * 자체가 어떻게 나오는가"가 아니다** — salt가 일단 발급되면 그 뒤
+   * `issueSpreadSeed()`는 순수하게 그 값·`tick`·`counter`만의 함수라
+   * 결정론적이다(재현이 필요한 시나리오는 여전히 `forcedSpreadSeed`로 이
+   * 경로 자체를 우회한다). 클라가 아는 값(`tick`)만으로는 이 salt를 유도할
+   * 수 없다 — 다만 32비트 정수라 관측된 편차로부터의 오프라인 전수 탐색
+   * 자체를 원천 차단하지는 않는다(원장 26az 이월 — "예측 불가"라고
+   * 단정하지 않는다, team-lead 지시). */
+  private readonly spreadSalt: number = Math.floor(Math.random() * 0x100000000) >>> 0
+  /** RQ-90 v1.9(22w) — `spreadSalt` 대신 쓸 강제 salt(테스트 전용,
+   * 화이트박스) — 값이 있으면 `issueSpreadSeed()`가 `state.tick`·
+   * `spreadSeedCounter`와 섞지 않고 **이 값 그대로**를 시드로 반환한다.
+   * `forcedSpreadSeed`(발급된 최종 시드 자체를 강제)와는 목적이 다르다 —
+   * 이 필드는 "룸의 salt 소스만 결정론적인 것으로 교체"한다는 의미이고,
+   * `rq-90-spread-seed-salt.test.ts`(2)(3)의 오프라인 오라클이 "이 값을
+   * `createRng`에 직접 먹인 것과 같은 형태"로 hit/miss를 미리 계산해
+   * 두므로, `fork(tick)`·`fork(counter)`를 추가로 거치면 그 계산이 더 이상
+   * 맞지 않는다 — 강제됐을 때는 추가 믹싱 없이 그대로 반환해야 한다. 이
+   * 필드에 값을 대입하는 프로덕션 코드 경로는 없다 — 오직 통합 테스트만
+   * 화이트박스로 값을 쓴다(`spreadTuningOverride`와 동일한 권한·근거).
+   * **이름을 바꾸지 않는다** — `SeedSaltTestSeam.forcedRoomSalt`가 이
+   * 정확한 필드명을 화이트박스 주입 대상으로 참조한다(team-lead 확정 사항). */
+  private forcedRoomSalt: number | undefined
   /** RQ-12 v1.7: hitscan 차폐 질의용 벽 목록 오버라이드(테스트 전용,
    * 화이트박스) — **설정돼 있으면**(`[]`도 유효한 설정값이다, "벽 없음"과
    * "오버라이드 없음"은 구분된다) `handleFire`가 `findClosestHit`의 4번째
@@ -772,28 +822,48 @@ export class GameRoom extends Room<GameState> {
   }
 
   /**
-   * RQ-90: `forcedSpreadSeed`(테스트 전용)가 설정돼 있지 않을 때 서버가
-   * 스스로 조달하는 탄퍼짐 시드. `state.tick`(틱마다 전진하는 결정론적
-   * 시뮬레이션 시계, RQ-60)과 `spreadSeedCounter`(이 룸이 처리한 사격
-   * 발수, 사격마다 1씩 전진)를 섞어 만든다 — 두 값 다 `Math.random()`이
-   * 아니라 서버 자신의 상태에서 나오므로, 시드의 *재료*를 서버가 조달하는
-   * 것 자체는 ADR-0008 위반이 아니다(`handleFire`의 rate-limit이
-   * `Date.now()`를 쓰는 것과 동일한 이유 — 그 규율은 `src/shared`에만
-   * 적용된다). 위반은 오직 편차 계산 자체(`applySpread` 내부)를
-   * `Math.random()`으로 하는 경우인데, 여기서는 이 시드로 만든
-   * `createRng`의 `SeededRng`만 거친다. 한 틱에 여러 발(다른 사수·재발사)이
-   * 겹쳐도 `spreadSeedCounter`가 매번 전진하므로 시드가 겹치지 않는다.
+   * RQ-90 v1.9(22v/22w) — `forcedSpreadSeed`(테스트 전용)가 설정돼 있지
+   * 않을 때 서버가 스스로 조달하는 탄퍼짐 시드. `spreadSalt`(이 룸만 아는
+   * 값, 위 필드 코멘트)를 기반(`createRng`)으로 `state.tick`(RQ-60 결정론적
+   * 시뮬레이션 시계)과 `spreadSeedCounter`(이 룸이 처리한 사격 발수, 사격
+   * 마다 1씩 전진)를 각각 `fork()`로 섞어 최종 시드를 뽑는다.
    *
-   * 이 조합 방식(비트 시프트 + XOR)의 구체적 형태는 GA-17이 규정하지 않은
-   * coder 재량 영역이다(`_workspace/RQ-90/01_test-writer_red.md` §4.2) —
-   * 재현이 필요한 시나리오는 전부 `forcedSpreadSeed`로 이 경로 자체를
-   * 우회하므로, 이 조합의 통계적 분포 품질은 이 라운드의 검증 대상이
-   * 아니다.
+   * **REV(리뷰 blocker 1, 원장 22v)**: 이전 구현(`((tick<<16)^counter)>>>0`)
+   * 은 `tick`·`counter` 둘 다 사실상 클라이언트가 재현 가능한 값이었다 —
+   * `state.tick`은 `@type('number')`로 전 클라이언트에 동기화되고,
+   * `spreadSeedCounter`는 룸당 0부터 1씩 증가하는 예측 가능한 값이다.
+   * `createRng`·`applySpread`는 `src/shared`라 클라 번들에 그대로 들어가므로
+   * (ADR-0010 단일 패키지), 공격자가 서버와 비트 단위로 같은 함수를 쥔 채
+   * 이 두 값만 맞추면 편차를 사전 계산해 조준으로 상쇄할 수 있었다 — 탄퍼짐
+   * 기능이 도입되고도 사실상 무력화된 채 출하되는 상태였다. `spreadSalt`는
+   * 클라가 알 수 없으므로(위 필드 코멘트) 이 문제를 막는다 — **클라가 아는
+   * 값(`tick`)만으로는 이 시드를 만들 수 없다**는 것이 이 수정이 성립시키는
+   * 성질이다("예측 불가"라고 단정하지 않는다 — salt 자체가 32비트라 관측된
+   * 편차로부터의 오프라인 전수 탐색까지 막지는 못한다, 원장 26az 이월).
+   *
+   * `tick<<16` 별칭(30Hz에서 tick이 32768을 넘으면 부호 비트를 넘고 65536틱
+   * 마다 상위 비트가 순환하던 문제)도 이 REV로 함께 사라졌다 — `fork()`는
+   * 비트 시프트가 아니라 해시(`mixSeed`, `rng.ts`)로 섞으므로 그런 별칭이
+   * 없다.
+   *
+   * 시드 재료(`spreadSalt`·`state.tick`·`spreadSeedCounter`) 자체는
+   * `Math.random()`이 아니라 서버 상태(+룸 생성 시 1회 발급된 salt)에서
+   * 나오므로 매 사격마다 `Math.random()`을 부르는 것이 아니다 — ADR-0008이
+   * 금지하는 것은 편차 계산 자체(`applySpread` 내부)를 `Math.random()`으로
+   * 하는 경우인데, 여기서는 이 시드로 만든 `createRng`의 `SeededRng`만
+   * 거친다. 한 틱에 여러 발(다른 사수·재발사)이 겹쳐도 `spreadSeedCounter`가
+   * 매번 전진하므로 시드가 겹치지 않는다(같은 (tick, counter) 조합이 두 번
+   * 나오지 않는다는 것의 단언 고정은 이 라운드 범위 밖 — test-writer 이월).
    */
   private issueSpreadSeed(): number {
-    const seed = ((this.state.tick << 16) ^ this.spreadSeedCounter) >>> 0
+    const counter = this.spreadSeedCounter
     this.spreadSeedCounter = (this.spreadSeedCounter + 1) >>> 0
-    return seed
+    // `forcedRoomSalt`(테스트 전용, 위 필드 코멘트)가 있으면 tick·counter와
+    // 섞지 않고 그 값을 그대로 반환한다 — 오프라인 오라클이 그 값을 직접
+    // `createRng`에 먹인 것으로 계산해 두었기 때문이다(fork를 더 거치면
+    // 그 계산과 어긋난다).
+    if (this.forcedRoomSalt !== undefined) return this.forcedRoomSalt
+    return createRng(this.spreadSalt).fork(this.state.tick).fork(counter).nextU32()
   }
 
   /**
