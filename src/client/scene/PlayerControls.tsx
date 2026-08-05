@@ -11,6 +11,7 @@ import { createLocalFireCooldown } from '@client/input/fireControl'
 import { rotateLocalMoveDirection, yawPitchToDirection } from '@client/input/aimMath'
 import { applyLookToCamera } from '@client/input/cameraLook'
 import { createChatGatedActions } from '@client/input/chatInputGate'
+import { crosshairGapPx } from '@client/hud/crosshairSpread'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { NET } from '@shared/constants'
 
@@ -126,6 +127,15 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       const world = rotateLocalMoveDirection(local, yaw)
       // RQ-40 M4: 채팅 게이트는 `gatedActions.sendMoveInput` 안에서 처리한다.
       gatedActions.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
+
+      // RQ-54 크로스헤어 확산(원장 24e) — **여기서 계산하는 이유**: 이 루프는
+      // 30Hz이고 `useFrame`(60fps 렌더 루프)이 아니다. 렌더 루프에서 돌리면
+      // 프레임마다 store를 건드려 ADR-0001 프레임 예산과 부딪힌다.
+      // 회전 전 로컬 입력(`local`)을 쓴다 — tier 판정은 "수평 입력이 있는가"만
+      // 보므로 yaw 회전은 무관하고, 서버도 회전된 벡터의 0 여부로 같은 판정을
+      // 한다(RQ-90 v1.9). `setCrosshairGapPx`가 값이 바뀔 때만 `set`한다.
+      const predicted = store.getState().selfPredictedState
+      uiStore.getState().setCrosshairGapPx(crosshairGapPx(local, predicted?.grounded ?? true))
     }, NET.TICK_MS)
 
     return () => {
@@ -136,7 +146,7 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       canvas.removeEventListener('mousedown', handleFireDown)
       window.clearInterval(movementIntervalId)
     }
-  }, [gl, connection, uiStore])
+  }, [gl, connection, uiStore, store])
 
   useFrame(() => {
     const mouseLook = mouseLookRef.current

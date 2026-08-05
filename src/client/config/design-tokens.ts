@@ -73,7 +73,8 @@ export const EDGE_INSET = SPACE.s3
  *
  * `gapPx`는 **정지·앉기(콘 ×1)일 때의 값**이다. 실제 간격은
  * `gapPx × (현재 콘 배율)`이고 그 배율의 정본은 `DEFAULT_SPREAD`다 —
- * 여기 복제하지 않는다.
+ * 여기 복제하지 않는다. 계산은 `@client/hud/crosshairSpread`가 하고(원장 24e)
+ * 결과를 `--crosshair-gap-live`로 심는다.
  *
  * ⚠️ **크로스헤어는 예측 표시다.** 실제 편차는 서버가 시드로 정하고 클라는 그
  * 시드를 알 수 없다(RQ-90 / 원장 22v) — 간격은 "이만큼 퍼질 수 있다"는 안내이지
@@ -82,12 +83,6 @@ export const CROSSHAIR = {
   lengthPx: 6,
   thicknessPx: 2,
   gapPx: 4,
-  /** ⚠️ **22b 임시 점의 지름** — §3.1 정식 십자(선 굵기 `thicknessPx`)와 **다른
-   * 양**이다. 초안이 토큰화하면서 선 굵기(2px)를 이 자리에 물려 **조준점이 4px에서
-   * 2px로 절반이 됐고**(1차 리뷰 major) 그 점은 "조준점이 없으면 어디를 쏘는지 알 수
-   * 없어 사격 자체를 확인할 수 없다"는 이유로 존재하는 자리표시다.
-   * **§3.1 정식 십자를 만드는 라운드가 이 값을 제거한다.** */
-  dotPx: 4,
 } as const
 
 /** 미니맵(DESIGN.md §3.5). 축척은 `WORLD.SIZE_M`에서 유도한다 —
@@ -132,7 +127,6 @@ export function applyDesignTokens(root: HTMLElement): void {
     '--crosshair-length': `${CROSSHAIR.lengthPx}px`,
     '--crosshair-thickness': `${CROSSHAIR.thicknessPx}px`,
     '--crosshair-gap': `${CROSSHAIR.gapPx}px`,
-    '--crosshair-dot': `${CROSSHAIR.dotPx}px`,
   }
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value)
