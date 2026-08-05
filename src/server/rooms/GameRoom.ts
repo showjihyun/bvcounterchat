@@ -342,19 +342,20 @@ export class GameRoom extends Room<GameState> {
    * 자체를 원천 차단하지는 않는다(원장 26az 이월 — "예측 불가"라고
    * 단정하지 않는다, team-lead 지시). */
   private readonly spreadSalt: number = Math.floor(Math.random() * 0x100000000) >>> 0
-  /** RQ-90 v1.9(22w) — `spreadSalt` 대신 쓸 강제 salt(테스트 전용,
-   * 화이트박스) — 값이 있으면 `issueSpreadSeed()`가 `state.tick`·
-   * `spreadSeedCounter`와 섞지 않고 **이 값 그대로**를 시드로 반환한다.
-   * `forcedSpreadSeed`(발급된 최종 시드 자체를 강제)와는 목적이 다르다 —
-   * 이 필드는 "룸의 salt 소스만 결정론적인 것으로 교체"한다는 의미이고,
-   * `rq-90-spread-seed-salt.test.ts`(2)(3)의 오프라인 오라클이 "이 값을
-   * `createRng`에 직접 먹인 것과 같은 형태"로 hit/miss를 미리 계산해
-   * 두므로, `fork(tick)`·`fork(counter)`를 추가로 거치면 그 계산이 더 이상
-   * 맞지 않는다 — 강제됐을 때는 추가 믹싱 없이 그대로 반환해야 한다. 이
-   * 필드에 값을 대입하는 프로덕션 코드 경로는 없다 — 오직 통합 테스트만
-   * 화이트박스로 값을 쓴다(`spreadTuningOverride`와 동일한 권한·근거).
-   * **이름을 바꾸지 않는다** — `SeedSaltTestSeam.forcedRoomSalt`가 이
-   * 정확한 필드명을 화이트박스 주입 대상으로 참조한다(team-lead 확정 사항). */
+  /** RQ-90 v1.9(22w) — `spreadSalt` 자리에서 대체할 강제 salt(테스트 전용,
+   * 화이트박스) — 값이 있으면 `issueSpreadSeed()`가 `createRng(spreadSalt)`
+   * 대신 `createRng(forcedRoomSalt)`를 기반으로 쓰되, **`fork(tick)`·
+   * `fork(counter)`는 그대로 거친다** — "룸의 salt *소스*만 결정론적인
+   * 것으로 교체"한다는 이름 그대로다. `forcedSpreadSeed`(발급된 최종
+   * 시드 자체를 강제, fork 배선을 완전히 우회)와는 역할이 분명히 갈린다
+   * — 이 필드는 salt→시드 fork 배선 자체가 실제로 도는지도 함께 시험할
+   * 수 있다. **REV(리뷰 지적, 22z1 인접)**: 최초 구현은 이 값을 fork 없이
+   * 그대로 반환해 사실상 `forcedSpreadSeed`와 기능이 겹쳤다("salt"라는
+   * 이름과 실제 동작이 어긋남) — 지금 형태로 교정했다. 이 필드에 값을
+   * 대입하는 프로덕션 코드 경로는 없다 — 오직 통합 테스트만 화이트박스로
+   * 값을 쓴다(`spreadTuningOverride`와 동일한 권한·근거). **이름을 바꾸지
+   * 않는다** — `SeedSaltTestSeam.forcedRoomSalt`가 이 정확한 필드명을
+   * 화이트박스 주입 대상으로 참조한다(team-lead 확정 사항). */
   private forcedRoomSalt: number | undefined
   /** RQ-12 v1.7: hitscan 차폐 질의용 벽 목록 오버라이드(테스트 전용,
    * 화이트박스) — **설정돼 있으면**(`[]`도 유효한 설정값이다, "벽 없음"과
@@ -858,12 +859,16 @@ export class GameRoom extends Room<GameState> {
   private issueSpreadSeed(): number {
     const counter = this.spreadSeedCounter
     this.spreadSeedCounter = (this.spreadSeedCounter + 1) >>> 0
-    // `forcedRoomSalt`(테스트 전용, 위 필드 코멘트)가 있으면 tick·counter와
-    // 섞지 않고 그 값을 그대로 반환한다 — 오프라인 오라클이 그 값을 직접
-    // `createRng`에 먹인 것으로 계산해 두었기 때문이다(fork를 더 거치면
-    // 그 계산과 어긋난다).
-    if (this.forcedRoomSalt !== undefined) return this.forcedRoomSalt
-    return createRng(this.spreadSalt).fork(this.state.tick).fork(counter).nextU32()
+    // `forcedRoomSalt`(테스트 전용, 위 필드 코멘트)가 있으면 `spreadSalt`
+    // **자리에서** 대체한다 — `tick`·`counter`와는 여전히 fork로 섞인다.
+    // REV(리뷰 지적): 이전 구현은 이 값을 fork 없이 그대로 반환해 사실상
+    // `forcedSpreadSeed`(시드 자체 강제)와 기능이 겹쳤고, salt→시드 구간
+    // (fork 배선)이 이 경로에서 시험되지 않았다 — "salt"라는 이름과 실제
+    // 동작이 어긋났다. 지금은 진짜 salt 대체라 이름이 사실이 되고,
+    // `forcedSpreadSeed`(시드 고정)와 역할이 분명히 갈린다(salt 고정 vs
+    // 시드 고정).
+    const salt = this.forcedRoomSalt ?? this.spreadSalt
+    return createRng(salt).fork(this.state.tick).fork(counter).nextU32()
   }
 
   /**
