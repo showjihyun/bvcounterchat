@@ -42,6 +42,17 @@ import { escapeSafeZone, releaseSpawnProtectionAndEscape, computeRadialEscape, t
  *    주입했을 때 "시드가 같다"를 보인다 — 둘을 합치면 "salt가 시드를
  *    가르는 원인"이라는 인과가 닫힌다. 오라클도 확률도 필요 없다(순수
  *    비교, 결정론 100%).
+ *
+ *    **REV(델타 평가 FAIL G-1, team-lead 지시) — "같다"만으로는 fork
+ *    우회를 못 잡는다**: `seedP===seedQ`는 **대칭 조작에 무감각**하다 —
+ *    `forcedRoomSalt`가 `fork(tick)`·`fork(counter)`를 건너뛰고(리뷰가
+ *    잡아 `724da06`으로 고친 바로 그 결함, "M-nofork" 변이) salt 값을
+ *    그대로 반환해도 두 룸이 **똑같이** 우회하므로 여전히 같다 — 평가자
+ *    변이 실측으로 7/7 미검출 확인됨. **수정**: "같다"에 더해 **기대값을
+ *    명시적으로 못박는다** — `effectiveSeedForSalt`(coder의 실제 공식을
+ *    그대로 재현, (3)의 오프라인 오라클과 동일 함수)가 예측하는 정확한
+ *    값과 실제 값이 같은지 확인한다. 이 한 줄이 M-nofork를 죽인다(§31.1
+ *    에서 격리 워크트리 재현으로 직접 확인).
  * 3. **(1)(2)(3) 전부 tick을 관측 대신 주입한다**(team-lead 지시,
  *    coder의 실측이 근거) — 이전엔 두 룸의 tick이 "우연히 같기를" 기다린
  *    뒤 전제 가드로 확인했다. coder가 전체 파일 10회는 항상 결정론적
@@ -357,8 +368,9 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
   )
 
   it(
-    '(2) 같은 forcedRoomSalt를 두 독립 룸에 주입하면(같은 tick·counter=0) issueSpreadSeed()가 같은 시드를 낸다' +
-      '((1)과 짝을 이뤄 "salt가 시드를 가르는 원인"이라는 인과를 닫는다 — 확률·오라클·기하 불필요, flaky 0)',
+    '(2) 같은 forcedRoomSalt를 두 독립 룸에 주입하면(같은 tick·counter=0) issueSpreadSeed()가 fork(tick).fork(counter)를 ' +
+      '실제로 거친 정확한 값을 낸다((1)과 짝을 이뤄 "salt가 시드를 가르는 원인"이라는 인과를 닫고, fork 우회(M-nofork류)를 ' +
+      '직접 검정한다 — 확률·오라클·기하 불필요, flaky 0)',
     async () => {
       // hp 수준의 "시드→명중" 배선은 (3)과 `forcedSpreadSeed` 계열의
       // 기존 테스트가 이미 덮는다 — 이 테스트는 순수하게 시드 발급
@@ -394,6 +406,20 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       // "salt를 같게 하면 차이가 사라진다"를 더해 — salt가 실제로 시드를
       // 가르는 유일한 원인임을 인과적으로 닫는다.
       expect(seedP).toBe(seedQ)
+
+      // ⚠️ REV(델타 평가 FAIL G-1 수정, team-lead 지시) — 위 단언 하나만으로는
+      // `forcedRoomSalt`가 `fork(tick)`·`fork(counter)`를 건너뛰고(리뷰가
+      // 지적해 `724da06`으로 고친 바로 그 결함, "M-nofork" 변이) 시드 값
+      // 그 자체를 그대로 반환해도 **똑같이 통과한다** — 두 룸이 대칭으로
+      // 같은 값을 우회해서 반환하면 여전히 "같다"이기 때문이다(평가자
+      // 변이 실측: 7종 중 M-nofork만 7/7 미검출). "같다"에 더해 **기대값이
+      // 무엇인지**를 명시적으로 못박아야 fork 우회가 갈린다 —
+      // `effectiveSeedForSalt`(coder의 실제 공식을 그대로 재현, 위 (3)의
+      // 오프라인 오라클과 동일 함수)가 예측하는 값과 실제로 일치하는지
+      // 확인한다. `forcedRoomSalt`가 fork를 우회해 salt 값 그대로
+      // (=555_555)를 반환한다면 이 단언이 즉시 깨진다(§31.1에서 이 변이를
+      // 직접 재현해 실제로 죽는지 확인했다).
+      expect(seedP).toBe(effectiveSeedForSalt(SAME_FORCED_SALT_FOR_SEED_EQUALITY, FIXED_TICK, 0))
     },
   )
 
@@ -514,6 +540,15 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       if (afterX === undefined || afterY === undefined) {
         throw new Error('RQ-90 22w(3) — 사격 후 관측 실패(피격자 상태를 읽지 못했다)')
       }
+
+      // ⚠️ REV(델타 평가 지적 §5.2, 편측성 방지, team-lead 권고 채택) —
+      // `afterX===afterY`만으로는 "둘 다 안 맞아서 우연히 같다"는 경로가
+      // 열려 있다(예: 배선이 완전히 끊겨 아무 사격도 명중하지 않으면 둘 다
+      // `baselineX`·`baselineY` 그대로라 "같다"가 공허하게 참이 된다).
+      // `FORCED_SALT_FOR_COMPARISON`은 `hitSalt`(명중 확정, 위 모듈 스코프
+      // 계산)이므로 실제로 명중해 hp가 줄어야 한다 — 이 확인이 있어야
+      // 아래 "같다"가 "둘 다 정말 명중했고 그 데미지가 같다"는 뜻이 된다.
+      expect(afterX).not.toBe(baselineX)
 
       // 악의적 옵션을 받은 룸(X)과 받지 않은 룸(Y)이 같은 forcedRoomSalt·
       // 같은 tick(주입)·같은 counter에서 **같은 결과**를 내야 한다 —
