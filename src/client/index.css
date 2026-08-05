@@ -1,6 +1,12 @@
-/* 셸 스타일만. 시각 디자인은 docs/design/DESIGN.md가 진실 공급원이며
-   아직 존재하지 않는다 (CLAUDE.md 진실 공급원 4번, 🟡). UI 본격 구현 전에
-   그 문서가 필요하다 — `harness/workflow/fe.md`. */
+/* 시각 디자인의 진실 공급원은 `docs/design/DESIGN.md`(CLAUDE.md 4번)이고,
+   그 §2 토큰의 **정본은 `src/client/config/design-tokens.ts`**다 —
+   `applyDesignTokens()`가 :root에 심은 var(--*)만 여기서 참조한다.
+
+   ⚠️ **이 파일에 색·간격 리터럴이 다시 등장하면 그것은 드리프트다**(원장 24a,
+   사용자 결정 2026-08-05 "토큰을 코드 상수로"). 리뷰가 볼 지점이다.
+
+   RQ-50~55 HUD 요소의 **구현**은 이 라운드가 아니다 — DESIGN.md §3이 스펙을
+   확정했고 다음 라운드가 만든다. 아래는 기존 셸을 토큰으로 옮긴 것까지다. */
 
 * {
   box-sizing: border-box;
@@ -14,9 +20,9 @@ body,
 }
 
 body {
-  background: #1a1713;
-  color: #e8e0d4;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg-app);
+  color: var(--fg);
+  font-family: var(--font);
   overflow: hidden;
 }
 
@@ -41,20 +47,20 @@ body {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 4px;
-  height: 4px;
-  margin: -2px 0 0 -2px;
+  width: var(--crosshair-thickness);
+  height: var(--crosshair-thickness);
+  margin: calc(var(--crosshair-thickness) / -2) 0 0 calc(var(--crosshair-thickness) / -2);
   border-radius: 50%;
-  background: #f2f2f2;
-  box-shadow: 0 0 2px rgb(0 0 0 / 80%);
+  background: var(--fg-strong);
+  box-shadow: var(--shadow-text);
 }
 
 .hud__placeholder {
   position: absolute;
-  bottom: 1rem;
-  left: 1rem;
-  font-size: 0.8rem;
-  opacity: 0.6;
+  bottom: var(--edge-inset);
+  left: var(--edge-inset);
+  font-size: var(--size-sm);
+  color: var(--fg-muted);
 }
 
 /* RQ-40/41/95 채팅 패널(RQ-52 자리, 좌하단) — 기능 최소, 시각 디자인은
@@ -62,8 +68,10 @@ body {
    받는 요소는 여기서 개별적으로 되살린다. */
 .hud__chat {
   position: absolute;
-  bottom: 1rem;
-  left: 1rem;
+  bottom: var(--edge-inset);
+  left: var(--edge-inset);
+  /* 컴포넌트 치수 — 간격 스케일이 아니다(DESIGN.md §2.3 주). 채팅 로그가
+     읽히는 최소 너비이고 좁은 창에서는 가장자리 여백만 남기고 줄어든다. */
   width: 22rem;
   max-width: calc(100vw - 2rem);
   pointer-events: auto;
@@ -72,20 +80,20 @@ body {
 .hud__chat-log {
   max-height: 8rem;
   overflow-y: auto;
-  margin-bottom: 0.25rem;
-  padding: 0.25rem 0.5rem;
-  background: rgb(0 0 0 / 35%);
-  border-radius: 4px;
-  font-size: 0.8rem;
+  margin-bottom: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: var(--panel);
+  border-radius: var(--radius);
+  font-size: var(--size-sm);
 }
 
 .hud__chat-message {
-  margin: 0.15rem 0;
+  margin: var(--space-1) 0;
   word-break: break-word;
 }
 
 .hud__chat-nickname {
-  font-weight: 600;
+  font-weight: var(--weight-strong);
 }
 
 .hud__chat-form {
@@ -94,12 +102,12 @@ body {
 
 .hud__chat-input {
   flex: 1;
-  padding: 0.35rem 0.5rem;
-  background: rgb(0 0 0 / 45%);
-  border: 1px solid rgb(255 255 255 / 20%);
-  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   color: inherit;
-  font-size: 0.85rem;
+  font-size: var(--size-md);
 }
 
 /* 닉네임 입장 화면 — 기능 최소, 시각 디자인은 DESIGN.md 확정 이후 유예
@@ -114,17 +122,17 @@ body {
 .join-screen__form {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 16rem;
 }
 
 .join-screen__title {
-  margin: 0 0 0.5rem;
-  font-size: 1.5rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--size-lg);
 }
 
 .join-screen__error {
   margin: 0;
-  color: #e07a7a;
-  font-size: 0.85rem;
+  color: var(--danger);
+  font-size: var(--size-md);
 }

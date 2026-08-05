@@ -8,7 +8,9 @@
 1. `harness/specs/requirements.md` — 요구사항(EARS). 여기 없는 기능은 만들지 않는다.
 2. `harness/adr/` — 아키텍처 결정. 모순 구현 금지, 변경은 새 ADR 먼저.
 3. 이 파일 — 최상위 규칙. 모호하면 추측하지 말고 질문한다.
-4. `docs/design/DESIGN.md` — UI 디자인 (🟡 아직 없음. UI 작업 착수 전 필요).
+4. `docs/design/DESIGN.md` — UI 디자인 (✅ 2026-08-05 신설, 원장 24a). HUD 토큰과
+   RQ-50~55 요소별 스펙. **토큰의 정본은 `src/client/config/design-tokens.ts`이고
+   그 문서의 표는 미러다** — 어긋나면 코드가 이긴다.
 5. `docs/req/` — 사용자가 제공한 원본 요구사항. requirements.md의 **입력**이며,
    정규화 이후에는 requirements.md가 이긴다. 원본이 바뀌면 requirements.md를 개정한다.
 
