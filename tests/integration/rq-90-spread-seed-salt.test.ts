@@ -154,6 +154,14 @@ interface SeedSaltTestSeam extends SafeZoneEscapeSeam<unknown> {
   spreadTuningOverride?: SpreadTuning
   spreadSeedCounter: number
   forcedRoomSalt?: number
+  /** 프로덕션 자연 salt(읽기 전용, 이미 구현됨) — `GameRoom.ts:344`
+   * `private readonly spreadSalt: number = Math.floor(Math.random() *
+   * 0x100000000) >>> 0`, 룸 생성 시점(생성자, `onCreate`보다 먼저) 정확히
+   * 1회 발급되고 그 뒤 불변이다. **이름을 바꾸지 않는다**(team-lead 확정 —
+   * `forcedRoomSalt`와 짝을 이루는 이름, 두 세션이 갈리지 않게 못 박음).
+   * (3)의 보강 단언이 이 필드를 직접 읽어 override 우선순위와 무관하게
+   * `onCreate` 시점의 옵션 오염 여부를 그 자리에서 직접 관측한다. */
+  readonly spreadSalt: number
   issueSpreadSeed: () => number
   handleFire: (shooterId: string, input: { dirX: number; dirY: number; dirZ: number; rttMs: number }) => void
 }
@@ -398,24 +406,78 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       //     → 같다. 통과.
       //   - 옵션이 시드에 섞이면: X만 salt가 오염돼 갈린다 → 실패.
       //
-      // ⚠️ 한계(변함없음, `_workspace/RQ-90-spread/01_test-writer_red.md`
-      // §19.2 참고): `forcedRoomSalt`가 다운스트림에서 절대 우선한다면,
-      // 이 비교는 "override가 옵션보다 우선한다"를 증명할 뿐 "옵션이
-      // 자연 roomSalt에 전혀 안 섞인다" 그 자체는 못 잡을 수 있다 —
-      // coder의 실제 우선순위 구현이 나오면 재확인이 필요하다.
+      // ⚠️ 한계(§19.2에서 이미 지적) — team-lead가 인정한 대로 이 비교식
+      // 단독으로는 "override가 옵션보다 우선한다"만 증명한다. `forcedRoomSalt`
+      // 를 `onCreate` **이후에** 주입하는 이상, 옵션 오염이 `onCreate` 시점에
+      // 이미 벌어졌어도 override가 그 뒤 전부 덮어써 오염 자체는 이 비교로
+      // 관측 못 한다. **보강**(아래, team-lead 지시): 프로덕션이 이미 구현한
+      // 자연 salt(`spreadSalt`, `GameRoom.ts:344`)를 override 없이 직접
+      // 읽어 그 한계를 override 우선순위와 무관하게 닫는다 — 아래 비교식
+      // 단언은 그대로 둔다(서로 다른 성질이라 둘 다 지킬 가치가 있다).
       //
       // **REV(22w 전면 재설계 반영)**: 이 (3)도 이전엔 `room.send('fire')`
       // +`waitForTickAtLeast`(네트워크 왕복)를 썼다 — (1)(2)와 통일해
       // `handleFire()` 직접 호출로 바꿔 잔여 tick 레이스를 제거한다.
       const FORCED_SALT_FOR_COMPARISON = 424242
+      const MALICIOUS_OPTION_SALT = 999999999
 
       const clientX1 = newClient(server)
       const clientY1 = newClient(server)
       const [roomX1, roomY1] = await Promise.all([
-        createRoom(clientX1, '악의적 옵션(룸 X)', { spreadSaltOverride: 999999999 }),
+        createRoom(clientX1, '악의적 옵션(룸 X)', { spreadSaltOverride: MALICIOUS_OPTION_SALT }),
         createRoom(clientY1, '옵션 없는 비교군(룸 Y)'),
       ])
       rooms.push(roomX1, roomY1)
+
+      const seamX = getServerRoom(roomX1)
+      const seamY = getServerRoom(roomY1)
+
+      // --- 보강(team-lead 지시, §19.2 한계 해소) ---
+      // 같은 악의적 옵션으로 만든 룸을 2개 더(합쳐서 3개) 만들어 자연
+      // salt(`spreadSalt`)를 override 없이 직접 읽는다 — `onCreate`가
+      // 이미 실행된 뒤의 실제 값이므로, override(`forcedRoomSalt`) 우선
+      // 순위와 전혀 무관하게 옵션 오염 여부를 그 자리에서 본다.
+      const clientX1b = newClient(server)
+      const clientX1c = newClient(server)
+      const [roomX1b, roomX1c] = await Promise.all([
+        createRoom(clientX1b, '악의적 옵션(룸 X, 2번째)', { spreadSaltOverride: MALICIOUS_OPTION_SALT }),
+        createRoom(clientX1c, '악의적 옵션(룸 X, 3번째)', { spreadSaltOverride: MALICIOUS_OPTION_SALT }),
+      ])
+      rooms.push(roomX1b, roomX1c)
+      const seamX1b = getServerRoom(roomX1b)
+      const seamX1c = getServerRoom(roomX1c)
+
+      // 전제 가드 — `spreadSalt`는 coder의 blocker 1 구현(`GameRoom.ts:344`)
+      // 대상이다. 그 구현이 아직 이 워크트리의 커밋 이력에 없으면(예: 메인
+      // 트리에 미커밋 WIP로만 존재) 화이트박스 읽기가 `undefined`를 반환해
+      // 아래 (a)(b) 비교가 "undefined !== undefined"류의 의미 없는 실패로
+      // 흐려진다 — 그러기 전에 명시적으로, 무엇이 문제인지 알 수 있게
+      // 실패시킨다(이 저장소의 "정확한 전제 실시간 재확인" 관례).
+      if (
+        typeof seamX.spreadSalt !== 'number' ||
+        typeof seamX1b.spreadSalt !== 'number' ||
+        typeof seamX1c.spreadSalt !== 'number'
+      ) {
+        throw new Error(
+          'RQ-90 22w(3) 보강 전제 위반 — spreadSalt가 number가 아니다' +
+            `(X=${String(seamX.spreadSalt)}, X1b=${String(seamX1b.spreadSalt)}, X1c=${String(seamX1c.spreadSalt)}) — ` +
+            'coder의 spreadSalt 구현(GameRoom.ts:344)이 이 워크트리의 커밋 이력에 아직 없다는 뜻이다.',
+        )
+      }
+
+      // (a) 악의적 옵션 값을 그대로 실어 보냈을 때, 구현이 `options
+      // .spreadSaltOverride ?? Math.random()...` 형태였다면 `spreadSalt`가
+      // 정확히 그 값이 된다 — 거짓 실패 확률 2⁻³²(32비트 랜덤 salt가 우연히
+      // 이 정확한 리터럴과 같을 확률).
+      expect(seamX.spreadSalt).not.toBe(MALICIOUS_OPTION_SALT)
+      expect(seamX1b.spreadSalt).not.toBe(MALICIOUS_OPTION_SALT)
+      expect(seamX1c.spreadSalt).not.toBe(MALICIOUS_OPTION_SALT)
+
+      // (b) 같은 악의적 옵션으로 만든 룸 3개의 `spreadSalt`가 서로 달라야
+      // 한다 — 옵션이 실제로 읽혔다면 셋 다 같은 값(=그 옵션 값)이 된다.
+      expect(seamX.spreadSalt).not.toBe(seamX1b.spreadSalt)
+      expect(seamX.spreadSalt).not.toBe(seamX1c.spreadSalt)
+      expect(seamX1b.spreadSalt).not.toBe(seamX1c.spreadSalt)
 
       const clientX2 = newClient(server)
       const clientY2 = newClient(server)
@@ -424,9 +486,6 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
         joinRoomById(clientY2, roomY1.roomId, '룸 Y 피격자'),
       ])
       rooms.push(roomX2, roomY2)
-
-      const seamX = getServerRoom(roomX1)
-      const seamY = getServerRoom(roomY1)
 
       const baselineX = readHp(seamX, roomX2.sessionId)
       const baselineY = readHp(seamY, roomY2.sessionId)
