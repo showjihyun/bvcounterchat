@@ -235,13 +235,57 @@ function findHitMissBoundary(seed: number, loHit: number, hiMiss: number): numbe
 const BOUNDARY_SAFETY_MARGIN = 0.002
 const BOUNDARY_CONE_RADIUS_RAD = findHitMissBoundary(0, 0.1, 0.15) - BOUNDARY_SAFETY_MARGIN
 
-/** (2) 전용 — `forcedRoomSalt`에 주입할 두 고정값. seed 그대로 값을 직접
- * `createRng`에 먹인 것과 같은 형태를 가정한다(`forcedSpreadSeed`와 동일
- * 정신 — 오늘은 무시되는 필드이므로 이 가정 자체가 검증 대상은 아니다,
- * coder 구현이 이 값을 어떻게 소비하든 "0과 1을 넣으면 하나는 hit·하나는
- * miss"라는 이 결정은 오프라인 오라클로 이미 실측했다). */
-const SALT_HIT = 0
-const SALT_MISS = 1
+/** (2) 전용 — coder의 실제 `issueSpreadSeed()` 공식
+ * (`createRng(forcedRoomSalt ?? spreadSalt).fork(state.tick).fork(counter)
+ * .nextU32()`, `GameRoom.ts` REV — "forcedRoomSalt를 진짜 salt로 교정")을
+ * 그대로 재현해 오프라인으로 시드를 계산한다.
+ *
+ * **REV(오라클 재계산, coder 리뷰 대응)**: 최초 버전은 `forcedRoomSalt`가
+ * `fork` 없이 그대로 반환된다고 가정해 `SALT_HIT=0`·`SALT_MISS=1`을
+ * 하드코딩했다 — coder가 리뷰 지적으로 `forcedRoomSalt`도 `spreadSalt`
+ * 자리에서만 대체되고 `fork(tick)`·`fork(counter)`는 그대로 거치도록
+ * 교정했다(salt라는 이름과 실제 동작을 일치시키기 위함, `forcedSpreadSeed`
+ * 와의 역할 중복 해소). 그 결과 이 파일의 (2) 오프라인 오라클이 더 이상
+ * 맞지 않아 1건 실패했다(coder 커밋 메시지가 직접 통보) — `fork(tick)`이
+ * 섞이므로 "이 salt가 hit인지 miss인지"가 **관측된 tick에 따라 달라진다**
+ * (하드코딩된 고정 salt로는 tick이 조금만 달라져도 깨진다, 아래 스윕
+ * 실측 — tick=0에서 hit인 salt 7이 tick=1에서는 miss). 그래서 이제
+ * `BOUNDARY_CONE_RADIUS_RAD`와 같은 정신으로 **런타임에 관측된 tick
+ * 기준으로 오프라인 검색**한다(`findSeedWithBucket`과 동일 기법 — 하드
+ * 코딩된 매직넘버가 아니다). */
+function effectiveSeedForSalt(salt: number, tick: number, counter: number): number {
+  return createRng(salt).fork(tick).fork(counter).nextU32()
+}
+
+/** 관측된 `tick`·`counter`(둘 다 두 룸에서 이미 같음이 확인된 값) 기준으로,
+ * 서로 다른 `forcedRoomSalt` 두 개(하나는 hit, 하나는 miss)를 오프라인
+ * 이분 없는 순차 탐색으로 찾는다 — 결정론적 순수 계산이라 수천 회도
+ * 밀리초 미만(`findSeedWithBucket`과 동일 근거). */
+function findRoomSaltPair(
+  tick: number,
+  counter: number,
+  coneRadiusRad: number,
+  searchLimit: number,
+): { hitSalt: number; missSalt: number } {
+  let hitSalt: number | undefined
+  let missSalt: number | undefined
+  for (let salt = 0; salt < searchLimit; salt += 1) {
+    const hit = isHitAtCone(effectiveSeedForSalt(salt, tick, counter), coneRadiusRad)
+    if (hit && hitSalt === undefined) hitSalt = salt
+    if (!hit && missSalt === undefined) missSalt = salt
+    if (hitSalt !== undefined && missSalt !== undefined) break
+  }
+  if (hitSalt === undefined || missSalt === undefined) {
+    throw new Error(
+      `RQ-90 22w(2) 전제 위반 — tick=${tick}·counter=${counter}에서 salt 0..${searchLimit - 1} 안에 ` +
+        `hit·miss 쌍을 못 찾았다(hitSalt=${String(hitSalt)}, missSalt=${String(missSalt)}) — 탐색 상한을 늘려야 한다.`,
+    )
+  }
+  return { hitSalt, missSalt }
+}
+/** 탐색 상한 — 순수 결정론 계산이라 느리지 않다(`rq-90-spread-seed
+ * -determinism.test.ts`의 `SEARCH_LIMIT`과 동일 근거). */
+const ROOM_SALT_SEARCH_LIMIT = 5_000
 
 describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버리지: 룸 인스턴스별 salt 검증', () => {
   let server: RunningServer
@@ -309,12 +353,12 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
         )
       }
 
-      // ⚠️ 오늘(솔트 없음)은 spreadSeedCounter=0·tick 동일 → 현재 공식
-      // `((tick<<16)^0)>>>0`이 완전히 동일한 입력을 받으므로 두 룸의 시드는
-      // 비트 단위로 같다. salt가 있어야(=이 단언이 요구하는 성질) 서로
-      // 달라진다 — 그래서 이 단언은 오늘 반드시 실패해야 정상이다(Red,
-      // ADR-0011). 기하·경계 확률에 기대지 않으므로 통과/실패가 결정론적
-      // 이다(coder 몬테카를로 실측 문제의 재발 없음).
+      // ⚠️ 이 단언은 coder의 실제 issueSpreadSeed() 공식이 무엇이든 성립
+      // 해야 한다(구현 공식에 안 묶인 비교식 — team-lead 지시). 룸마다
+      // 서로 다른 salt(coder 구현: `spreadSalt`, 룸 생성 시 1회 랜덤 발급)
+      // 가 실제로 섞인다면 같은 tick·counter=0에서도 두 룸의 시드는
+      // 달라야 한다 — salt가 없다면(과거 공식 `(tick<<16)^counter`처럼)
+      // 완전히 같은 입력이 완전히 같은 시드를 내므로 이 단언은 실패한다.
       expect(seedA).not.toBe(seedB)
     },
   )
@@ -352,10 +396,6 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       const tuning: SpreadTuning = { coneRadiusRad: BOUNDARY_CONE_RADIUS_RAD, movingMultiplier: 2, airborneMultiplier: 4 }
       seamP.spreadTuningOverride = tuning
       seamQ.spreadTuningOverride = tuning
-      // 서로 다른 고정값 — 랜덤이 전혀 없다(coder의 몬테카를로 실측이
-      // 드러낸 확률 문제를 이 테스트는 구조적으로 겪지 않는다).
-      seamP.forcedRoomSalt = SALT_HIT
-      seamQ.forcedRoomSalt = SALT_MISS
 
       if (seamP.spreadSeedCounter !== 0 || seamQ.spreadSeedCounter !== 0) {
         throw new Error(
@@ -368,6 +408,14 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       if (tickP !== tickQ) {
         throw new Error(`RQ-90 22w(2) 전제 위반 — 두 룸의 tick이 다르다(P=${tickP}, Q=${tickQ}) — 재실행 필요.`)
       }
+
+      // 관측된 tick(두 룸이 같음을 위에서 이미 확인) 기준으로 hit·miss
+      // salt 쌍을 그 자리에서 검색한다 — 하드코딩된 고정값이 아니다(위
+      // "REV(오라클 재계산)" 참고, `fork(tick)`이 섞이므로 salt의 hit/miss
+      // 여부가 tick에 따라 달라진다).
+      const { hitSalt, missSalt } = findRoomSaltPair(tickP, 0, BOUNDARY_CONE_RADIUS_RAD, ROOM_SALT_SEARCH_LIMIT)
+      seamP.forcedRoomSalt = hitSalt
+      seamQ.forcedRoomSalt = missSalt
 
       // 네트워크 없이 직접 호출 — 'fire' 메시지 왕복이 사라져 레이스가
       // 발생할 여지가 없다(파일 상단 REV "화이트박스 메서드 호출" 참고).
@@ -383,9 +431,9 @@ describe('RQ-90/22v·22w — 제품 시드 발급 경로(issueSpreadSeed) 커버
       // 오늘(솔트 미구현)은 `forcedRoomSalt`가 무시되고 P·Q 둘 다 같은
       // tick·counter=0의 자연 공식(그게 무엇이든)을 쓰므로 반드시 같다 —
       // 그래서 이 단언(다르다)은 오늘 Red다. Green 이후 실제로 배선되면
-      // P는 SALT_HIT(=0, 명중 확정)·Q는 SALT_MISS(=1, 빗나감 확정)를
-      // 강제로 써 반드시 갈린다 — 결정론(0%/100%), 랜덤 확률에 기대지
-      // 않으므로 flaky가 없다.
+      // P는 hitSalt(명중 확정)·Q는 missSalt(빗나감 확정)를 강제로 써
+      // 반드시 갈린다 — 결정론(0%/100%), 랜덤 확률에 기대지 않으므로
+      // flaky가 없다.
       expect(afterP).not.toBe(afterQ)
     },
   )
