@@ -47,9 +47,9 @@ body {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: var(--crosshair-thickness);
-  height: var(--crosshair-thickness);
-  margin: calc(var(--crosshair-thickness) / -2) 0 0 calc(var(--crosshair-thickness) / -2);
+  width: var(--crosshair-dot);
+  height: var(--crosshair-dot);
+  margin: calc(var(--crosshair-dot) / -2) 0 0 calc(var(--crosshair-dot) / -2);
   border-radius: 50%;
   background: var(--fg-strong);
   box-shadow: var(--shadow-text);
@@ -73,7 +73,7 @@ body {
   /* 컴포넌트 치수 — 간격 스케일이 아니다(DESIGN.md §2.3 주). 채팅 로그가
      읽히는 최소 너비이고 좁은 창에서는 가장자리 여백만 남기고 줄어든다. */
   width: 22rem;
-  max-width: calc(100vw - 2rem);
+  max-width: calc(100vw - var(--edge-inset) * 2);
   pointer-events: auto;
 }
 

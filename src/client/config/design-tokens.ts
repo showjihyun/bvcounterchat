@@ -8,9 +8,13 @@
  * CSS에 다시 등장하면 그것은 드리프트다 — 리뷰가 볼 지점이다.
  *
  * ⚠️ **여기 없는 값**:
- * - **3D 씬 머티리얼 색**(바닥·벽·플레이어)은 `GameScene.tsx`·`PlayerMeshes.tsx`가
- *   그대로 갖는다. HUD 토큰이 아니고, 이 라운드는 그것을 **바꾸지 않는다** —
- *   DESIGN.md §2.1이 현재 값을 팔레트 정본으로 **기록**만 한다(원장 26r).
+ * - **3D 씬 색**(하늘·바닥·플레이어)은 `GameScene.tsx`·`PlayerMeshes.tsx`가 리터럴로
+ *   그대로 갖는다 — HUD 토큰이 아니고 이 라운드는 **바꾸지 않는다**.
+ *   ⚠️ 그래서 그쪽에는 **코드 정본이 없고 DESIGN.md §2.1의 표만 값을 갖는다** —
+ *   1차 리뷰 blocker가 정확히 그 구멍에서 나왔다(문서가 하늘을 바닥이라 적고,
+ *   렌더되지도 않는 벽·박스·사다리에 색을 배정했는데 대조할 코드 상수가 없었다).
+ *   상수 이관은 **원장 24c**로 이월했다. **벽·박스·사다리는 클라에 렌더 메시가
+ *   아직 없다**(판정 전용 `@shared/sim/{walls,boxes,ladders}`).
  * - **탄퍼짐 배율**(크로스헤어 확장)은 `@shared/config/combat-tuning`의
  *   `DEFAULT_SPREAD`가 정본이다. 여기 복제하지 않는다 — RQ-90의 값이지 디자인
  *   값이 아니다.
@@ -78,6 +82,12 @@ export const CROSSHAIR = {
   lengthPx: 6,
   thicknessPx: 2,
   gapPx: 4,
+  /** ⚠️ **22b 임시 점의 지름** — §3.1 정식 십자(선 굵기 `thicknessPx`)와 **다른
+   * 양**이다. 초안이 토큰화하면서 선 굵기(2px)를 이 자리에 물려 **조준점이 4px에서
+   * 2px로 절반이 됐고**(1차 리뷰 major) 그 점은 "조준점이 없으면 어디를 쏘는지 알 수
+   * 없어 사격 자체를 확인할 수 없다"는 이유로 존재하는 자리표시다.
+   * **§3.1 정식 십자를 만드는 라운드가 이 값을 제거한다.** */
+  dotPx: 4,
 } as const
 
 /** 미니맵(DESIGN.md §3.5). 축척은 `WORLD.SIZE_M`에서 유도한다 —
@@ -122,6 +132,7 @@ export function applyDesignTokens(root: HTMLElement): void {
     '--crosshair-length': `${CROSSHAIR.lengthPx}px`,
     '--crosshair-thickness': `${CROSSHAIR.thicknessPx}px`,
     '--crosshair-gap': `${CROSSHAIR.gapPx}px`,
+    '--crosshair-dot': `${CROSSHAIR.dotPx}px`,
   }
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value)
