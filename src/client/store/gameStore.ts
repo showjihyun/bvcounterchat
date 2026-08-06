@@ -37,11 +37,6 @@ export interface ChatMessage {
   text: string
 }
 
-/**
- * 서버 스냅샷 컬렉션의 최소 구조적 타입 — 표준 `Map.forEach` 시그니처만
- * 요구한다. 순정 `Map`(단위 테스트)과 Colyseus `MapSchema<V>`(실 접속,
- * `implements Map<K, V>`) 양쪽 모두 이 타입을 만족한다.
- */
 /** 서버 스냅샷에서 **읽는 필드만** — `ClientPlayer`를 재사용하지 않는다.
  * 둘은 우연히 모양이 같을 뿐 다른 것이다(하나는 와이어 스키마의 부분집합,
  * 하나는 클라 뷰 모델). 재사용하면 클라 뷰에 필드를 더할 때 **서버 값 타입까지
@@ -55,6 +50,11 @@ export interface ServerPlayerSnapshot {
   hp: number
 }
 
+/**
+ * 서버 스냅샷 컬렉션의 최소 구조적 타입 — 표준 `Map.forEach` 시그니처만
+ * 요구한다. 순정 `Map`(단위 테스트)과 Colyseus `MapSchema<V>`(실 접속,
+ * `implements Map<K, V>`) 양쪽 모두 이 타입을 만족한다.
+ */
 export interface ServerStateSnapshot {
   players: { forEach(cb: (value: ServerPlayerSnapshot, key: string) => void): void }
   spectators: { forEach(cb: (value: ClientSpectator, key: string) => void): void }
