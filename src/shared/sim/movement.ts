@@ -630,6 +630,91 @@ function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: reado
   return airborneOutcome(state, state.vx, state.vz, tPrev, walls, boxes)
 }
 
+/** RQ-33 — 사다리의 등반 법선이 가리키는 방향에서, 사다리와 간격 0으로
+ * 접하는(근접면 좌표 일치) 플랫폼을 찾는다. GA-61 설계상 사다리와
+ * 플랫폼은 **경계만 접하고 겹치지 않는다**(둘 다 개방 구간 관례를
+ * 쓰므로, 사다리 안에 고정된 x·z는 결코 플랫폼의 "안"에 들지 않는다 —
+ * `stepOntoPlatform`이 경계를 넘겨줘야 하는 이유, 아래). 축 정렬 법선
+ * (`normalX`·`normalZ` 중 하나만 ±1)만 지원한다 — 프로덕션 사다리가
+ * 전부 이 형태다(`tests/unit/rq-33-platform-geometry.test.ts`의
+ * `findAdjacentPlatform` 헬퍼와 동일한 판정, 독립 재구현 — 그 파일은
+ * 순수 데이터 검증용이라 이 함수를 참조하지 않는다). */
+function findAdjacentPlatform(ladder: LadderVolume, platforms: readonly BoxAABB[]): BoxAABB | undefined {
+  return platforms.find((platform) => {
+    if (ladder.normalX > 0) {
+      return (
+        Math.abs(ladder.maxX - platform.minX) < LADDER_Y_EPSILON_M &&
+        ladder.minZ >= platform.minZ - LADDER_Y_EPSILON_M &&
+        ladder.maxZ <= platform.maxZ + LADDER_Y_EPSILON_M
+      )
+    }
+    if (ladder.normalX < 0) {
+      return (
+        Math.abs(ladder.minX - platform.maxX) < LADDER_Y_EPSILON_M &&
+        ladder.minZ >= platform.minZ - LADDER_Y_EPSILON_M &&
+        ladder.maxZ <= platform.maxZ + LADDER_Y_EPSILON_M
+      )
+    }
+    if (ladder.normalZ > 0) {
+      return (
+        Math.abs(ladder.maxZ - platform.minZ) < LADDER_Y_EPSILON_M &&
+        ladder.minX >= platform.minX - LADDER_Y_EPSILON_M &&
+        ladder.maxX <= platform.maxX + LADDER_Y_EPSILON_M
+      )
+    }
+    if (ladder.normalZ < 0) {
+      return (
+        Math.abs(ladder.minZ - platform.maxZ) < LADDER_Y_EPSILON_M &&
+        ladder.minX >= platform.minX - LADDER_Y_EPSILON_M &&
+        ladder.maxX <= platform.maxX + LADDER_Y_EPSILON_M
+      )
+    }
+    return false
+  })
+}
+
+/** RQ-33(GA-59) — 사다리 꼭대기를 넘어 인접 플랫폼 위로 "옆걸음"한다.
+ * RQ-21 v1.4 "볼륨을 벗어나면 즉시 중력이 복귀한다"를 우회하는 특례가
+ * 아니다 — **정확히 그 문장이 요구하는 대로** 사다리 전용 물리(중력
+ * 미적용·수직 전용)를 끄고 표준 접지 물리(`groundedOutcome`, 중력이
+ * 지배하는 세계에서 발밑에 지지면이 있으면 그 위에 선다)로 넘길 뿐이다
+ * — 다만 이번 틱 발밑 지지면이 사다리 자신의 XZ가 아니라(플랫폼과는
+ * 간격 0으로 접할 뿐 겹치지 않는다, GA-61) 근접면 바로 건너편에 있으므로,
+ * 그 경계로 위치를 옮긴 뒤에야 표준 접지 물리가 그 지지면을 "볼" 수
+ * 있다. 새 위치 계산 로직을 발명하지 않고 `groundedOutcome`을 그대로
+ * 재사용한다 — 이번 틱의 실제 입력으로 근접면에서 플랫폼 안쪽으로 한
+ * 걸음 내딛는 것으로 표현한다(정지 입력이면 경계에 딱 붙어 서고,
+ * 계속 전진 입력을 유지하면 플랫폼 위를 계속 걸어 들어간다 — CS 계열
+ * 게임의 "난간 위로 올라선다" 관례와 일치).
+ *
+ * **좌표 선택 근거**: 법선 축(예 `normalX>0`이면 `x`)은 사다리의 근접면
+ * 좌표(`ladder.maxX`, GA-61 설계상 `platform.minX`와 정확히 같다)로
+ * 옮긴다 — 그래야 `groundedOutcome`의 첫 틱 이동이 실제로 개방 구간
+ * 안쪽(`x > platform.minX`)까지 진입해 지지 높이가 인식된다. 법선과
+ * **수직**인 축(예 `normalX>0`이면 `z`)은 `state.z`(사다리 진입 이후
+ * 줄곧 고정돼 온 실제 좌표)를 그대로 쓴다 — GA-63(사다리 폭이 플랫폼
+ * 대응 축 범위에 좌우 여백을 남기고 완전히 포함됨)이 보장하는 대로,
+ * 사다리 볼륨 안 어떤 z든 플랫폼의 z 개방 구간에 이미 들어 있다. `y`는
+ * `platform.topY`(GA-62 설계상 `ladder.maxY`와 같다)로 스냅한다 —
+ * `groundedOutcome`이 곧바로 재계산하므로 정확한 시작값일 필요는 없지만,
+ * `standingHeight`의 "이전 지지 높이" 비교(`groundedOutcome` 내부)가
+ * 사다리 근접면 자체(플랫폼 밖)를 "아직 지지 없음"으로 보게 해 공중
+ * 재전이를 유발하지 않도록 `platform.topY`로 맞춘다. */
+function stepOntoPlatform(
+  state: MoveState,
+  input: MoveInput,
+  ladder: LadderVolume,
+  platform: BoxAABB,
+  walls: readonly WallAABB[],
+  boxes: readonly BoxAABB[],
+): MoveState {
+  const boundaryX = ladder.normalX !== 0 ? (ladder.normalX > 0 ? ladder.maxX : ladder.minX) : state.x
+  const boundaryZ = ladder.normalZ !== 0 ? (ladder.normalZ > 0 ? ladder.maxZ : ladder.minZ) : state.z
+  const boundaryState: MoveState = { x: boundaryX, y: platform.topY, z: boundaryZ, vx: 0, vy: 0, vz: 0, grounded: true }
+  const { vx, vz } = groundVelocity(input)
+  return groundedOutcome(boundaryState, vx, vz, walls, boxes)
+}
+
 /** 1틱(`NET.TICK_MS`) 전진 — 순수 산술(RQ-20, RQ-92). Rapier 없음. 박스
  * 등반(RQ-22)·사다리(RQ-21)는 이 함수가 직접 다룬다(아래 `geometry` 인자,
  * 원장 25a-4·25a-7). 낙하 데미지(RQ-18)는 여전히 스코프 밖(`GameRoom`이
@@ -685,23 +770,38 @@ function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: reado
  * 낙차에도 데미지가 0이었고, 스냅된 위치가 여전히 사다리 범위 안이라
  * 다음 틱에 다시 붙잡혀 재상승하는 4↔0 무한 순환(요요)이 됐다.
  *
- * **RQ-33 스코프 메모(coder, `_workspace/RQ-33/02_coder_green.md` §4
- * 참고) — 사다리 꼭대기 → 플랫폼 "올라서기" 전이는 이 함수에 아직 없다.**
- * `geometry.platforms`(아래)는 `standingHeight`/`boxesBlockingAt`이 보는
- * 박스 목록에 합류해 "옆면은 벽처럼 막고 위에 서면 지지된다"는 성질은
- * 이미 갖는다(GA-60·GA-61의 기하 자체는 GA-62·GA-63과 함께 순수 데이터
- * 단위 테스트에서 검증됨) — 하지만 사다리를 실제로 다 올라 꼭대기를
- * 넘겼을 때 "지지면이 없다"고 판정해 자유낙하로 보내는 판단(바로 아래
- * `support < state.y` 분기)은 사다리 자신의 XZ(플랫폼과 간격 0으로만
- * 접하고 겹치지 않는다, GA-61)에서 계산하므로 여전히 플랫폼을 "지지
- * 없음"으로 본다 — 즉 `LADDER_ALPHA`를 끝까지 오르면 여전히 지면으로
- * 떨어진다(GA-59 미충족, 의도적 보류). 이걸 고치면(사다리 진입 방향의
- * 인접 플랫폼으로 옆걸음 전이) `tests/integration/rq-21-ladder-vertical
- * -movement.test.ts`의 기존 F1 재현 describe("발판 없음 → 낙하 데미지")가
- * 정확히 같은 사다리·같은 입력 방향에서 더 이상 낙하하지 않으므로
- * 구조적으로 깨진다 — 두 계약이 동일 프로덕션 지오메트리에서 양립
- * 불가능하다(모순 근거는 위 보고서 참고, `tests/` 수정 금지라 coder가
- * 임의로 어느 쪽을 이기게 할 수 없다). 사용자 판단 대기 중. */
+ * **RQ-33(GA-59) — 사다리 꼭대기 → 인접 플랫폼 옆걸음 전이.** 이번 틱
+ * 사다리 결과가 **상승 방향으로**(`outcome.vy > 0`) 꼭대기에 닿거나
+ * 넘어서면(`outcome.y >= ladder.maxY - LADDER_Y_EPSILON_M`), 등반 법선이
+ * 가리키는 방향에 간격 0으로 접한 플랫폼이 있는지 먼저 찾는다
+ * (`findAdjacentPlatform`, `geometry.platforms`). 있으면 `stepOntoPlatform`
+ * 으로 그 위에 옆걸음해 올라선다. **없으면**(예: `geometry.platforms`가
+ * 비었거나 그 방향에 접한 플랫폼이 없는 합성 사다리) 아래로 흘러 기존
+ * F1 수정 그대로 자유낙하로 전이한다 — `tests/unit/sim-movement-ladders
+ * .test.ts`의 "F1(합성, RQ-33 이후)" describe(`SYNTHETIC_LADDER_NO_PLATFORM`
+ * + `EMPTY_GEOMETRY`, `geometry.platforms`가 `undefined`)가 이 폴백을
+ * 직접 고정한다 — **전이는 인접 플랫폼이 실제로 있을 때만 발화**하고,
+ * 없는 사다리에서는 요요 없는 낙하가 그대로 유지된다.
+ *
+ * **이 검사를 `isWithinLadderY`(폐구간 — "정확히 maxY에서도 여전히
+ * 사다리 물리가 적용된다") 판정보다 먼저 두는 이유(실측 회귀 — coder,
+ * `_workspace/RQ-33/04_coder_green-ga59.md` §3 참고)**: 처음에는
+ * `isWithinLadderY`가 참이면 그대로 반환하고, "볼륨을 완전히 벗어난"
+ * 경우에만(즉 `LADDER_Y_EPSILON_M`을 넘어선 진짜 초과) 플랫폼을 찾도록
+ * 짰다 — 그러자 부동소수점 누적으로 `outcome.y`가 `maxY`를
+ * `LADDER_Y_EPSILON_M` 이내로 살짝 넘긴 바로 그 1틱(~33ms)에서는
+ * "아직 폐구간 안"으로 판정돼 `x`가 사다리 자신의 좌표(플랫폼 밖)에
+ * 머문 사다리 결과를 그대로 반환했다 — 시뮬레이션 자체는 결정론적이지만,
+ * `rq-33-platform-reach.test.ts`(실 서버, 실시간 폴링)의 "플랫폼 도달"
+ * 대기 조건(`grounded && y ≥ topY-ε`)이 이 찰나의 틱을 실제로 관측할
+ * 수 있어(`npm run check`처럼 시스템 부하가 커 폴링 타이밍이 벌어지면
+ * 더 잘 걸린다 — 격리 실행에서는 우연히 피해가 재현 확률이 낮았다)
+ * `onPlatform.x`가 플랫폼 범위 밖으로 관측되는 산발적 실패가 재현됐다.
+ * 상승 중 `maxY`(오차 이내 포함)에 닿는 순간 곧바로 플랫폼 여부부터
+ * 확인하면 이 중간 관측 가능 상태 자체가 없어진다 — `outcome.vy > 0`
+ * 게이트 덕분에 무입력·하강 중 정확히 `maxY`에서는(플랫폼 유무와
+ * 무관) 기존 "여전히 사다리 물리" 동작이 그대로 유지된다(아래
+ * `isWithinLadderY`가 여전히 그 경로를 담당). */
 export function stepMovement(state: MoveState, input: MoveInput, geometry: StaticGeometry = EMPTY_GEOMETRY): MoveState {
   // RQ-33 — 플랫폼(있으면)을 이번 틱 지지/차단 판정에 합류시킨다.
   // `geometry.boxes` 자체(참조)는 건드리지 않는다 — `PRODUCTION_GEOMETRY
@@ -709,14 +809,28 @@ export function stepMovement(state: MoveState, input: MoveInput, geometry: Stati
   // `StaticGeometry.platforms` 코멘트) 때문에 합치는 지점을 호출 시점
   // (여기)으로 미룬다. `standingHeight`/`boxesBlockingAt` 자체는 변경
   // 없음 — 여전히 임의의 `BoxAABB[]`를 받는다.
-  const boxes = geometry.platforms && geometry.platforms.length > 0 ? [...geometry.boxes, ...geometry.platforms] : geometry.boxes
+  const platforms = geometry.platforms ?? []
+  const boxes = platforms.length > 0 ? [...geometry.boxes, ...platforms] : geometry.boxes
   const ladder = state.grounded ? findLadderAt(state.x, state.y, state.z, geometry.ladders) : undefined
   if (ladder) {
     const outcome = ladderOutcome(state, input, ladder)
+    // RQ-33(GA-59) — 상승 중 꼭대기(오차 이내 포함)에 닿으면, "폐구간이라
+    // 아직 사다리 안"이라는 아래 `isWithinLadderY` 허용보다 먼저 플랫폼
+    // 전이를 시도한다 — 위 docblock "이 검사를 먼저 두는 이유" 참고
+    // (관측 가능한 중간 상태 제거가 목적).
+    if (outcome.vy > 0 && outcome.y >= ladder.maxY - LADDER_Y_EPSILON_M) {
+      const platform = findAdjacentPlatform(ladder, platforms)
+      if (platform) {
+        return stepOntoPlatform(state, input, ladder, platform, geometry.walls, boxes)
+      }
+    }
     if (isWithinLadderY(outcome.y, ladder)) {
       return outcome
     }
-    // 이번 틱에 사다리 볼륨을 벗어난다.
+    // 이번 틱에 사다리 볼륨을 벗어난다. 상승 방향이었다면 위에서 이미
+    // 플랫폼 전이를 시도했고 실패했다는 뜻이다(인접 플랫폼 없음) — 이
+    // 지점은 하강 방향 이탈(바닥 아래) 또는 플랫폼 없는 상승 이탈만
+    // 도달한다.
     const support = standingHeight(state.x, state.z, boxes)
     if (support < state.y) {
       // 지지면이 없다 — 이탈 순간의 사다리 수직 속도(outcome.vy)를 낙하
