@@ -28,16 +28,25 @@
 
 import type { LadderVolume } from '@shared/sim/movement'
 
-/** 폭 1m×깊이 3m, 수직 범위 0~4m. 면의 법선은 +X(`dirX=1` 입력이 상승).
- * 개별로 export하는 이유: 통합 테스트(`rq-21-ladder-vertical-movement
- * .test.ts`)가 좌표를 리터럴로 복제하지 않고 이 정본을 그대로 참조하게
- * 하기 위해서다(ADR-0010 값 복제 금지 정신 — `@shared/sim/walls`의
- * `WALL_EAST` 등과 동일한 선례). */
-export const LADDER_ALPHA: LadderVolume = { minX: -14, maxX: -13, minZ: 8, maxZ: 11, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
+/** 폭 1.5m×깊이 1m(REV RQ-33, 아래 참고), 수직 범위 0~4m. 면의 법선은
+ * +X(`dirX=1` 입력이 상승). 개별로 export하는 이유: 통합 테스트
+ * (`rq-21-ladder-vertical-movement.test.ts`)가 좌표를 리터럴로 복제하지
+ * 않고 이 정본을 그대로 참조하게 하기 위해서다(ADR-0010 값 복제 금지
+ * 정신 — `@shared/sim/walls`의 `WALL_EAST` 등과 동일한 선례).
+ *
+ * **REV(RQ-33, 원장 24y 사용자 결정) — z 폭 3m→1.5m로 좁힘(중앙 정렬)**:
+ * `@shared/sim/platforms`의 `PLATFORM_ALPHA`에 좌우 여백 1.25m씩을 남기고
+ * 완전히 포함되도록(GA-63 "치우침 없음") 좁혔다. 기존 span([8,11])과
+ * 새 span([8.75,10.25])은 **중심이 동일**(9.5)하다 — `minX`/`maxX`/
+ * `normalX`/`minY`/`maxY`는 변경하지 않는다(`_workspace/RQ-33/01_test-writer
+ * _red.md` §4 회귀 분석 — 중심을 동적으로 참조하는 기존 4개 파일에
+ * 영향 없음, 실측 확인). */
+export const LADDER_ALPHA: LadderVolume = { minX: -14, maxX: -13, minZ: 8.75, maxZ: 10.25, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
 
 /** RQ-32 — 두 번째 사다리. `LADDER_ALPHA`를 z=0 기준으로 반사(같은 x
- * 대역·같은 법선, z 부호만 반전). */
-export const LADDER_BRAVO: LadderVolume = { minX: -14, maxX: -13, minZ: -11, maxZ: -8, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
+ * 대역·같은 법선, z 부호만 반전). REV(RQ-33) — 위와 동일하게 z 폭
+ * 3m→1.5m 중앙 정렬 narrowing. */
+export const LADDER_BRAVO: LadderVolume = { minX: -14, maxX: -13, minZ: -10.25, maxZ: -8.75, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
 
 /** `GameRoom.stepPlayerMovement`·`prediction.ts`가 `StaticGeometry.ladders`
  * (원장 25a-5)로 상시 주입하는 프로덕션 사다리 목록(RQ-32 — 2개) — 위

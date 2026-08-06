@@ -140,11 +140,29 @@ export interface StaticGeometry {
   walls: readonly WallAABB[]
   boxes: readonly BoxAABB[]
   ladders: readonly LadderVolume[]
+  /** RQ-33 — 등반 전용 고지대 플랫폼(`@shared/sim/platforms`). **네 번째
+   * 필드를 `boxes` 필수 3종과 달리 옵셔널로 둔 이유**: `boxes` 필수 규칙의
+   * 목적(위 문단 "누락이 타입 에러가 되게")은 지키되, `PRODUCTION_GEOMETRY
+   * .boxes`가 `PRODUCTION_BOXES`와 **참조 동일성**을 유지해야 한다
+   * (`tests/unit/sim-movement-ladders.test.ts` "25a-5 계약" 테스트,
+   * `expect(PRODUCTION_GEOMETRY.boxes).toBe(PRODUCTION_BOXES)` — `tests/`
+   * 수정 금지, ADR-0011 Red-first) — 즉 플랫폼을 `boxes` 배열 자체에
+   * 스프레드해 합칠 수 없다. 또한 기존 `StaticGeometry` 리터럴(예:
+   * `tests/unit/sim-movement-boxes.test.ts:664`, `sim-movement-ladders
+   * .test.ts`의 `geometryWithLadders`)이 `platforms`를 전혀 모른 채 세
+   * 필드만 채우므로, 이 필드가 필수였다면 그 리터럴들이 컴파일 에러가
+   * 난다(기존 테스트 파괴 금지). 생략 시 빈 배열로 취급한다(아래
+   * `stepMovement`, 하위 호환 ADR-0010). `standingHeight`/`boxesBlockingAt`
+   * 자체는 여전히 임의의 `BoxAABB[]`를 받는 기존 함수 그대로다 — `boxes`와
+   * `platforms`를 합친 배열을 `stepMovement`가 호출 시점에 넘길 뿐, 새
+   * 판정 로직은 없다. */
+  platforms?: readonly BoxAABB[]
 }
 
 /** 지오메트리가 전혀 없는 기본값 — `stepMovement`의 세 번째 인자를
  * 생략하거나 이 값을 그대로 넘기면 벽·박스·사다리가 전혀 없던 기존 동작
- * 그대로다(하위 호환, ADR-0010). */
+ * 그대로다(하위 호환, ADR-0010). `platforms`는 옵셔널이라 생략 — 위
+ * `StaticGeometry.platforms` 코멘트 참고. */
 export const EMPTY_GEOMETRY: StaticGeometry = { walls: [], boxes: [], ladders: [] }
 
 /** 1틱의 경과 시간(초). `NET.TICK_MS`(1000/30, 부동소수점)를 매번 나누지
@@ -665,8 +683,33 @@ function stepAirborne(state: MoveState, walls: readonly WallAABB[], boxes: reado
  * 전이 자체가 없으니 `GameRoom.trackFallDamage`(`next.grounded ===
  * false`인 동안만 `fallPeakY` 갱신)가 결코 발화하지 않아 3.85m~4m
  * 낙차에도 데미지가 0이었고, 스냅된 위치가 여전히 사다리 범위 안이라
- * 다음 틱에 다시 붙잡혀 재상승하는 4↔0 무한 순환(요요)이 됐다. */
+ * 다음 틱에 다시 붙잡혀 재상승하는 4↔0 무한 순환(요요)이 됐다.
+ *
+ * **RQ-33 스코프 메모(coder, `_workspace/RQ-33/02_coder_green.md` §4
+ * 참고) — 사다리 꼭대기 → 플랫폼 "올라서기" 전이는 이 함수에 아직 없다.**
+ * `geometry.platforms`(아래)는 `standingHeight`/`boxesBlockingAt`이 보는
+ * 박스 목록에 합류해 "옆면은 벽처럼 막고 위에 서면 지지된다"는 성질은
+ * 이미 갖는다(GA-60·GA-61의 기하 자체는 GA-62·GA-63과 함께 순수 데이터
+ * 단위 테스트에서 검증됨) — 하지만 사다리를 실제로 다 올라 꼭대기를
+ * 넘겼을 때 "지지면이 없다"고 판정해 자유낙하로 보내는 판단(바로 아래
+ * `support < state.y` 분기)은 사다리 자신의 XZ(플랫폼과 간격 0으로만
+ * 접하고 겹치지 않는다, GA-61)에서 계산하므로 여전히 플랫폼을 "지지
+ * 없음"으로 본다 — 즉 `LADDER_ALPHA`를 끝까지 오르면 여전히 지면으로
+ * 떨어진다(GA-59 미충족, 의도적 보류). 이걸 고치면(사다리 진입 방향의
+ * 인접 플랫폼으로 옆걸음 전이) `tests/integration/rq-21-ladder-vertical
+ * -movement.test.ts`의 기존 F1 재현 describe("발판 없음 → 낙하 데미지")가
+ * 정확히 같은 사다리·같은 입력 방향에서 더 이상 낙하하지 않으므로
+ * 구조적으로 깨진다 — 두 계약이 동일 프로덕션 지오메트리에서 양립
+ * 불가능하다(모순 근거는 위 보고서 참고, `tests/` 수정 금지라 coder가
+ * 임의로 어느 쪽을 이기게 할 수 없다). 사용자 판단 대기 중. */
 export function stepMovement(state: MoveState, input: MoveInput, geometry: StaticGeometry = EMPTY_GEOMETRY): MoveState {
+  // RQ-33 — 플랫폼(있으면)을 이번 틱 지지/차단 판정에 합류시킨다.
+  // `geometry.boxes` 자체(참조)는 건드리지 않는다 — `PRODUCTION_GEOMETRY
+  // .boxes`가 `PRODUCTION_BOXES`와 참조 동일해야 하는 계약(위
+  // `StaticGeometry.platforms` 코멘트) 때문에 합치는 지점을 호출 시점
+  // (여기)으로 미룬다. `standingHeight`/`boxesBlockingAt` 자체는 변경
+  // 없음 — 여전히 임의의 `BoxAABB[]`를 받는다.
+  const boxes = geometry.platforms && geometry.platforms.length > 0 ? [...geometry.boxes, ...geometry.platforms] : geometry.boxes
   const ladder = state.grounded ? findLadderAt(state.x, state.y, state.z, geometry.ladders) : undefined
   if (ladder) {
     const outcome = ladderOutcome(state, input, ladder)
@@ -674,7 +717,7 @@ export function stepMovement(state: MoveState, input: MoveInput, geometry: Stati
       return outcome
     }
     // 이번 틱에 사다리 볼륨을 벗어난다.
-    const support = standingHeight(state.x, state.z, geometry.boxes)
+    const support = standingHeight(state.x, state.z, boxes)
     if (support < state.y) {
       // 지지면이 없다 — 이탈 순간의 사다리 수직 속도(outcome.vy)를 낙하
       // 궤적의 초기 속도로 인계한다. jumpElapsedSeconds는 stepAirborne이
@@ -683,13 +726,13 @@ export function stepMovement(state: MoveState, input: MoveInput, geometry: Stati
       // 수평 속도는 0(사다리는 수평 관성을 만들지 않는다, `ladderOutcome`
       // 코멘트 참고).
       const tPrev = jumpElapsedSeconds(outcome.vy)
-      return airborneOutcome(state, 0, 0, tPrev, geometry.walls, geometry.boxes)
+      return airborneOutcome(state, 0, 0, tPrev, geometry.walls, boxes)
     }
     // 지지면이 있다(발판 등) — 원래 위치(`state`, 사다리 판정에 쓰인
     // 시작점) 기준으로 접지/공중 물리를 그대로 적용해 그 높이로 전환한다.
     // `outcome`의 초과된 y는 쓰지 않는다.
   }
   return state.grounded
-    ? stepGrounded(state, input, geometry.walls, geometry.boxes)
-    : stepAirborne(state, geometry.walls, geometry.boxes)
+    ? stepGrounded(state, input, geometry.walls, boxes)
+    : stepAirborne(state, geometry.walls, boxes)
 }

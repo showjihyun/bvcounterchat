@@ -31,12 +31,29 @@ import type { StaticGeometry } from '@shared/sim/movement'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import { PRODUCTION_BOXES } from '@shared/sim/boxes'
 import { PRODUCTION_LADDERS } from '@shared/sim/ladders'
+import { PRODUCTION_PLATFORMS } from '@shared/sim/platforms'
 
 /** `stepMovement`에 상시 주입되는 정적 지오메트리 정본 — `GameRoom
  * .stepPlayerMovement`·`prediction.ts`(`applyInput`/`reconcile`) 모두
- * 이 하나의 값을 공유 참조한다. */
+ * 이 하나의 값을 공유 참조한다.
+ *
+ * **REV(RQ-33) — `platforms` 필드 추가, `boxes`는 그대로 `PRODUCTION_BOXES`
+ * 참조.** `PRODUCTION_PLATFORMS`(topY=4m)를 `boxes` 배열 자체에 스프레드해
+ * 합치지 않는 이유 둘: ① `@shared/sim/boxes`의 `PRODUCTION_BOXES`에
+ * 넣으면 `tests/unit/map-box-dimensions.test.ts`의 GA-53("모든 박스
+ * topY ≤ 1.0m")이 깨진다(`@shared/sim/platforms` docblock 참고). ②
+ * 여기서 `boxes: [...PRODUCTION_BOXES, ...PRODUCTION_PLATFORMS]`처럼
+ * 새 배열로 합쳐도 `tests/unit/sim-movement-ladders.test.ts`의 "25a-5
+ * 계약" 테스트(`expect(PRODUCTION_GEOMETRY.boxes).toBe(PRODUCTION_BOXES)`
+ * — 참조 동일성)가 깨진다(`tests/` 수정 금지, ADR-0011 Red-first — 실제로
+ * 시도했다가 이 회귀를 발견해 되돌렸다). 대신 `platforms`를 별도 필드로
+ * 얹고, `stepMovement`(`@shared/sim/movement`)가 호출 시점에 `boxes`와
+ * `platforms`를 합쳐 `standingHeight`/`boxesBlockingAt`(둘 다 임의의
+ * `BoxAABB[]`를 받는 기존 함수)에 넘긴다 — "점프로는 못 오르고(옆면
+ * 차단) 서면 지지된다"는 성질을 새 판정 로직 없이 얻는다(GA-60). */
 export const PRODUCTION_GEOMETRY: StaticGeometry = {
   walls: PRODUCTION_WALLS,
   boxes: PRODUCTION_BOXES,
   ladders: PRODUCTION_LADDERS,
+  platforms: PRODUCTION_PLATFORMS,
 }
