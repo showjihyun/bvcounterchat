@@ -130,11 +130,13 @@
 | `--space-4` | `1.5rem` (24px) |
 | `--radius` | `4px` |
 
-**화면 가장자리 여백은 `--space-3`(16px)로 통일한다** ⚠️ **예외: 채팅 패널의
-`bottom`은 여백 + `CHAT.bottomOffsetPx`(100px) = 116px다**(원장 24m, 사용자 요구).
-사분면(좌하단, RQ-52)은 유지되며 그 오프셋의 정본은 `design-tokens.ts`다 —
-기존 `bottom: 1rem;
+**화면 가장자리 여백은 `--space-3`(16px)로 통일한다** — 기존 `bottom: 1rem;
 left: 1rem`이 이미 그 값이다.
+
+⚠️ **예외 하나(원장 24m, 사용자 요구)**: 채팅 패널의 `bottom`만 여백 +
+`CHAT.bottomOffsetPx`(100px) = **116px**다. `left`는 여백 그대로 16px이라
+사분면(좌하단, RQ-52)은 유지된다. 오프셋의 정본은 `design-tokens.ts`이고,
+값을 키우면 낮은 뷰포트에서 사분면을 벗어날 여지가 생긴다(경계 조건은 원장 24p).
 
 ⚠️ **컴포넌트 치수는 이 스케일이 아니다.** 채팅 패널 너비(`22rem`)·로그 최대
 높이(`8rem`)·입장 폼 너비(`16rem`)는 "그 내용이 읽히는 크기"에서 온 값이라
@@ -204,6 +206,7 @@ left: 1rem`이 이미 그 값이다.
 
 | 속성 | 값 |
 |---|---|
+| 자리 | 좌하단 — `left` 16px(여백) · `bottom` **116px**(여백 + `CHAT.bottomOffsetPx` 100px, 원장 24m) |
 | 너비 | `22rem`, `max-width: calc(100vw - var(--edge-inset) * 2)` |
 | 로그 최대 높이 | `8rem`, 넘치면 스크롤 |
 | 로그 배경 | `--panel`, `--radius` |

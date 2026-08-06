@@ -167,7 +167,9 @@ body {
   border-radius: var(--radius);
   color: inherit;
   font-size: var(--size-md);
-  /* 입력을 받는 **유일한** 요소 — 컨테이너가 `none`이라 여기서 되살린다. */
+  /* 컨테이너가 `none`이라 여기서 되살린다. ⚠️ **유일한 요소는 아니다**(원장 24m) —
+     로그도 포인터 락이 풀린 동안에는 `auto`가 된다(`.hud__chat--interactive`).
+     입력창은 **항상**, 로그는 **조건부**라는 것이 차이다. */
   pointer-events: auto;
 }
 
