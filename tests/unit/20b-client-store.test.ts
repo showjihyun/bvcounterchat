@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PLAYER } from '@shared/constants'
 import { createGameStore } from '@client/store/gameStore'
 import { UI } from '@shared/constants'
 
@@ -71,13 +72,25 @@ interface FakeServerPlayer {
   x: number
   y: number
   z: number
+  /** RQ-56(원장 24ab)이 시신을 이름표 후보에서 거르려고 들인 필드.
+   * 스키마에는 원래부터 있었고(`GameState.ts` `@type('number') hp`) 이 가짜만
+   * 몰랐다. `PLAYER.MAX_HP`를 쓰는 이유: 기존 케이스는 전부 산 플레이어를
+   * 전제하므로 그 의미가 바뀌지 않는다. */
+  hp: number
 }
 interface FakeServerSpectator {
   nickname: string
 }
 
-function playersMap(entries: Record<string, FakeServerPlayer>): Map<string, FakeServerPlayer> {
-  return new Map(Object.entries(entries))
+/** `hp`를 생략하면 **산 플레이어**(`PLAYER.MAX_HP`)로 채운다 — 기존 케이스는
+ * 전부 산 플레이어를 전제하므로 의미가 바뀌지 않는다. 시신을 시험하는
+ * 케이스만 `hp: 0`을 명시한다(RQ-56, 원장 24ab). */
+function playersMap(
+  entries: Record<string, Omit<FakeServerPlayer, 'hp'> & { hp?: number }>,
+): Map<string, FakeServerPlayer> {
+  return new Map(
+    Object.entries(entries).map(([id, p]) => [id, { ...p, hp: p.hp ?? PLAYER.MAX_HP }] as const),
+  )
 }
 function spectatorsMap(entries: Record<string, FakeServerSpectator>): Map<string, FakeServerSpectator> {
   return new Map(Object.entries(entries))

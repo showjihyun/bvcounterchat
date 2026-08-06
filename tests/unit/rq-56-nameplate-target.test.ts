@@ -7,6 +7,7 @@ import {
 import { eyeOrigin, findClosestHit, type Vec3 } from '@shared/sim/combat'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
+import { PLAYER } from '@shared/constants'
 
 /**
  * RQ-56 이름표 대상 판정(원장 24ab).
@@ -19,6 +20,13 @@ import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
  * (`findClosestHit`)를 테스트도 직접 불러 **두 결과가 같은 대상**인지 본다.
  * 구현이 로직을 복제하는 쪽으로 되돌아가면 여기서 갈라진다.
  *
+ * ⚠️ **이 대조가 고정하는 축은 둘뿐이다 — 차폐 목록과 조준 벡터.**
+ * 히트박스(`bodyRadiusM`)와 눈 원점(`eyeHeightM`)은 **고정하지 못한다**:
+ * 모든 케이스가 사수 원점·조준 +X·대상 `(d,0,0)`의 한 축 정렬이고 단언이
+ * `sessionId`만 보기 때문에, 그 두 값을 바꾸는 변이가 살아남는다(PR #66 리뷰
+ * major 1 — 격리 워크트리 실측). 축을 벗어난 경계 케이스 추가는 **원장 24ae**가
+ * 갖는다. 여기 "동치를 고정한다"고 적힌 것을 그 두 축까지로 읽으면 안 된다.
+ *
  * ⚠️ 좌표를 리터럴로 박지 않는다(ADR-0010) — 히트박스·벽은 정본에서 읽고,
  * 대상 위치는 조준 방향에서 유도한다.
  */
@@ -29,8 +37,8 @@ const SELF_FOOT: Vec3 = { x: 0, y: 0, z: 0 }
 const AIM_EAST: Vec3 = { x: 1, y: 0, z: 0 }
 
 /** 사수 눈높이에 바디 중심이 오도록 놓은 대상의 **발** 위치. */
-function targetFootAt(distance: number): NameplateCandidate {
-  return { nickname: '대상', x: distance, y: 0, z: 0 }
+function targetFootAt(distance: number, hp: number = PLAYER.MAX_HP): NameplateCandidate {
+  return { nickname: '대상', x: distance, y: 0, z: 0, hp }
 }
 
 function others(entries: Record<string, NameplateCandidate>): Map<string, NameplateCandidate> {
@@ -44,7 +52,7 @@ function serverHitId(
 ): string | undefined {
   const hit = findClosestHit(
     { origin: eyeOrigin(SELF_FOOT, DEFAULT_HITBOX.eyeHeightM), direction: AIM_EAST },
-    [...candidates].map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
+    [...candidates].filter(([, p]) => p.hp > 0).map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
     DEFAULT_HITBOX,
     walls,
   )
@@ -134,5 +142,59 @@ describe('RQ-56: 이름표 앵커', () => {
     expect(target?.anchor.x).toBe(10)
     expect(target?.anchor.z).toBe(0)
     expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM(), 12)
+  })
+})
+
+describe('RQ-56 blocker 회귀 — 시신은 이름표 후보가 아니다', () => {
+  // 서버 `handleFire`가 `canAct(player.hp)`로 시신을 사격 후보에서 뺀다.
+  // 클라가 그 필터를 안 하면 **이름은 시신을 가리키고 총알은 뒤의 산 사람을
+  // 맞히는** 상태가 된다 — 이 라운드가 세운 동치가 그 자리에서 깨진다.
+  it('시신만 있으면 표시하지 않는다', () => {
+    const map = others({ corpse: targetFootAt(10, 0) })
+    expect(resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [])).toBeUndefined()
+  })
+
+  it('같은 위치의 산 사람은 표시된다 — hp가 원인임을 확인', () => {
+    // 음성 대조군. 없으면 위 단언이 "그냥 조준이 빗나갔다"로도 통과한다.
+    const map = others({ alive: targetFootAt(10) })
+    expect(resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [])?.sessionId).toBe('alive')
+  })
+
+  it('시신이 산 사람 **앞**에 있으면 뒤의 산 사람을 고른다 — 서버가 맞히는 그 대상', () => {
+    // 이것이 blocker의 실제 형태다. 시신을 그냥 건너뛰는 것으로는 부족하고,
+    // 시신을 **후보 집합에서 빼야** 뒤 사람이 최근접으로 뽑힌다.
+    const map = others({ corpse: targetFootAt(8, 0), alive: targetFootAt(16) })
+    const target = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [])
+    expect(target?.sessionId).toBe('alive')
+    expect(target?.sessionId).toBe(serverHitId(map, []))
+  })
+})
+
+describe('RQ-56 blocker 회귀 — 앵커는 보간 표시 위치를 따른다', () => {
+  // 몸은 `renderTime − 보간 지연`에 그려진다. 앵커에 최신 스냅샷을 쓰면
+  // 그 지연만큼(6m/s × 66.67ms = 0.40m, 바디 반경보다 크다) 이름이 몸 옆에 뜬다.
+  it('보간 위치가 주어지면 스냅샷이 아니라 그것을 쓴다', () => {
+    const map = others({ enemy: targetFootAt(10) })
+    const interpolated = { x: 9.6, y: 0, z: 0 }
+    const target = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], () => interpolated)
+    expect(target?.anchor.x).toBe(9.6)
+    expect(target?.anchor.z).toBe(0)
+    expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM(), 12)
+  })
+
+  it('보간 이력이 없으면 스냅샷으로 떨어진다 — 첫 프레임 폴백', () => {
+    const map = others({ enemy: targetFootAt(10) })
+    const target = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], () => undefined)
+    expect(target?.anchor.x).toBe(10)
+  })
+
+  it('보간 조회는 **선택된 대상**의 id로 이뤄진다 — 엉뚱한 몸에 붙지 않는다', () => {
+    const map = others({ near: targetFootAt(8), far: targetFootAt(16) })
+    const asked: string[] = []
+    resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], (id) => {
+      asked.push(id)
+      return undefined
+    })
+    expect(asked).toEqual(['near'])
   })
 })

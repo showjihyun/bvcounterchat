@@ -12,6 +12,11 @@
  * `GameRoom.handleFire`가 `findClosestHit(ray, candidates, DEFAULT_HITBOX,
  * PRODUCTION_WALLS)`를 부르고, 여기서도 같은 히트박스·같은 차폐 목록을 넘긴다.
  *
+ * ⚠️ **테스트가 그 동치를 고정하는 범위는 차폐 목록·조준 벡터 두 축까지다** —
+ * 히트박스·눈 원점 축은 아직 변이가 살아남는다(원장 24ae). 즉 이 주석의
+ * "같은 히트박스"는 **코드가 그렇게 되어 있다**는 서술이지 테스트가 지킨다는
+ * 뜻이 아니다.
+ *
  * ## 서버와 **일부러** 다른 두 가지
  *
  * 1. **탄퍼짐을 적용하지 않는다.** 서버는 발사 시 시드로 콘 안에서 방향을
@@ -20,8 +25,15 @@
  *    것과 같은 성격이다(원장 24e). CS도 조준하면 이름이 뜨지만 총알은 빗나갈
  *    수 있다.
  * 2. **랙 보상 되감기를 하지 않는다.** RQ-64의 되감기는 서버가 사수의 RTT만큼
- *    과거로 돌리는 판정이다. 이름표는 **화면에 지금 보이는 것**에 붙어야 하므로
- *    보간된 현재 표시 위치를 쓴다 — 되감으면 이름이 몸에서 떨어져 보인다.
+ *    과거로 돌리는 판정이다. 저RTT에서는 스냅샷 쪽이 서버가 보는 것에 더 가까워
+ *    선택 축에서는 이 차이가 작다.
+ *
+ * ⚠️ **앵커는 다르다 — 반드시 보간 위치를 써야 한다.** 몸은 `PlayerMeshes`가
+ * `renderTime − 보간 지연`에 그린다. 앵커에 최신 스냅샷을 쓰면 그 지연만큼
+ * (`MOVEMENT.SPEED` 6m/s × 66.67ms = **0.40m**, 바디 반경 0.3m보다 크다)
+ * 이름이 몸 옆 허공에 뜬다 — RQ-56의 "머리 위" 문면 위반이다. 초안이 주석에는
+ * "보간 위치를 쓴다"고 적고 코드는 스냅샷을 썼다(PR #66 리뷰 blocker 2).
+ * 그래서 앵커 좌표는 **호출자가 보간기에서 얻어 넘긴다**(`anchorPosition`).
  *
  * 즉 동치는 **"차폐와 조준선"** 축에서 성립하고, 확산·되감기라는 **확률·시간**
  * 축은 애초에 이름표의 관심사가 아니다.
@@ -37,6 +49,7 @@
 
 import { eyeOrigin, findClosestHit, type HitCandidate, type Vec3 } from '@shared/sim/combat'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { canAct } from '@shared/sim/lifecycle'
 import type { WallAABB } from '@shared/sim/movement'
 
 /** 이름표가 필요한 최소 플레이어 정보 — 클라 스토어(`PlayerView`)의 부분집합.
@@ -47,6 +60,12 @@ export interface NameplateCandidate {
   x: number
   y: number
   z: number
+  /** 서버 확정 HP. **시신을 거르는 데만** 쓴다 — 서버 `handleFire`가
+   * `canAct(player.hp)`로 시신을 사격 후보에서 빼기 때문이다. 이 필터가 없으면
+   * 시신이 3초(`RESPAWN_MS`)간 후보로 남아, **시신이 산 사람 앞에 있을 때**
+   * 이름표는 시신을 가리키고 총알은 뒤의 산 사람을 맞힌다(PR #66 리뷰
+   * blocker 1) — 이 라운드가 세운 동치가 그 자리에서 깨진다. */
+  hp: number
 }
 
 /** 조준선이 향한 대상. 없으면 `undefined`. */
@@ -83,13 +102,19 @@ export function resolveNameplateTarget(
   aimDirection: Vec3,
   others: ReadonlyMap<string, NameplateCandidate>,
   walls: readonly WallAABB[],
+  /** 대상의 **보간 표시 위치**(발)를 돌려준다. `undefined`를 돌려주면 스냅샷
+   * 위치로 떨어진다 — 보간 이력이 아직 없는 첫 프레임의 폴백이다. */
+  anchorPosition?: (sessionId: string) => Vec3 | undefined,
 ): NameplateTarget | undefined {
   if (others.size === 0) return undefined
 
   const candidates: HitCandidate[] = []
   for (const [sessionId, player] of others) {
+    // 시신 제외 — 서버 `handleFire`(`GameRoom.ts`)가 쓰는 것과 **같은 술어**다.
+    if (!canAct(player.hp)) continue
     candidates.push({ id: sessionId, pose: { position: { x: player.x, y: player.y, z: player.z } } })
   }
+  if (candidates.length === 0) return undefined
 
   const hit = findClosestHit(
     { origin: eyeOrigin(selfFoot, DEFAULT_HITBOX.eyeHeightM), direction: aimDirection },
@@ -105,9 +130,11 @@ export function resolveNameplateTarget(
   // 이 파일이 의존하기 때문이다 — 그 계약이 바뀌면 조용히 틀리는 대신 사라진다.
   if (!player) return undefined
 
+  // 몸이 그려지는 자리(보간)에 이름을 붙인다 — 위 ⚠️ 참고.
+  const foot = anchorPosition?.(hit.id) ?? { x: player.x, y: player.y, z: player.z }
   return {
     sessionId: hit.id,
     nickname: player.nickname,
-    anchor: { x: player.x, y: player.y + nameplateAnchorHeightM(), z: player.z },
+    anchor: { x: foot.x, y: foot.y + nameplateAnchorHeightM(), z: foot.z },
   }
 }
