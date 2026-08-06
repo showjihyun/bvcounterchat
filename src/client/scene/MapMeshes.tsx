@@ -37,7 +37,6 @@ import { ladderRailBoxes, ladderRungBoxes } from '@client/scene/ladderGeometry'
  * 튜닝값이 바뀔 때 조용히 거짓이 된다. 수십 개 수준이라 드로우콜이 문제되는
  * 규모가 아니어서 인스턴싱을 쓰지 않는다(`PlayerMeshes`와 같은 판단).
  * 그 전제가 깨지는 지점은 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
- * 맵이 커져 이 수가 크게 늘면 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
  *
  * 렌더 계층 면제 대상(ADR-0008 §6) — 이 파일 자체는 테스트 없음. 치수 환산
  * 산술만 `@client/scene/mapGeometry`로 분리해 단위 테스트한다.
