@@ -68,6 +68,39 @@ export function ChatPanel({ store, connection, uiStore }: ChatPanelProps) {
     }
   }, [uiStore])
 
+  // 원장 24m — 포인터 락 상태를 읽어 로그의 조작 가능 여부를 정한다(24h 해소).
+  // 락 중에는 커서가 없어 스크롤할 수 없고, 락을 걸려는 클릭은 캔버스로 가야
+  // 한다(24f가 고친 결함). 락이 풀린 동안에만 로그가 포인터를 받는다.
+  const [pointerLocked, setPointerLocked] = useState(() => uiStore.getState().pointerLocked)
+  useEffect(() => {
+    setPointerLocked(uiStore.getState().pointerLocked)
+    return uiStore.subscribe((state) => {
+      setPointerLocked(state.pointerLocked)
+    })
+  }, [uiStore])
+
+  // 원장 24m — Enter로 입력창에 진입한다. 지금까지는 **클릭만이** 진입 경로였고,
+  // 그 클릭이 캔버스에 닿으면 포인터 락이 걸려 버려 채팅을 열기가 까다로웠다.
+  //
+  // ⚠️ **진입 시 포인터 락을 푼다.** 락이 걸린 채로는 타자를 치는 동안에도
+  // mousemove가 시점을 계속 돌린다(`mouseLook`은 락만 보고 채팅 포커스를 보지
+  // 않는다). CS가 채팅을 열 때 마우스를 놓는 것과 같은 처리다.
+  //
+  // 전송은 이 핸들러가 아니라 `form`의 submit(= 입력창에서 Enter)이 맡는다 —
+  // 이미 포커스가 있으면 이 리스너는 아무것도 하지 않고 그 기본 경로에 맡긴다.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== 'Enter') return
+      if (uiStore.getState().chatFocused) return
+      // 브라우저 기본 동작(버튼 재활성 등)과 게임 입력 양쪽에서 이 Enter를 뺀다.
+      event.preventDefault()
+      if (document.pointerLockElement) document.exitPointerLock()
+      inputRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [uiStore])
+
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
     const text = draft.trim()
@@ -87,7 +120,8 @@ export function ChatPanel({ store, connection, uiStore }: ChatPanelProps) {
   }
 
   return (
-    <div className="hud__chat">
+    // `--interactive`는 락이 풀린 동안에만 붙는다(위 주석 참고).
+    <div className={pointerLocked ? 'hud__chat' : 'hud__chat hud__chat--interactive'}>
       <div className="hud__chat-log" ref={logRef} role="log" aria-live="polite">
         {messages.map((message, index) => (
           // key=index: append-only 로그(재정렬·중간 삭제 없음)라 안전하다.

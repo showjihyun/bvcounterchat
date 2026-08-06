@@ -2,9 +2,12 @@ import type { MoveInput } from '@shared/sim/movement'
 import { KEYMAP } from '@client/input/keymap'
 
 /**
- * 키보드 상태 → `MoveInput` 변환(DOM 이벤트 리스너 — `harness/workflow
- * /fe.md` 렌더 계층 면제 대상: 테스트 없음, tsc·lint·빌드·수동 확인이
- * 게이트다).
+ * 키보드 상태 → `MoveInput` 변환(DOM 이벤트 리스너).
+ *
+ * ⚠️ **렌더 계층 면제 대상이 아니다**(원장 24m). ADR-0008 §6이 면제한 것은
+ * 렌더링(R3F)·WebGL·씬 그래프이고 DOM 키 리스너는 거기 없다. 리스너 대상을
+ * 인자로 받으므로(`target: Window = window`) 브라우저 없이 단위 테스트된다 —
+ * `tests/unit/24m-movement-keys.test.ts`.
  *
  * 카메라 회전을 반영하지 않는 월드축 방향이다 — 조준·시점 회전(look)은
  * 이 RQ의 스코프 밖이다(team-lead 지시 — RQ-62는 이동 입력 전송+포인터
@@ -33,16 +36,25 @@ export interface MovementInputTracker {
   dispose(): void
 }
 
-/** 리스너를 붙일 대상(테스트 시 대체 가능하도록 매개변수화 — 기본값
- * `window`). 이 파일 자체는 렌더 게이트 대상이라 단위 테스트를 요구하지
- * 않지만, 구조적으로 결합을 낮춰 둔다. */
+/** 리스너를 붙일 대상 — 기본값 `window`. 매개변수화한 덕에
+ * `tests/unit/24m-movement-keys.test.ts`가 가짜 대상으로 이 함수를 직접
+ * 시험한다(원장 24m). */
 export function createMovementInputTracker(target: Window = window): MovementInputTracker {
   const pressed = new Set<string>()
   let jumpPending = false
 
+  /** 액션에 배정된 코드 중 **하나라도** 눌려 있는가(원장 24m — 액션당 복수
+   * 코드). `pressed.has(KEYMAP.moveForward)`처럼 배열을 그대로 넘기는 형태로
+   * 되돌리면 **타입 오류가 나서 빌드가 깨진다**(실측) — 조용히 틀리지 않는다. */
+  function isDown(codes: readonly string[]): boolean {
+    return codes.some((code) => pressed.has(code))
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     pressed.add(event.code)
-    if (event.code === KEYMAP.jump) {
+    // 리터럴 튜플을 `readonly string[]`으로 **넓히기만** 한다 — `as never`는
+    // 인자 검사를 통째로 꺼서 나중에 엉뚱한 값을 넣어도 통과한다(리뷰 minor).
+    if ((KEYMAP.jump as readonly string[]).includes(event.code)) {
       jumpPending = true
     }
   }
@@ -56,10 +68,10 @@ export function createMovementInputTracker(target: Window = window): MovementInp
 
   return {
     getMoveInput(): MoveInput {
-      const forward = pressed.has(KEYMAP.moveForward) ? 1 : 0
-      const backward = pressed.has(KEYMAP.moveBackward) ? 1 : 0
-      const left = pressed.has(KEYMAP.moveLeft) ? 1 : 0
-      const right = pressed.has(KEYMAP.moveRight) ? 1 : 0
+      const forward = isDown(KEYMAP.moveForward) ? 1 : 0
+      const backward = isDown(KEYMAP.moveBackward) ? 1 : 0
+      const left = isDown(KEYMAP.moveLeft) ? 1 : 0
+      const right = isDown(KEYMAP.moveRight) ? 1 : 0
 
       const jump = jumpPending
       jumpPending = false
@@ -67,7 +79,7 @@ export function createMovementInputTracker(target: Window = window): MovementInp
       return {
         dirX: right - left,
         dirZ: forward - backward,
-        mode: pressed.has(KEYMAP.crouch) ? 'crouch' : pressed.has(KEYMAP.walk) ? 'walk' : 'run',
+        mode: isDown(KEYMAP.crouch) ? 'crouch' : isDown(KEYMAP.walk) ? 'walk' : 'run',
         jump,
       }
     },

@@ -33,7 +33,7 @@ export function LockHint({ uiStore }: { uiStore: StoreApi<UiStoreState> }) {
 
   return (
     <span className="hud__placeholder">
-      화면을 클릭하면 시점 조작이 시작된다 — 이동 WASD · 사격 좌클릭 · 해제 ESC
+      화면을 클릭하면 시점 조작이 시작된다 — 이동 WASD·방향키 · 사격 좌클릭 · 채팅 Enter · 해제 ESC
     </span>
   )
 }

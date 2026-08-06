@@ -83,6 +83,15 @@ export const CROSSHAIR = {
  * 바뀌면 축척이 따라 바뀌어야 하기 때문이다. */
 export const MINIMAP = { sizePx: 160 } as const
 
+/** 채팅 패널(DESIGN.md §3.3) — RQ-52가 정한 **좌하단**을 유지하되 바닥에서
+ * 얼마나 띄울지(원장 24m, 사용자 요구). 가장자리 여백(`EDGE_INSET`)에 **더해지는**
+ * 값이라 0이면 종전 위치다.
+ *
+ * ⚠️ 사분면을 바꾸는 값이 아니다 — 우하단으로 옮기는 것은 RQ-52·RQ-53을 동시에
+ * 뒤집는 일이라 스펙 개정이 선행이다(PR #61 델타 리뷰 minor). 이 값을 화면 높이에
+ * 근접하게 키우면 그 선을 넘으므로, 바꿀 때 사분면이 유지되는지 함께 본다. */
+export const CHAT = { bottomOffsetPx: 100 } as const
+
 /**
  * **3D 씬 정본**(원장 24c — 착수 트리거 "맵 지오메트리 렌더가 클라이언트에 처음
  * 들어오는 PR"이 원장 24f에서 도래했다). 이전엔 `GameScene.tsx`·`PlayerMeshes.tsx`가
@@ -173,6 +182,7 @@ export function applyDesignTokens(root: HTMLElement): void {
     '--crosshair-length': `${CROSSHAIR.lengthPx}px`,
     '--crosshair-thickness': `${CROSSHAIR.thicknessPx}px`,
     '--crosshair-gap': `${CROSSHAIR.gapPx}px`,
+    '--chat-bottom-offset': `${CHAT.bottomOffsetPx}px`,
   }
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value)

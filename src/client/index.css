@@ -105,7 +105,9 @@ body {
    받는 요소는 여기서 개별적으로 되살린다. */
 .hud__chat {
   position: absolute;
-  bottom: var(--edge-inset);
+  /* 원장 24m — RQ-52의 좌하단을 유지하되 바닥에서 띄운다(사용자 요구).
+     오프셋 정본은 `design-tokens.ts`의 `CHAT.bottomOffsetPx`다. */
+  bottom: calc(var(--edge-inset) + var(--chat-bottom-offset));
   left: var(--edge-inset);
   /* 컴포넌트 치수 — 간격 스케일이 아니다(DESIGN.md §2.3 주). 채팅 로그가
      읽히는 최소 너비이고 좁은 창에서는 가장자리 여백만 남기고 줄어든다. */
@@ -123,6 +125,15 @@ body {
      아래로 자동 스크롤되고 RQ-40은 스크롤백 조작을 요구하지 않는다 —
      되돌아보기 UI가 필요해지면 그때 RQ 개정이 먼저다. 원장 24h로 이월. */
   pointer-events: none;
+}
+
+/* 원장 24h 해소(24m) — 로그를 스크롤할 수 있게 한다. ⚠️ 무조건 `auto`로
+   되돌리면 24f가 고친 결함(좌하단 플레이 클릭 삼킴)이 그대로 재발한다.
+   **포인터 락이 풀린 동안에만** 조작을 허용한다 — 락 중에는 커서가 없어
+   스크롤할 방법도 이유도 없고, 락을 걸려는 클릭은 캔버스로 가야 한다.
+   상태는 `ChatPanel`이 `uiStore.pointerLocked`를 읽어 클래스로 준다. */
+.hud__chat--interactive .hud__chat-log {
+  pointer-events: auto;
 }
 
 .hud__chat-log {
@@ -156,7 +167,9 @@ body {
   border-radius: var(--radius);
   color: inherit;
   font-size: var(--size-md);
-  /* 입력을 받는 **유일한** 요소 — 컨테이너가 `none`이라 여기서 되살린다. */
+  /* 컨테이너가 `none`이라 여기서 되살린다. ⚠️ **유일한 요소는 아니다**(원장 24m) —
+     로그도 포인터 락이 풀린 동안에는 `auto`가 된다(`.hud__chat--interactive`).
+     입력창은 **항상**, 로그는 **조건부**라는 것이 차이다. */
   pointer-events: auto;
 }
 
