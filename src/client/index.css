@@ -40,19 +40,56 @@ body {
   pointer-events: none;
 }
 
-/* 22b 임시 크로스헤어 — 화면 정중앙 점. 카메라 정면(=서버 판정 레이
-   방향)이 화면 중앙이므로 조준점도 정중앙이다. RQ-54 정식 크로스헤어는
-   DESIGN.md 이후. */
+/* RQ-54 정식 크로스헤어(원장 24e) — DESIGN.md §3.1 십자 4선. 카메라 정면
+   (=서버 판정 레이 방향)이 화면 중앙이므로 조준점도 정중앙이다.
+
+   `--crosshair-gap-live`는 `Crosshair.tsx`가 인라인으로 덮는 **유일한** 값이다
+   (= 기본 간격 × 콘 배율). 폴백으로 정지 tier 간격을 둔다 — 스토어가 아직
+   값을 밀기 전에도 십자가 보여야 한다. */
 .hud__crosshair {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: var(--crosshair-dot);
-  height: var(--crosshair-dot);
-  margin: calc(var(--crosshair-dot) / -2) 0 0 calc(var(--crosshair-dot) / -2);
-  border-radius: 50%;
+  width: 0;
+  height: 0;
+}
+
+.hud__crosshair-line {
+  position: absolute;
   background: var(--fg-strong);
   box-shadow: var(--shadow-text);
+}
+
+/* 세로 두 선 — 굵기가 가로폭, 길이가 세로높이. */
+.hud__crosshair-line--up,
+.hud__crosshair-line--down {
+  left: calc(var(--crosshair-thickness) / -2);
+  width: var(--crosshair-thickness);
+  height: var(--crosshair-length);
+}
+
+.hud__crosshair-line--up {
+  bottom: var(--crosshair-gap-live, var(--crosshair-gap));
+}
+
+.hud__crosshair-line--down {
+  top: var(--crosshair-gap-live, var(--crosshair-gap));
+}
+
+/* 가로 두 선 — 축이 뒤집힌다. */
+.hud__crosshair-line--left,
+.hud__crosshair-line--right {
+  top: calc(var(--crosshair-thickness) / -2);
+  width: var(--crosshair-length);
+  height: var(--crosshair-thickness);
+}
+
+.hud__crosshair-line--left {
+  right: var(--crosshair-gap-live, var(--crosshair-gap));
+}
+
+.hud__crosshair-line--right {
+  left: var(--crosshair-gap-live, var(--crosshair-gap));
 }
 
 .hud__placeholder {
@@ -74,7 +111,18 @@ body {
      읽히는 최소 너비이고 좁은 창에서는 가장자리 여백만 남기고 줄어든다. */
   width: 22rem;
   max-width: calc(100vw - var(--edge-inset) * 2);
-  pointer-events: auto;
+  /* ⚠️ 컨테이너는 클릭을 받지 않는다(원장 24f). 이전엔 여기가
+     `pointer-events: auto`라 **로그 영역까지 포함한 22rem × 약 10rem**이
+     플레이 영역의 클릭을 삼켰다 — 화면 좌하단을 클릭하면 캔버스에 닿지 않아
+     **포인터 락이 요청조차 되지 않고**(마우스가 창을 벗어난 채로 남는다),
+     입력창에 닿았으면 `chatFocused`가 켜져 **이동 입력이 0으로 게이트된다**
+     (`@client/input/chatInputGate`). 사용자가 보고한 "마우스가 브라우저를
+     넘어간다"와 "WASD로 안 움직인다"가 이 한 클릭으로 동시에 재현된다.
+
+     대가: 채팅 로그를 마우스로 스크롤할 수 없다. 로그는 새 메시지마다 맨
+     아래로 자동 스크롤되고 RQ-40은 스크롤백 조작을 요구하지 않는다 —
+     되돌아보기 UI가 필요해지면 그때 RQ 개정이 먼저다. 원장 24h로 이월. */
+  pointer-events: none;
 }
 
 .hud__chat-log {
@@ -108,6 +156,8 @@ body {
   border-radius: var(--radius);
   color: inherit;
   font-size: var(--size-md);
+  /* 입력을 받는 **유일한** 요소 — 컨테이너가 `none`이라 여기서 되살린다. */
+  pointer-events: auto;
 }
 
 /* 닉네임 입장 화면 — 기능 최소, 시각 디자인은 DESIGN.md 확정 이후 유예

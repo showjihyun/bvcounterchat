@@ -2,19 +2,26 @@ import { useCallback, useEffect, useState } from 'react'
 import { createGameStore } from '@client/store/gameStore'
 import { createUiStore } from '@client/store/uiStore'
 import { connectToGame } from '@client/net/connection'
+import { resolveGameEndpoint } from '@client/net/endpoint'
 import type { GameConnection } from '@client/net/connection'
 import { getOrCreateStatsUuid, readUuidStorage } from '@client/identity/statsUuid'
 import { GameScene } from '@client/scene/GameScene'
 import { JoinScreen } from '@client/hud/JoinScreen'
+import { Crosshair } from '@client/hud/Crosshair'
+import { LockHint } from '@client/hud/LockHint'
 import { ChatPanel } from '@client/hud/ChatPanel'
 
 /**
- * 클라이언트 → Colyseus 접속 엔드포인트. 같은 오리진의 ws(s) 주소를
- * 쓴다 — 프로덕션은 Nginx가 HTTP/WS를 같은 오리진으로 프록시하고
- * (ADR-0009), 개발 중에는 `vite.config.ts`의 `/matchmake` 프록시가
- * 5173 → 2567로 넘긴다.
- */
-const ENDPOINT = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+ * 클라이언트 → Colyseus 접속 엔드포인트.
+ *
+ * **운영**은 페이지와 같은 오리진을 쓴다 — Nginx가 HTTP/WS를 같은 오리진으로
+ * 프록시한다(ADR-0009). **개발**은 게임 서버(2567)에 직결한다 — 룸 WebSocket
+ * 경로(`/<processId>/<roomId>`)가 Vite의 `/matchmake` 프록시 항목에 매칭되지
+ * 않아 접속이 무한 대기하기 때문이다(원장 24e-1).
+ *
+ * 결정 규칙 자체는 `@client/net/endpoint`가 갖는다(순수 함수, 단위 테스트) —
+ * 여기서 인라인으로 조립하던 것이 그 결함의 자리였다. */
+const ENDPOINT = resolveGameEndpoint(window.location, import.meta.env.DEV)
 
 /**
  * 애플리케이션 셸 (ADR-0001, `harness/workflow/fe.md`).
@@ -100,12 +107,12 @@ export function App() {
           <GameScene store={store} connection={connection} uiStore={uiStore} />
           {/* HUD 레이어 — 캔버스 밖 DOM. RQ-51/53~55는 이후 단계에서 붙인다. */}
           <div className="hud" aria-live="polite">
-            {/* 22b 임시 크로스헤어(RQ-54 자리표시) — 조준점이 없으면 어디를
-                쏘는지 알 수 없어 사격 자체를 확인할 수 없다. 정식 디자인·
-                탄퍼짐 시각화(크로스헤어 확장)는 DESIGN.md §3.1이 확정했다 — 간격 =
-                    기본 간격 × 콘 배율. 구현은 RQ-54 라운드. */}
-            <span className="hud__crosshair" aria-hidden="true" />
-            <span className="hud__placeholder">ChatStrike — 접속됨</span>
+            {/* RQ-54 정식 크로스헤어(원장 24e) — DESIGN.md §3.1 십자 4선.
+                간격은 `--crosshair-gap-live`(= 기본 간격 × 콘 배율)로 들어오고
+                그 값은 `@client/hud/crosshairSpread`가 계산한다. 22b의 임시 점을
+                대체한다. `aria-hidden` — 조준점은 스크린리더에 의미가 없다. */}
+            <Crosshair uiStore={uiStore} />
+            <LockHint uiStore={uiStore} />
             {/* RQ-40/41/95 최소 채팅 패널(RQ-52 자리) — ChatPanel.tsx 참고. */}
             <ChatPanel store={store} connection={connection} uiStore={uiStore} />
           </div>

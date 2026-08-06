@@ -43,8 +43,16 @@ export interface ChatGatedConnection {
 /** `createChatGatedActions`가 반환하는 게이트 적용된 전송 함수 묶음. */
 export interface ChatGatedActions {
   /** 채팅 포커스 중이면 `gateMoveInput`으로 무입력 치환 후 전송한다 —
-   * 항상 전송은 하되(정지 상태를 서버에 알려야 함), 값만 게이트한다. */
-  sendMoveInput(input: MoveInput): void
+   * 항상 전송은 하되(정지 상태를 서버에 알려야 함), 값만 게이트한다.
+   *
+   * **실제로 전송한 값을 반환한다**(PR #61 리뷰 blocker). 게이트를 통과한 뒤의
+   * 입력이 필요한 소비처가 서버 전송 말고도 있다 — 크로스헤어 확산(RQ-54)이
+   * 그렇다. 반환하지 않으면 호출자가 게이트 이전의 원시 입력을 쓰게 되고,
+   * 실제로 그렇게 됐다: 채팅창에 "wasd"를 치는 동안 화면의 크로스헤어만 이동
+   * tier로 벌어지고 서버가 보는 입력은 0이었다. 호출자가 `gateMoveInput`을
+   * 다시 부르게 하는 것은 **분산 체크의 부활**이라(fe.md "개별 핸들러마다 분산
+   * 체크하지 않는다", 원장 23a M4) 이 choke point가 결과를 내주는 쪽이 옳다. */
+  sendMoveInput(input: MoveInput): MoveInput
   /** 채팅 포커스 중이면 아예 `'fire'` 메시지를 보내지 않는다
    * (`gateFireIntent`). `rttMs`(RQ-64 랙 보상, 평가 F1 대응 —
    * `_workspace/RQ-64/03_evaluator_report.md`)는 사수의 RTT 추정값
@@ -80,8 +88,10 @@ export function createChatGatedActions(
   connection: ChatGatedConnection,
 ): ChatGatedActions {
   return {
-    sendMoveInput(input: MoveInput): void {
-      connection.sendMoveInput(gateMoveInput(isChatFocused(), input))
+    sendMoveInput(input: MoveInput): MoveInput {
+      const gated = gateMoveInput(isChatFocused(), input)
+      connection.sendMoveInput(gated)
+      return gated
     },
     fire(direction: AimDirection, rttMs: number): void {
       if (!gateFireIntent(isChatFocused(), true)) return

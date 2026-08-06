@@ -22,11 +22,20 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 개발 중 클라이언트 → Colyseus 서버(2567) 연결.
-    // 프로덕션에서는 Nginx가 같은 오리진으로 프록시한다 (ADR-0009).
-    // ws: true — 매치메이킹 HTTP 요청뿐 아니라 Colyseus의 WebSocket
-    // 업그레이드도 이 프록시를 타야 한다(PR #1 리뷰 이월 ②). 없으면
-    // 매치메이킹은 되지만 룸 접속 WS 핸드셰이크가 프록시를 통과하지 못한다.
+    // ⚠️ **개발 클라이언트는 이 프록시를 쓰지 않는다**(원장 24e-1) —
+    // `@client/net/endpoint`가 개발 모드에서 게임 서버(2567)로 직접 붙는다.
+    //
+    // 왜: Colyseus는 매치메이킹 뒤 룸 WebSocket을 `/<processId>/<roomId>`로
+    // 여는데(colyseus.js `buildEndpoint` 실측) 그 경로는 아래 `/matchmake`
+    // 항목에 **매칭되지 않는다**. 그래서 Vite가 SPA fallback으로 index.html을
+    // 돌려주고 WS 업그레이드가 성립하지 않아 `joinOrCreate`가 무한 대기했다.
+    // `ws: true`는 **해당 경로 항목**의 업그레이드만 허용할 뿐이라 이 고장을
+    // 고치지 못한다 — 이전 주석이 이 증상을 정확히 서술해 놓고도 그렇게
+    // 고쳐져 있었다.
+    //
+    // 이 항목을 남겨 두는 이유: 매치메이킹만 같은 오리진으로 확인하고 싶을 때
+    // (예: 프록시 경로 회귀 점검) 쓸 수 있고, 프로덕션 Nginx 구성(ADR-0009)이
+    // 같은 오리진을 전제한다는 사실을 코드에 남긴다.
     proxy: {
       '/matchmake': { target: 'http://localhost:2567', ws: true },
     },

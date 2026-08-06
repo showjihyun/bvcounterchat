@@ -7,6 +7,8 @@ import type { GameConnection } from '@client/net/connection'
 import type { UiStoreState } from '@client/store/uiStore'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
 import { PlayerControls } from '@client/scene/PlayerControls'
+import { MapMeshes } from '@client/scene/MapMeshes'
+import { SCENE } from '@client/config/design-tokens'
 
 interface GameSceneProps {
   store: StoreApi<GameStoreState>
@@ -38,13 +40,21 @@ export function GameScene({ store, connection, uiStore }: GameSceneProps) {
       // 리터럴을 남기면 상수가 바뀔 때 조용히 어긋난다(ADR-0010).
       camera={{ fov: 75, position: [0, DEFAULT_HITBOX.eyeHeightM, 5], near: 0.1, far: WORLD.SIZE_M * 2 }}
     >
-      <color attach="background" args={['#c2b49a']} />
-      <hemisphereLight intensity={1.2} groundColor="#8a7a5c" />
+      {/* 원장 24c — 씬 색 5곳이 리터럴이었다. 정본은 `SCENE`이고 여기는 참조만
+          한다(ADR-0010). 값은 바뀌지 않았다 — 이관이지 재도색이 아니다. */}
+      <color attach="background" args={[SCENE.sky]} />
+      <hemisphereLight intensity={1.2} groundColor={SCENE.groundLight} />
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[WORLD.SIZE_M, WORLD.SIZE_M]} />
-        <meshStandardMaterial color="#8a7a5c" />
+        <meshStandardMaterial color={SCENE.ground} />
       </mesh>
-      <gridHelper args={[WORLD.SIZE_M, WORLD.SIZE_M]} />
+      {/* 그리드를 바닥보다 1cm 띄운다(원장 24f) — 둘 다 y=0이면 **동일 평면**이라
+          z-fighting으로 격자가 깜빡이거나 통째로 사라진다. 격자는 이 맵에서
+          거리감을 주는 유일한 바닥 무늬라 사라지면 이동이 보이지 않는다. */}
+      <gridHelper args={[WORLD.SIZE_M, WORLD.SIZE_M]} position={[0, 0.01, 0]} />
+      {/* RQ-30 벽 · RQ-32 박스·사다리(원장 24f). 판정 전용이던 지오메트리가
+          처음으로 화면에 나온다 — MapMeshes.tsx 상단 주석 참고. */}
+      <MapMeshes />
       <PlayerMeshes store={store} connection={connection} />
       <PlayerControls store={store} connection={connection} uiStore={uiStore} />
     </Canvas>

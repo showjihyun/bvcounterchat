@@ -22,7 +22,7 @@ import { GameRoom } from './rooms/GameRoom'
  * 게임 상태·틱 루프는 이후 RQ(RQ-10~)에서 TDD로 붙인다.
  */
 
-const PORT = Number(process.env['PORT'] ?? 2567)
+const PORT = Number(process.env['PORT'] ?? NET.DEFAULT_SERVER_PORT)
 const HOST = process.env['HOST'] ?? '0.0.0.0'
 
 /** RQ-81: 운영 기본 통계 SQLite 경로 — 실제 프로세스 직접 실행 진입점

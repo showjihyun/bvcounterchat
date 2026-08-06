@@ -1,5 +1,6 @@
 import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
+import { CROSSHAIR } from '@client/config/design-tokens'
 
 /**
  * 순수 클라이언트 UI 상태(`harness/workflow/fe.md` "포커스 상태를 game
@@ -15,14 +16,37 @@ import type { StoreApi } from 'zustand/vanilla'
 export interface UiStoreState {
   chatFocused: boolean
   setChatFocused(focused: boolean): void
+  /** RQ-54 크로스헤어 간격(px) — `@client/hud/crosshairSpread`가 계산한 값(원장 24e).
+   * HUD는 캔버스 밖 DOM이라 이 값이 바뀌면 React가 리렌더한다. */
+  crosshairGapPx: number
+  /** ⚠️ **값이 실제로 달라질 때만 `set`한다**(ADR-0001 프레임 예산). 호출부는
+   * 30Hz 입력 루프라 매초 30번 불리는데, 그대로 `set`하면 tier가 그대로여도
+   * 리렌더가 30fps로 돈다. tier는 3단계뿐이라 실제 변화는 드물다. */
+  setCrosshairGapPx(gapPx: number): void
+  /** 포인터 락 상태(원장 24e-2). 락이 없으면 시점이 안 돌고 커서가 창을
+   * 벗어난다 — 사용자가 "클릭해야 한다"를 알 방법이 화면에 있어야 한다. */
+  pointerLocked: boolean
+  setPointerLocked(locked: boolean): void
 }
 
 export function createUiStore(): StoreApi<UiStoreState> {
-  return createStore<UiStoreState>((set) => ({
+  return createStore<UiStoreState>((set, get) => ({
     chatFocused: false,
+    crosshairGapPx: CROSSHAIR.gapPx,
+    pointerLocked: false,
 
     setChatFocused(focused) {
       set({ chatFocused: focused })
+    },
+
+    setCrosshairGapPx(gapPx) {
+      if (get().crosshairGapPx === gapPx) return
+      set({ crosshairGapPx: gapPx })
+    },
+
+    setPointerLocked(locked) {
+      if (get().pointerLocked === locked) return
+      set({ pointerLocked: locked })
     },
   }))
 }
