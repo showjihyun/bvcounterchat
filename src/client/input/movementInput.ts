@@ -41,14 +41,17 @@ export function createMovementInputTracker(target: Window = window): MovementInp
   let jumpPending = false
 
   /** 액션에 배정된 코드 중 **하나라도** 눌려 있는가(원장 24m — 액션당 복수
-   * 코드). `===` 비교로 되돌리면 배열과 문자열을 비교해 **항상 거짓**이 된다. */
+   * 코드). `pressed.has(KEYMAP.moveForward)`처럼 배열을 그대로 넘기는 형태로
+   * 되돌리면 **타입 오류가 나서 빌드가 깨진다**(실측) — 조용히 틀리지 않는다. */
   function isDown(codes: readonly string[]): boolean {
     return codes.some((code) => pressed.has(code))
   }
 
   function onKeyDown(event: KeyboardEvent): void {
     pressed.add(event.code)
-    if (KEYMAP.jump.includes(event.code as never)) {
+    // 리터럴 튜플을 `readonly string[]`으로 **넓히기만** 한다 — `as never`는
+    // 인자 검사를 통째로 꺼서 나중에 엉뚱한 값을 넣어도 통과한다(리뷰 minor).
+    if ((KEYMAP.jump as readonly string[]).includes(event.code)) {
       jumpPending = true
     }
   }
