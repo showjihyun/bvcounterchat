@@ -193,6 +193,31 @@ const LADDER_CLIMB_MPS = MOVEMENT.SPEED * MOVEMENT.CROUCH_MULTIPLIER
  * 허용치(`TOLERANCE_M = 1e-9`)와 같은 크기의 여유를 둔다. */
 const LADDER_Y_EPSILON_M = 1e-9
 
+/** RQ-33(GA-59) — 사다리 근접면에서 인접 플랫폼 안쪽으로 **결정론적으로**
+ * 밀어 넣는 진입 여유(m). `MOVEMENT.SPEED × TICK_SECONDS`(표준 이동
+ * 속도로 1틱 이동하는 거리, 리터럴 아님 — ADR-0010)에서 유도한다 —
+ * "옆걸음 한 걸음"이라는 의미와도 맞는다. **독립 평가 FAIL F1
+ * 수정(`_workspace/RQ-33/05_evaluator_report.md` §6 F1)**: `stepOntoPlatform`
+ * 최초 구현은 사다리 근접면(`ladder.maxX`, 플랫폼의 **열린 구간 밖**
+ * 경계) 그 자체에 플레이어를 놓고, **이번 틱 입력에서 유도한 `vx`**로
+ * 플랫폼 안쪽까지 걸어 들어가길 기대했다 — `vy`(등반 속도)는 입력
+ * 방향의 부호만 보는데 `vx`(옆걸음 속도)는 입력 **크기**에 비례하므로,
+ * `dirX`가 극도로 작으면(`vx × TICK_SECONDS`가 좌표 `-13` 근방의
+ * 부동소수점 최소 증분(ulp)보다 작아지면) `x`가 경계에 그대로 머물러
+ * `standingHeight`가 0을 반환하고 `y`가 4→0으로 스냅됐다(`grounded`는
+ * 계속 `true`라 착지 전이가 없어 RQ-18 데미지도 우회됨 — RQ-61 위반,
+ * `tests/unit/sim-movement-ladders.test.ts`의 "F1(blocker)" `it.each`가
+ * 크기 11종으로 고정). **고정값(리터럴)이 아니라 상수에서 유도한 이
+ * 여유를 진입 위치 자체에 미리 더해 두면**, 그 뒤 `groundedOutcome`이
+ * 이번 틱 입력으로 계산하는 추가 이동량이 얼마나 작든(심지어 0에
+ * 수렴해도) 이미 플랫폼의 열린 구간 안쪽이므로 `standingHeight`가
+ * 항상 `platform.topY`를 본다 — **전이의 성패가 더 이상 입력 크기의
+ * 함수가 아니다**(부동소수 경계에 기대지 않는다, 조정자 지시). 입력의
+ * **방향**은 여전히 의미가 있다 — 이 여유를 적용할지 자체는
+ * `stepMovement`의 `outcome.vy > 0` 게이트(무입력·하강이면 애초에
+ * `stepOntoPlatform`을 호출하지 않는다, F3 가드)가 여전히 결정한다. */
+const PLATFORM_ENTRY_MARGIN_M = MOVEMENT.SPEED * TICK_SECONDS
+
 /** `mode`별 이동 속도(m/s). 타입은 리터럴 3종이지만, 서버 경계에서 온
  * 값의 런타임 값까지는 이 함수가 보장할 수 없다 — 알 수 없는 값은 기본
  * 이동 속도로 조용히 대체한다(크래시·무반응보다 안전, RQ-61). */
@@ -677,29 +702,34 @@ function findAdjacentPlatform(ladder: LadderVolume, platforms: readonly BoxAABB[
  * RQ-21 v1.4 "볼륨을 벗어나면 즉시 중력이 복귀한다"를 우회하는 특례가
  * 아니다 — **정확히 그 문장이 요구하는 대로** 사다리 전용 물리(중력
  * 미적용·수직 전용)를 끄고 표준 접지 물리(`groundedOutcome`, 중력이
- * 지배하는 세계에서 발밑에 지지면이 있으면 그 위에 선다)로 넘길 뿐이다
- * — 다만 이번 틱 발밑 지지면이 사다리 자신의 XZ가 아니라(플랫폼과는
- * 간격 0으로 접할 뿐 겹치지 않는다, GA-61) 근접면 바로 건너편에 있으므로,
- * 그 경계로 위치를 옮긴 뒤에야 표준 접지 물리가 그 지지면을 "볼" 수
- * 있다. 새 위치 계산 로직을 발명하지 않고 `groundedOutcome`을 그대로
- * 재사용한다 — 이번 틱의 실제 입력으로 근접면에서 플랫폼 안쪽으로 한
- * 걸음 내딛는 것으로 표현한다(정지 입력이면 경계에 딱 붙어 서고,
- * 계속 전진 입력을 유지하면 플랫폼 위를 계속 걸어 들어간다 — CS 계열
- * 게임의 "난간 위로 올라선다" 관례와 일치).
+ * 지배하는 세계에서 발밑에 지지면이 있으면 그 위에 선다)로 넘길 뿐이다.
  *
- * **좌표 선택 근거**: 법선 축(예 `normalX>0`이면 `x`)은 사다리의 근접면
- * 좌표(`ladder.maxX`, GA-61 설계상 `platform.minX`와 정확히 같다)로
- * 옮긴다 — 그래야 `groundedOutcome`의 첫 틱 이동이 실제로 개방 구간
- * 안쪽(`x > platform.minX`)까지 진입해 지지 높이가 인식된다. 법선과
- * **수직**인 축(예 `normalX>0`이면 `z`)은 `state.z`(사다리 진입 이후
- * 줄곧 고정돼 온 실제 좌표)를 그대로 쓴다 — GA-63(사다리 폭이 플랫폼
- * 대응 축 범위에 좌우 여백을 남기고 완전히 포함됨)이 보장하는 대로,
- * 사다리 볼륨 안 어떤 z든 플랫폼의 z 개방 구간에 이미 들어 있다. `y`는
- * `platform.topY`(GA-62 설계상 `ladder.maxY`와 같다)로 스냅한다 —
- * `groundedOutcome`이 곧바로 재계산하므로 정확한 시작값일 필요는 없지만,
- * `standingHeight`의 "이전 지지 높이" 비교(`groundedOutcome` 내부)가
- * 사다리 근접면 자체(플랫폼 밖)를 "아직 지지 없음"으로 보게 해 공중
- * 재전이를 유발하지 않도록 `platform.topY`로 맞춘다. */
+ * **진입 위치는 `PLATFORM_ENTRY_MARGIN_M`만큼 플랫폼 안쪽으로 미리
+ * 밀어 넣는다 — 입력 크기와 무관하게 만들기 위해서다(독립 평가 FAIL
+ * F1 수정, 위 `PLATFORM_ENTRY_MARGIN_M` 코멘트가 결함·수정 근거 전문).**
+ * 법선 축(예 `normalX>0`이면 `x`)은 사다리 근접면(`ladder.maxX`, GA-61
+ * 설계상 `platform.minX`와 같다)에서 그 여유만큼 **더 나아간**
+ * 좌표 — `platform.minX + margin`이 아니라 `ladder.maxX + margin`으로
+ * 쓰는 것은 둘이 같은 값(GA-61)이라 결과가 같으면서도 "사다리 근접면
+ * 기준"이라는 의미를 그대로 유지하기 위해서다. 이 여유는 플랫폼 폭의
+ * 절반을 넘지 않도록(`spanAlongNormal / 2`) 한 번 더 죄어 — 어떤 폭의
+ * 플랫폼에도 항상 열린 구간 **안쪽**에 떨어짐을 보장한다(플랫폼 폭이
+ * 여유보다 좁은 극단적 데이터가 미래에 생겨도 반대쪽 경계를 넘어가지
+ * 않는다). 법선과 **수직**인 축(예 `normalX>0`이면 `z`)은 `state.z`
+ * (사다리 진입 이후 줄곧 고정돼 온 실제 좌표)를 그대로 쓴다 — GA-63
+ * (사다리 폭이 플랫폼 대응 축 범위에 좌우 여백을 남기고 완전히
+ * 포함됨)이 보장하는 대로, 사다리 볼륨 안 어떤 z든 플랫폼의 z 개방
+ * 구간에 이미 들어 있다.
+ *
+ * 이렇게 **이미 플랫폼 안쪽에 도달한 위치**에서, 이번 틱의 실제 입력
+ * (`groundVelocity(input)`)으로 `groundedOutcome`을 호출한다 — 입력이
+ * 아무리 작아도(심지어 부동소수점 상 이동량이 0으로 뭉개져도) 시작
+ * 위치 자체가 이미 플랫폼의 열린 구간 안쪽이므로 `standingHeight`가
+ * 언제나 `platform.topY`를 본다. 입력의 **방향**은 여전히 의미가
+ * 있다 — 얼마나 더 안쪽으로 걸어 들어가는지, 그리고 이 함수를 호출할지
+ * 자체(`stepMovement`의 `outcome.vy > 0` 게이트, F3 가드)는 그대로
+ * 입력에 좌우된다. 새 위치 계산 로직을 발명하지 않고 `groundedOutcome`을
+ * 그대로 재사용한다는 원래 설계는 유지했다. */
 function stepOntoPlatform(
   state: MoveState,
   input: MoveInput,
@@ -708,8 +738,10 @@ function stepOntoPlatform(
   walls: readonly WallAABB[],
   boxes: readonly BoxAABB[],
 ): MoveState {
-  const boundaryX = ladder.normalX !== 0 ? (ladder.normalX > 0 ? ladder.maxX : ladder.minX) : state.x
-  const boundaryZ = ladder.normalZ !== 0 ? (ladder.normalZ > 0 ? ladder.maxZ : ladder.minZ) : state.z
+  const spanAlongNormal = ladder.normalX !== 0 ? platform.maxX - platform.minX : platform.maxZ - platform.minZ
+  const entryMargin = Math.min(PLATFORM_ENTRY_MARGIN_M, spanAlongNormal / 2)
+  const boundaryX = ladder.normalX > 0 ? ladder.maxX + entryMargin : ladder.normalX < 0 ? ladder.minX - entryMargin : state.x
+  const boundaryZ = ladder.normalZ > 0 ? ladder.maxZ + entryMargin : ladder.normalZ < 0 ? ladder.minZ - entryMargin : state.z
   const boundaryState: MoveState = { x: boundaryX, y: platform.topY, z: boundaryZ, vx: 0, vy: 0, vz: 0, grounded: true }
   const { vx, vz } = groundVelocity(input)
   return groundedOutcome(boundaryState, vx, vz, walls, boxes)
