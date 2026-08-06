@@ -12,6 +12,7 @@ import { MOVEMENT, NET } from '@shared/constants'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import { PRODUCTION_BOXES } from '@shared/sim/boxes'
 import { LADDER_ALPHA, PRODUCTION_LADDERS } from '@shared/sim/ladders'
+import { PLATFORM_ALPHA } from '@shared/sim/platforms'
 import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 
 /**
@@ -915,5 +916,172 @@ describe('원장 25a-8 — 그물 순증(배치 변경 이전 고정, 결함 재
       expect(observed.every((g) => g === false)).toBe(true)
       expect(observed.length).toBe(5) // 전제 확인
     })
+  })
+})
+
+/**
+ * RQ-33(GA-59) F1(blocker) 재현 — 독립 평가 FAIL,
+ * `_workspace/RQ-33/05_evaluator_report.md` §6 F1 절(ADR-0011 결정 1
+ * "결함 수정 라운드의 재현 테스트" — `src/shared` 결함 재현은 test-writer
+ * 전유물).
+ *
+ * **결함(평가자 격리 실측 그대로 재현)**: `stepOntoPlatform`
+ * (`movement.ts:703-716`)은 플레이어를 사다리 근접면
+ * `x = ladder.maxX = platform.minX`(플랫폼의 **열린 구간 밖** 경계)에
+ * 놓은 뒤, **이번 틱 입력에서 유도한 `vx`**로 안쪽까지 걸어 들어가기를
+ * 기대한다. 그런데 사다리 등반 속도(`ladderOutcome`의 `vy`)는 입력
+ * 방향의 내적 **부호**만 보므로 `dirX`가 아무리 작은 양수여도 등반은
+ * 항상 정상 속도(3 m/s)로 일어나는 반면, 옆걸음 이동 속도
+ * `vx = dirX × speed`는 `dirX`에 **비례**한다 — `vx × TICK_SECONDS`가
+ * 부동소수점 상 `x = -13` 근방의 최소 증분(ulp)보다 작아지면 `x`가
+ * 정확히 그 경계에 **머물러**(플랫폼 열린 구간 밖) `standingHeight`가
+ * 0을 반환하고, 다음 접지 판정이 `y = topY(4)`에서 `y = 0`으로 한 틱에
+ * 스냅된다(`grounded`는 내내 `true`라 착지 전이가 없다) — 원래 F1
+ * 결함("발판 없는 사다리 꼭대기 이탈이 낙하 데미지 없이 지나간다")과
+ * 정확히 같은 증상이 프로덕션 지오메트리에서 되살아난다. `clampDirection`
+ * 은 크기 ≤ 1인 값을 그대로 통과시키고 `GameRoom`의 `move` 파서는
+ * `typeof === 'number'`만 확인하므로, 변조 클라이언트가 극단적으로 작은
+ * `dirX`(예: `1e-15`)를 보내 이 경로를 탈 수 있다 — **RQ-61(서버 권위)
+ * 위반**.
+ *
+ * **이 파일이 고정하는 것 — 특정 상수가 아니라 일반 명제**: "0보다 크고
+ * 1 이하인 어떤 `dirX` 크기로 등반해 꼭대기까지 도달하든, 최종 상태는
+ * 항상 플랫폼 윗면(`grounded:true`, `y = PLATFORM_ALPHA.topY`)에
+ * 수렴해야 한다." 구현이 오늘의 임계값(ulp 부근)을 다른 방식(예: 근접면
+ * 대신 안쪽으로 결정론적 여유를 미리 밀어 넣는 방식)으로 고치면 그
+ * 임계값 자체가 사라질 수 있으므로, 이 테스트는 `1e-15` 단일 값이 아니라
+ * **여러 자릿수(1 ~ `Number.MIN_VALUE`)에 걸친 표**로 같은 명제를
+ * 반복 검사한다 — 구현이 문턱을 어디로 옮기든 그 문턱을 넘는 크기가
+ * 표 안에 있으면 이 테스트가 잡는다.
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실
+ * 타이머 없음 — `stepMovement`는 `PRODUCTION_GEOMETRY`와 무관하게 이
+ * 파일이 직접 조립한 `{ walls: [], boxes: [], ladders: [LADDER_ALPHA],
+ * platforms: [PLATFORM_ALPHA] }`만 본다(값 복제 아님 — `LADDER_ALPHA`·
+ * `PLATFORM_ALPHA` 정본을 그대로 참조, ADR-0010).
+ */
+describe('RQ-33(GA-59) F1(blocker) — 플랫폼 전이는 입력 크기와 무관하게 같은 결과를 내야 한다', () => {
+  const geometry: StaticGeometry = { walls: [], boxes: [], ladders: [LADDER_ALPHA], platforms: [PLATFORM_ALPHA] }
+  const LADDER_CENTER_X = (LADDER_ALPHA.minX + LADDER_ALPHA.maxX) / 2
+  const LADDER_CENTER_Z = (LADDER_ALPHA.minZ + LADDER_ALPHA.maxZ) / 2
+  /** 꼭대기 근처에서 출발해 짧은 창(≈5틱) 안에 전이를 겪게 한다 — 등반
+   * 속도(3 m/s)는 입력 크기와 무관하므로 도달까지의 틱 수도 입력 크기와
+   * 무관하다. */
+  const START_Y = LADDER_ALPHA.maxY - 0.5
+  /** 전이 이후에도 결함 아래에서는 y=0에 계속 머무르고(재상승 없음 —
+   * dirX가 극도로 작아 이후 틱에서도 같은 ulp 문제가 반복된다),
+   * 고쳐지면 y=topY에 계속 머문다 — 어느 쪽이든 몇 틱이면 수렴이
+   * 관측되므로 여유를 넉넉히 둔다. */
+  const TICKS = 20
+
+  /** `Number.MIN_VALUE`를 포함해 표준 부동소수점이 표현하는 가장 작은
+   * 유한 값까지 걸쳐, 평가자가 실측한 정확한 임계값(1e-15 부근) 하나에
+   * 결합되지 않는다 — 위 docblock 참고. `label`은 `it.each` 제목 보간용
+   * (`sim-movement-boxes.test.ts`의 `$label` 관례와 동일). */
+  const MAGNITUDE_CASES = [
+    { label: '1', magnitude: 1 },
+    { label: '0.5', magnitude: 0.5 },
+    { label: '0.1', magnitude: 0.1 },
+    { label: '1e-3', magnitude: 1e-3 },
+    { label: '1e-6', magnitude: 1e-6 },
+    { label: '1e-9', magnitude: 1e-9 },
+    { label: '1e-12', magnitude: 1e-12 },
+    { label: '1e-14', magnitude: 1e-14 },
+    { label: '1e-15', magnitude: 1e-15 },
+    { label: '1e-16', magnitude: 1e-16 },
+    { label: 'Number.MIN_VALUE', magnitude: Number.MIN_VALUE },
+  ]
+
+  function climbToPlatformWith(dirXMagnitude: number): MoveState {
+    let state: MoveState = { x: LADDER_CENTER_X, y: START_Y, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const input: MoveInput = { dirX: dirXMagnitude, dirZ: 0, mode: 'run', jump: false }
+    for (let i = 0; i < TICKS; i += 1) {
+      state = stepMovement(state, input, geometry)
+    }
+    return state
+  }
+
+  it.each(MAGNITUDE_CASES)('dirX 크기 $label로 등반 입력을 유지해도 플랫폼 윗면(topY)에 접지 상태로 수렴한다', ({ magnitude }) => {
+    const final = climbToPlatformWith(magnitude)
+    expect(final.grounded).toBe(true)
+    expect(final.y).toBeCloseTo(PLATFORM_ALPHA.topY, 6)
+  })
+
+  it('서로 다른 입력 크기 전부가 정확히 같은 최종 y를 낸다(표 형태 개별 단언과 별개로, 크기 의존성 자체를 직접 비교로도 고정 — 회귀가 표에 없는 다른 크기에서만 발생해도 이 비교가 "결과가 입력 크기의 함수가 아니다"라는 더 강한 명제를 잡는다)', () => {
+    const finalYs = MAGNITUDE_CASES.map(({ magnitude }) => climbToPlatformWith(magnitude).y)
+    for (const y of finalYs) {
+      expect(y).toBeCloseTo(PLATFORM_ALPHA.topY, 6)
+    }
+    // 전제 확인 — 실제로 서로 다른 크기를 썼다(공허 통과 방지).
+    const magnitudes = MAGNITUDE_CASES.map((c) => c.magnitude)
+    expect(new Set(magnitudes).size).toBe(magnitudes.length)
+  })
+})
+
+/**
+ * RQ-33(GA-59) F3(minor) 재현 — 독립 평가 FAIL,
+ * `_workspace/RQ-33/05_evaluator_report.md` §6 F3 절. RQ-21 v1.4
+ * "입력이 없으면(dirX=dirZ=0) 그 높이에 정지한다"는 사다리 꼭대기
+ * (`y = maxY`)에서도 성립해야 한다 — `stepMovement`의 전이 게이트
+ * `outcome.vy > 0`(`movement.ts:821`)이 정확히 이것을 지킨다: 무입력이면
+ * `ladderOutcome`의 `vy`가 0이라 이 게이트가 거짓이 되어 플랫폼 전이
+ * (`findAdjacentPlatform`/`stepOntoPlatform`) 자체를 시도하지 않고,
+ * 대신 `isWithinLadderY`(폐구간)가 그대로 사다리 정지 물리를 반환한다.
+ *
+ * 평가자가 격리 워크트리에서 이 게이트를 제거하는 변이(`if (outcome.vy >
+ * 0 && …)` → `if (…)`)를 넣었더니 전체 스위트(683건)가 무사통과했다 —
+ * 어떤 테스트도 "무입력 시 정지"를 사다리 **꼭대기**에서 직접 검사하지
+ * 않았기 때문이다(다른 높이에서의 "무입력 정지"는 기존 GA-54① 절 등이
+ * 이미 고정하지만, `y = maxY`는 플랫폼 전이 게이트가 새로 추가된 지점이라
+ * 별도 좌표가 필요하다). 게이트가 사라지면 사다리 꼭대기에 무입력으로
+ * 서 있는 플레이어가 저절로 플랫폼 위로 옆걸음한다 — RQ-21 위반인데
+ * 아무도 못 잡는 상태였다.
+ *
+ * **이 파일이 고정하는 것**: `y = ladder.maxY`, 무입력(`dirX=dirZ=0`)을
+ * 여러 틱 유지해도 `x`·`y`·`z`가 전혀 변하지 않고(플랫폼 쪽으로도, 다른
+ * 어디로도 이동하지 않는다) `grounded`가 계속 `true`로 유지된다.
+ *
+ * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실
+ * 타이머 없음.
+ */
+describe('RQ-33(GA-59) F3(minor) — 사다리 꼭대기에서 무입력이면 플랫폼으로 전이하지 않고 그 높이에 정지한다', () => {
+  const geometry: StaticGeometry = { walls: [], boxes: [], ladders: [LADDER_ALPHA], platforms: [PLATFORM_ALPHA] }
+  const LADDER_CENTER_X = (LADDER_ALPHA.minX + LADDER_ALPHA.maxX) / 2
+  const LADDER_CENTER_Z = (LADDER_ALPHA.minZ + LADDER_ALPHA.maxZ) / 2
+  const NO_INPUT_AT_TOP: MoveInput = { dirX: 0, dirZ: 0, mode: 'run', jump: false }
+
+  it('y=maxY에서 무입력 1틱 → x·y·z·grounded가 전부 그대로 유지된다(플랫폼 쪽으로 옆걸음하지 않는다)', () => {
+    const atTop: MoveState = { x: LADDER_CENTER_X, y: LADDER_ALPHA.maxY, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const next = stepMovement(atTop, NO_INPUT_AT_TOP, geometry)
+
+    expect(next.x).toBeCloseTo(LADDER_CENTER_X, 9)
+    expect(next.y).toBeCloseTo(LADDER_ALPHA.maxY, 9)
+    expect(next.z).toBeCloseTo(LADDER_CENTER_Z, 9)
+    expect(next.grounded).toBe(true)
+    // 전제 확인 — 플랫폼 윗면 높이와 사다리 꼭대기 높이가 같다는 GA-62
+    // 전제가 이 자리에서도 성립한다(다른 값이면 아래 "정지" 단언이
+    // "우연히 플랫폼과 같은 높이라 정지처럼 보인" 착시일 수 있다 —
+    // x·z 불변 단언이 그 착시를 이미 배제하지만, y까지 명시적으로
+    // 재확인한다).
+    expect(LADDER_ALPHA.maxY).toBeCloseTo(PLATFORM_ALPHA.topY, 9)
+  })
+
+  it('5틱 연속 무입력에도 계속 같은 자리에 정지한다(1틱만의 우연이 아니다)', () => {
+    let state: MoveState = { x: LADDER_CENTER_X, y: LADDER_ALPHA.maxY, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    for (let i = 0; i < 5; i += 1) {
+      state = stepMovement(state, NO_INPUT_AT_TOP, geometry)
+      expect(state.x).toBeCloseTo(LADDER_CENTER_X, 9)
+      expect(state.y).toBeCloseTo(LADDER_ALPHA.maxY, 9)
+      expect(state.z).toBeCloseTo(LADDER_CENTER_Z, 9)
+      expect(state.grounded).toBe(true)
+    }
+  })
+
+  it('양성 대조군 — 같은 위치·같은 틱 수에서 등반 방향 입력(dirX>0)을 주면(F1 describe와 동일 성질) 플랫폼으로 전이해 x가 변한다(무입력일 때만 정지한다는 대비, 항상 정지하는 무성 구현을 배제)', () => {
+    const atTop: MoveState = { x: LADDER_CENTER_X, y: LADDER_ALPHA.maxY, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const CLIMB_INPUT: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+    const next = stepMovement(atTop, CLIMB_INPUT, geometry)
+    expect(next.x).not.toBeCloseTo(LADDER_CENTER_X, 6) // 플랫폼 쪽으로 실제로 이동했다
+    expect(next.grounded).toBe(true)
   })
 })

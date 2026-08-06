@@ -3,6 +3,7 @@ import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/moveme
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import { PRODUCTION_BOXES, BOX_ALPHA } from '@shared/sim/boxes'
 import { LADDER_ALPHA } from '@shared/sim/ladders'
+import { PLATFORM_ALPHA } from '@shared/sim/platforms'
 import {
   createClientPredictor,
   type AuthoritativeMoveState,
@@ -641,5 +642,96 @@ describe('RQ-62/RQ-21 REV(coder 변이 #4 대응, 원장 25a-5 회수 근거 완
     expect(reconciled).toEqual(expected)
     expect(reconciled.grounded).toBe(true)
     expect(reconciled.y).toBeGreaterThan(initial.y)
+  })
+})
+
+/**
+ * RQ-33 REV(순증, 독립 평가 FAIL F2 대응, `_workspace/RQ-33/05_evaluator
+ * _report.md` §6 F2 절). `src/client/net/prediction.ts`가 `stepMovement`를
+ * 부르는 두 지점(`applyInput`·`reconcile`의 재생 루프) 모두 서버
+ * (`GameRoom.ts`)와 같은 `PRODUCTION_GEOMETRY`(`@shared/sim/geometry`,
+ * 플랫폼 포함)를 주입해야 한다 — 위 F3(벽)·RQ-22(박스)·RQ-21(사다리) REV와
+ * 완전히 같은 종류의 결함이다. 그러지 않으면 서버는 사다리 꼭대기에서
+ * 플랫폼으로 옆걸음 전이하는 세계를, 클라는 그 전이가 없는(요요 낙하)
+ * 세계를 시뮬레이션해 클라 예측이 발산하다가 서버 스냅샷이 도착할 때마다
+ * 다시 플랫폼 높이로 되돌아가는 고무줄 현상이 생긴다(RQ-61 위반은 아니다
+ * — 최종 값은 항상 서버가 이긴다 — 그러나 RQ-62 예측의 목적을 깨뜨린다).
+ *
+ * **왜 필요한가(평가자 실측, MUT-6)**: `prediction.ts`의 두 호출부를
+ * `{ ...PRODUCTION_GEOMETRY, platforms: [] }`로 바꿔 클라 예측만 플랫폼을
+ * 못 보게 만들었더니 전체 스위트(683건)가 무사통과했다 — 벽·박스·사다리는
+ * 각각 전용 REV describe(위 세 절)가 있어 대응 변이가 나면 즉시 죽지만,
+ * 이 저장소가 배선할 **네 번째** 지오메트리 종류(플랫폼)만 그물이 비어
+ * 있었다. 원장 24y도 이 파일을 이 라운드의 갱신 대상 4개 중 하나로
+ * 명시했다.
+ *
+ * **좌표**: `LADDER_ALPHA`·`PLATFORM_ALPHA`(각각 `@shared/sim/ladders`·
+ * `@shared/sim/platforms`)에서 유도한다(리터럴 금지, ADR-0010) — 이
+ * 대역은 `PRODUCTION_WALLS`·`PRODUCTION_BOXES`와 겹치지 않는다
+ * (`PLATFORM_ALPHA` x:[-13,-9]는 벽 대역 15~16·박스 대역 11~17.3 밖 —
+ * `tests/unit/rq-33-platform-geometry.test.ts`의 "회귀 안전 대역" 확인과
+ * 동일 결론, 벽·박스와 겹치지 않는 사다리에 접해 있으므로 플랫폼도
+ * 같은 결론을 상속한다). 그래서 기대값 계산에 `ladders: [LADDER_ALPHA],
+ * platforms: [PLATFORM_ALPHA]`만 주입해도(벽·박스는 `[]`) 실제
+ * `PRODUCTION_GEOMETRY`로 계산한 값과 정확히 일치한다.
+ *
+ * **시작 상태·틱 수**: 위 RQ-21 REV describe와 동일한 시작점(사다리
+ * 중간 높이 `y=1`)에서 등반 법선 방향 입력을 꼭대기를 넘어 옆걸음
+ * 전이가 끝날 때까지 유지한다. `TICKS=40` — 최소 필요치
+ * (`(maxY-1)/DY_PER_TICK`=30틱 + 전이 여유)보다 넉넉하다.
+ *
+ * **양성 대조(플랫폼이 실제로 개입했다는 증거)**: 플랫폼이 주입되지
+ * 않으면(사다리만 있는 세계) 이 입력열은 결국 `y=0`(발판 없는 낙하,
+ * `sim-movement-ladders.test.ts`의 "F1(합성, RQ-33 이후)" 경로)으로
+ * 귀결된다 — 플랫폼이 있으면 반대로 `y=PLATFORM_ALPHA.topY`에 접지해
+ * 선다. `y ≈ PLATFORM_ALPHA.topY`가 플랫폼 개입의 직접 증거다.
+ */
+describe('RQ-62/RQ-33 REV(평가 FAIL F2 대응): 예측·재조정이 서버와 동일한 프로덕션 플랫폼을 반영한다', () => {
+  const LADDER_CENTER_X = (LADDER_ALPHA.minX + LADDER_ALPHA.maxX) / 2
+  const LADDER_CENTER_Z = (LADDER_ALPHA.minZ + LADDER_ALPHA.maxZ) / 2
+  const TICKS = 40
+  /** `LADDER_ALPHA.normalX === 1`이므로 dirX=1이 면 쪽(상승) 입력이다. */
+  const TOWARD_LADDER_FACE: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+
+  it('RQ-62/RQ-33: applyInput — 등반 입력을 꼭대기 너머까지 유지하면 predicted가 서버와 동일하게 플랫폼 윗면에 도달해 선다(서버와 같은 지오메트리)', () => {
+    const initial: MoveState = { x: LADDER_CENTER_X, y: 1, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    let expected = initial
+    let lastPredicted: MoveState = initial
+    for (let i = 0; i < TICKS; i += 1) {
+      expected = stepMovement(expected, TOWARD_LADDER_FACE, { walls: [], boxes: [], ladders: [LADDER_ALPHA], platforms: [PLATFORM_ALPHA] })
+      lastPredicted = predictor.applyInput(TOWARD_LADDER_FACE).predicted
+    }
+
+    expect(lastPredicted).toEqual(expected)
+    // 플랫폼이 실제로 개입했다는 전제 확인 — 위 docblock "양성 대조" 참고.
+    expect(lastPredicted.grounded).toBe(true)
+    expect(lastPredicted.y).toBeCloseTo(PLATFORM_ALPHA.topY, 6)
+  })
+
+  it('RQ-62/RQ-33: reconcile — 미확인 입력을 재생할 때도 프로덕션 플랫폼을 반영해, 재조정 결과가 서버와 동일하게 플랫폼 윗면에 도달한다', () => {
+    const initial: MoveState = { x: LADDER_CENTER_X, y: 1, z: LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true }
+    const predictor: ClientPredictor = createClientPredictor(initial)
+
+    const inputs: MoveInput[] = []
+    for (let i = 0; i < TICKS; i += 1) {
+      inputs.push(TOWARD_LADDER_FACE)
+      predictor.applyInput(TOWARD_LADDER_FACE)
+    }
+
+    // 서버가 아직 아무 입력도 확인하지 못했다고 가정한다 — 버퍼의 입력
+    // 전부가 재생 대상이다.
+    const snapshot: AuthoritativeMoveState = { ...initial, lastProcessedInputSeq: 0 }
+    const reconciled = predictor.reconcile(snapshot)
+
+    let expected = initial
+    for (const input of inputs) {
+      expected = stepMovement(expected, input, { walls: [], boxes: [], ladders: [LADDER_ALPHA], platforms: [PLATFORM_ALPHA] })
+    }
+
+    expect(reconciled).toEqual(expected)
+    expect(reconciled.grounded).toBe(true)
+    expect(reconciled.y).toBeCloseTo(PLATFORM_ALPHA.topY, 6)
   })
 })
