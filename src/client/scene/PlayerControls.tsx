@@ -133,16 +133,21 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       const { yaw } = mouseLook.getAngles()
       const world = rotateLocalMoveDirection(local, yaw)
       // RQ-40 M4: 채팅 게이트는 `gatedActions.sendMoveInput` 안에서 처리한다.
-      gatedActions.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
+      const sent = gatedActions.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
 
       // RQ-54 크로스헤어 확산(원장 24e) — **여기서 계산하는 이유**: 이 루프는
       // 30Hz이고 `useFrame`(60fps 렌더 루프)이 아니다. 렌더 루프에서 돌리면
       // 프레임마다 store를 건드려 ADR-0001 프레임 예산과 부딪힌다.
-      // 회전 전 로컬 입력(`local`)을 쓴다 — tier 판정은 "수평 입력이 있는가"만
-      // 보므로 yaw 회전은 무관하고, 서버도 회전된 벡터의 0 여부로 같은 판정을
-      // 한다(RQ-90 v1.9). `setCrosshairGapPx`가 값이 바뀔 때만 `set`한다.
+      // ⚠️ **게이트가 실제로 내보낸 값(`sent`)을 쓴다** — 회전 전 원시 입력
+      // (`local`)이 아니다(PR #61 리뷰 blocker). tier 판정은 "수평 입력이
+      // 있는가"만 보므로 yaw 회전 자체는 무관하지만(서버도 회전된 벡터의 0
+      // 여부로 같은 판정을 한다, RQ-90 v1.9), **채팅 포커스 중에는 원시 입력과
+      // 전송 값이 갈라진다**: `movementInput`은 `window`에 리스너를 걸고 포커스를
+      // 보지 않으므로 채팅창에 "wasd"를 치면 `local`이 이동 tier가 되는데 서버가
+      // 받는 값은 0이다. 그때 원시 입력으로 그리면 화면만 콘 ×2를 표시한다.
+      // `setCrosshairGapPx`가 값이 바뀔 때만 `set`한다.
       const predicted = store.getState().selfPredictedState
-      uiStore.getState().setCrosshairGapPx(crosshairGapPx(local, predicted?.grounded ?? true))
+      uiStore.getState().setCrosshairGapPx(crosshairGapPx(sent, predicted?.grounded ?? true))
     }, NET.TICK_MS)
 
     return () => {

@@ -12,13 +12,15 @@ import { LockHint } from '@client/hud/LockHint'
 import { ChatPanel } from '@client/hud/ChatPanel'
 
 /**
- * 클라이언트 → Colyseus 접속 엔드포인트. 같은 오리진의 ws(s) 주소를
- * 쓴다 — 프로덕션은 Nginx가 HTTP/WS를 같은 오리진으로 프록시하고
- * (ADR-0009), 개발 중에는 `vite.config.ts`의 `/matchmake` 프록시가
- * 5173 → 2567). ⚠️ **개발에서는 그 프록시를 쓰지 않는다** — 룸 WebSocket 경로(`/<processId>/<roomId>`)가 프록시 항목에 매칭되지 않아 접속이 무한 대기한다(원장 24e-1).
- */
-/** 원장 24e-1 — 결정 규칙은 `@client/net/endpoint`가 갖는다(순수, 단위 테스트).
- * 여기서 인라인으로 조립하던 것이 개발 모드 무한 대기 결함의 자리였다. */
+ * 클라이언트 → Colyseus 접속 엔드포인트.
+ *
+ * **운영**은 페이지와 같은 오리진을 쓴다 — Nginx가 HTTP/WS를 같은 오리진으로
+ * 프록시한다(ADR-0009). **개발**은 게임 서버(2567)에 직결한다 — 룸 WebSocket
+ * 경로(`/<processId>/<roomId>`)가 Vite의 `/matchmake` 프록시 항목에 매칭되지
+ * 않아 접속이 무한 대기하기 때문이다(원장 24e-1).
+ *
+ * 결정 규칙 자체는 `@client/net/endpoint`가 갖는다(순수 함수, 단위 테스트) —
+ * 여기서 인라인으로 조립하던 것이 그 결함의 자리였다. */
 const ENDPOINT = resolveGameEndpoint(window.location, import.meta.env.DEV)
 
 /**
@@ -107,7 +109,7 @@ export function App() {
           <div className="hud" aria-live="polite">
             {/* RQ-54 정식 크로스헤어(원장 24e) — DESIGN.md §3.1 십자 4선.
                 간격은 `--crosshair-gap-live`(= 기본 간격 × 콘 배율)로 들어오고
-                그 값은 `@client/hud/crosshair`가 계산한다. 22b의 임시 점을
+                그 값은 `@client/hud/crosshairSpread`가 계산한다. 22b의 임시 점을
                 대체한다. `aria-hidden` — 조준점은 스크린리더에 의미가 없다. */}
             <Crosshair uiStore={uiStore} />
             <LockHint uiStore={uiStore} />

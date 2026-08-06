@@ -7,6 +7,8 @@ import {
   gateMoveInput,
   type ChatGatedConnection,
 } from '@client/input/chatInputGate'
+import { crosshairGapPx } from '@client/hud/crosshairSpread'
+import { CROSSHAIR } from '@client/config/design-tokens'
 
 /**
  * RQ-40 채팅 입력 차단 — 순수 로직 계약 단위 테스트.
@@ -206,5 +208,46 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     gated.fire(RAW_DIRECTION, 137)
 
     expect(send).toHaveBeenCalledWith('fire', { ...RAW_DIRECTION, rttMs: 137 })
+  })
+
+  /**
+   * PR #61 리뷰 blocker 회귀 가드 — 크로스헤어가 게이트를 우회한 원시 입력으로
+   * 계산되던 결함. `movementInput`은 `window`에 리스너를 걸고 포커스를 보지
+   * 않으므로 채팅창에 "wasd"를 치면 원시 입력이 이동 tier가 되는데, 서버가 받는
+   * 값은 게이트로 0이다. 두 값이 갈라지는 그 구간에서 화면만 콘 배율을 부풀렸다.
+   *
+   * 여기서 고정하는 것은 **choke point가 전송값을 돌려준다**는 계약이다 — 이것이
+   * 있어야 새 소비처가 `gateMoveInput`을 다시 부르지 않고도(분산 체크 부활 없이,
+   * fe.md) 게이트된 값을 얻는다.
+   */
+  describe('PR #61 blocker: 게이트가 실제 전송값을 반환한다', () => {
+    it('채팅 포커스 중 반환값은 전송된 값과 같고 방향이 0이다', () => {
+      const { connection } = createConnectionStub()
+      const gated = createChatGatedActions(() => true, connection)
+
+      const returned = gated.sendMoveInput(RAW_INPUT)
+
+      const sent = (connection.sendMoveInput as ReturnType<typeof vi.fn>).mock.calls[0]![0] as MoveInput
+      expect(returned).toEqual(sent)
+      expect(returned.dirX).toBe(0)
+      expect(returned.dirZ).toBe(0)
+    })
+
+    it('포커스가 없으면 반환값이 입력 그대로다 — 게이트가 평상시를 건드리지 않는다', () => {
+      const { connection } = createConnectionStub()
+      const gated = createChatGatedActions(() => false, connection)
+
+      expect(gated.sendMoveInput(RAW_INPUT)).toEqual(RAW_INPUT)
+    })
+
+    it('그 반환값으로 계산한 크로스헤어 간격은 정지 tier와 같다 — 화면과 서버가 갈라지지 않는다', () => {
+      const { connection } = createConnectionStub()
+      const gated = createChatGatedActions(() => true, connection)
+
+      const returned = gated.sendMoveInput({ ...RAW_INPUT, dirX: 1, dirZ: 1, mode: 'run' })
+
+      // 결함이 있던 형태: 원시 입력으로 계산하면 이동 tier가 되어 이 단언이 깨진다.
+      expect(crosshairGapPx(returned, true)).toBe(CROSSHAIR.gapPx)
+    })
   })
 })

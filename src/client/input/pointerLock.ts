@@ -17,31 +17,32 @@
  * - **문서 비포커스**: 다른 창을 보고 있으면 거절된다.
  *
  * 최신 브라우저의 `requestPointerLock()`은 **Promise를 반환**한다(구형은
- * `undefined`) — 둘 다 다루고 `pointerlockerror` 이벤트도 함께 듣는다. 실패는
- * `onError`로 알린다. **이 모듈은 UI를 만들지 않는다** — 무엇을 보여줄지는
- * 호출부의 몫이다.
+ * `undefined`) — 둘 다 다루고 `pointerlockerror` 이벤트도 함께 듣는다.
+ * Chrome은 실패 시 **둘 다** 내므로 요청 1회당 1번만 경고한다(PR #61 리뷰 minor).
+ *
+ * **이 모듈은 UI를 만들지 않는다.** 사용자에게 보이는 신호는 `LockHint`가
+ * 맡는다 — 락이 걸리지 않으면 안내가 계속 떠 있다. 여기 남는 것은 개발자용
+ * 콘솔 경고뿐이다(원인을 증상에서 추측하지 않게 한다).
  *
  * 렌더 계층 면제 대상 — 이 파일 자체는 테스트 없음(DOM API 배선), tsc·lint·
  * 빌드·수동 확인이 게이트다(ADR-0008 §6).
  */
 
-export interface PointerLockOptions {
-  /** 락 요청이 거절됐을 때. 이유 문자열은 진단용이며 사용자 문구가 아니다. */
-  onError?: (reason: string) => void
-}
-
-export function attachPointerLock(canvas: HTMLCanvasElement, options: PointerLockOptions = {}): () => void {
+export function attachPointerLock(canvas: HTMLCanvasElement): () => void {
   const doc = canvas.ownerDocument
+  /** 이번 요청이 아직 경고를 내지 않았는가. Promise 거절과 `pointerlockerror`가
+   * 같은 실패로 둘 다 오므로, 요청 단위로 1회만 통과시킨다. */
+  let notifyArmed = false
 
   function notify(reason: string): void {
-    options.onError?.(reason)
-    // 사용자 확인이 유일한 그물인 계층이라(ADR-0008 §6) 콘솔에도 남긴다 —
-    // 증상만 보고 원인을 추측하지 않게 한다.
+    if (!notifyArmed) return
+    notifyArmed = false
     console.warn(`[pointerLock] 락 요청이 거절됐다: ${reason}`)
   }
 
   function requestLock(): void {
     if (doc.pointerLockElement === canvas) return
+    notifyArmed = true
     let result: unknown
     try {
       result = canvas.requestPointerLock()
