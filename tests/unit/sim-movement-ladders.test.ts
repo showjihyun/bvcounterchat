@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   stepMovement,
+  EMPTY_GEOMETRY,
   type BoxAABB,
   type LadderVolume,
   type MoveInput,
@@ -570,27 +571,46 @@ describe('RQ-21 사다리 이동 — 순수 틱 함수 주입 계약 (GA-54 뒷�
 })
 
 /**
- * F1 재현 — 사다리 꼭대기 이탈이 RQ-18을 우회한다(독립 평가 FAIL,
+ * F1(합성, RQ-33 이후) — 지지면 없는 사다리 꼭대기 이탈이 RQ-18을
+ * 우회하지 않는지 고정하는 회귀 가드(원래 독립 평가 FAIL,
  * `_workspace/RQ-21-ladder/03_evaluator_report.md` F1 절, ADR-0011 결정 1
  * "결함 수정 라운드의 재현 테스트" — `src/shared` 결함 재현은 test-writer
  * 전유물).
  *
- * **결함(평가자 실측 그대로 재현)**: 발판 없는 프로덕션 사다리(`LADDER_ALPHA`,
- * `maxY=4`)에서 상승을 유지해 꼭대기를 넘기면, 현재 `stepMovement`는
- * 사다리 이탈 폴백에서 원래 `state`(꼭대기 넘기 **직전**, 여전히 사다리
- * 볼륨 안) 기준으로 `stepGrounded`를 호출한다 — `standingHeight`가 0(발판
- * 없음)이라 **그 자리에서 즉시 `y=0`으로 스냅**된다(`grounded` 유지 `true`,
- * 중간 낙하 구간 없음). `GameRoom.trackFallDamage`는 `next.grounded ===
- * false`인 동안에만 `fallPeakY`를 갱신하므로(`GameRoom.ts:857-862`), 이
- * 스냅은 착지 전이 자체가 아니라서 낙하 데미지가 전혀 적용되지 않는다.
- * 그리고 스냅된 위치(x는 그 틱의 접지 이동으로 0.2m 전진, y=0)가 여전히
- * 사다리 XZ·Y 범위 안이라 **다음 틱에 다시 사다리에 붙잡혀 재상승** —
- * 4↔0 무한 순환(요요)이 된다(평가자 PROBE_A/PROBE_E 실측과 정확히 일치,
- * 아래 각 `it()`이 그 재현이다).
+ * **원래 결함(평가자 실측 그대로 재현, 역사적 기록)**: 발판 없는
+ * 프로덕션 사다리(당시 `LADDER_ALPHA`, `maxY=4`)에서 상승을 유지해
+ * 꼭대기를 넘기면, 당시 `stepMovement`는 사다리 이탈 폴백에서 원래
+ * `state`(꼭대기 넘기 **직전**, 여전히 사다리 볼륨 안) 기준으로
+ * `stepGrounded`를 호출했다 — `standingHeight`가 0(발판 없음)이라
+ * **그 자리에서 즉시 `y=0`으로 스냅**됐다(`grounded` 유지 `true`, 중간
+ * 낙하 구간 없음). `GameRoom.trackFallDamage`는 `next.grounded ===
+ * false`인 동안에만 `fallPeakY`를 갱신하므로, 이 스냅은 착지 전이
+ * 자체가 아니라서 낙하 데미지가 전혀 적용되지 않았다. 그리고 스냅된
+ * 위치가 여전히 사다리 XZ·Y 범위 안이라 **다음 틱에 다시 사다리에
+ * 붙잡혀 재상승** — 4↔0 무한 순환(요요)이 됐다(평가자 PROBE_A/PROBE_E
+ * 실측과 정확히 일치, 아래 각 `it()`이 그 재현이다). RQ-21 v1.4 마지막
+ * 문장("볼륨을 벗어나면 즉시 중력이 복귀한다")이 이 경로에서 거짓이었다
+ * — 실제로 복귀한 것은 중력(자유낙하)이 아니라 즉각적인 접지 스냅이었다.
  *
- * **RQ-21 v1.4 마지막 문장("볼륨을 벗어나면 즉시 중력이 복귀한다")이 이
- * 경로에서 거짓이다** — 실제로 복귀하는 것은 중력(자유낙하)이 아니라
- * 즉각적인 접지 스냅이다.
+ * **REV 2026-08-06(RQ-33 v2.0) — `LADDER_ALPHA` 참조를 합성(synthetic)
+ * `LadderVolume`로 교체했다.** 사용자 결정(2026-08-06,
+ * `_workspace/RQ-33/03_test-writer_f1-migration.md` §1): RQ-33이 "각
+ * 사다리는 플랫폼 측면에 접해야 한다"(GA-61/62)를 명문화하면서, 위
+ * "원래 결함"이 전제한 상황("`LADDER_ALPHA` 꼭대기에 발판이 없다")이
+ * 실제 `PRODUCTION_GEOMETRY`에서는 더 이상 성립하지 않는다 — 모든
+ * 프로덕션 사다리가 이제 항상 인접 플랫폼을 갖는다. 이 describe가
+ * 여전히 `LADDER_ALPHA`를 참조하면, GA-59(`tests/integration/rq-33
+ * -platform-reach.test.ts` — 같은 위치·같은 입력에서 "플랫폼에
+ * 올라선다"를 요구)를 구현하는 순간 이 테스트가 깨진다(두 테스트가
+ * 정반대를 요구하는 모순). 아래 `SYNTHETIC_LADDER_NO_PLATFORM`은
+ * `@shared/sim/ladders`의 어떤 프로덕션 값도 참조하지 않는 로컬
+ * 리터럴이다 — `stepMovement`는 순수 함수라 "이 좌표가 실제 맵의
+ * 어디인가"와 무관하게 **주입된 지오메트리만으로** 동작이 결정된다.
+ * 즉 이 테스트가 고정하는 것은 "`LADDER_ALPHA`가 안전하다/위험하다"가
+ * 아니라 **"`stepMovement`에 지지면 없는 사다리 이탈이 주어지면
+ * 항상"** 아래 3가지 성질을 지킨다는 **일반 계약**이다 — 프로덕션에
+ * 그런 사다리가 실제로 존재하는지와 완전히 독립적이다(향후 새 사다리가
+ * 플랫폼 없이 추가되는 실수를 하더라도 이 계약은 여전히 유효하다).
  *
  * **이 파일이 고정하는 것(관측 가능한 행동만, 구현 자유)**:
  * 1. 꼭대기를 넘기는 바로 그 틱의 결과는 `grounded: true`(접지 스냅)가
@@ -598,7 +618,15 @@ describe('RQ-21 사다리 이동 — 순수 틱 함수 주입 계약 (GA-54 뒷�
  *    직접 번역.
  * 2. 그 전이 이후 궤적에 순간이동(한 틱 사이 y가 사다리 범위의 상당 부분을
  *    건너뛰는 불연속)이 없어야 한다 — 물리적으로 연속적인 낙하여야 한다.
- * 3. (양성 대조군 — 과잉수정 방지) 경계에 닿지 않는 등반·하강·정지 중에는
+ * 3. 유한 틱(아래 `POST_EXIT_OBSERVE_TICKS`) 안에 실제로 공중(낙하)
+ *    구간을 거친 뒤 지지 높이(0)로 착지하는 시점이 존재해야 한다 —
+ *    "요요"(무한히 스냅↔재상승만 반복하고 결코 실제 낙하로 전이하지
+ *    않는 진동)에 빠지지 않는다는 것을 **유한 회 틱 전진으로 수렴을
+ *    단언**하는 형태로 고정한다(원래 통합 레벨 F1의 "타임아웃 자체가
+ *    결함 재현" — 결함 아래에서는 grounded가 결코 false가 되지 않아
+ *    무기한 대기하던 것 — 을 결정론적 유한 루프로 옮긴 것, ADR-0008
+ *    §2 결정론 요구).
+ * 4. (양성 대조군 — 과잉수정 방지) 경계에 닿지 않는 등반·하강·정지 중에는
  *    여전히 `grounded: true`가 유지돼야 한다 — 기존 "RQ-18 상호작용" 절의
  *    명제가 이 수정으로 깨지지 않는지 확인한다.
  *
@@ -606,34 +634,58 @@ describe('RQ-21 사다리 이동 — 순수 틱 함수 주입 계약 (GA-54 뒷�
  * 정점 높이, 착지까지 걸리는 정확한 틱 수, 착지 이후 같은 입력을 계속
  * 유지했을 때 사다리에 다시 붙잡혀 재등반하는지 여부(그것은 "요요 버그"가
  * 아니라 플레이어가 계속 오르려는 정상적 반복이다 — 각 이탈이 실제 낙하와
- * 데미지를 동반하는 한 문제가 아니다). 데미지 적용 자체(HP 감소)는 통합
- * 레벨(`tests/integration/rq-21-ladder-vertical-movement.test.ts`)이 맡는다
- * — `trackFallDamage`가 `GameRoom`에 있어 이 파일(순수 함수)에서는 관측할
- * 수 없다.
+ * 데미지를 동반하는 한 문제가 아니다). 데미지 적용 자체(HP 감소, RQ-18
+ * 일반 축)는 `tests/integration/rq-18-fall-damage.test.ts`(GA-44/45/46,
+ * 화이트박스 높이 주입으로 이미 사다리와 무관하게 전수 검증)가 맡는다 —
+ * `trackFallDamage`가 `GameRoom`에 있어 이 파일(순수 함수)에서는 관측할
+ * 수 없다. "꼭대기 발판 **있는** 이탈"(현재 프로덕션의 실제 모습)의
+ * 서버 확정 검증은 `tests/integration/rq-33-platform-reach.test.ts`의
+ * GA-59가 맡는다.
  *
  * **결정론(ADR-0008)**: 순수 산술, `Math.random()`·`Date.now()`·실 타이머
- * 없음.
+ * 없음 — `EMPTY_GEOMETRY` 기반에 사다리 하나만 주입해 다른 지오메트리와도
+ * 완전히 독립적이다.
  */
-describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요요)이 아니라 공중 전이여야 한다', () => {
-  /** 평가자 재현 값과 동일(`LADDER_ALPHA.maxY - 0.15` = 3.85, 상수에서
-   * 유도 — ADR-0010, 리터럴 금지) — 몇 틱 만에 꼭대기를 넘겨 재현 창을
-   * 짧게 유지한다. */
-  const EXIT_TEST_START_Y = LADDER_ALPHA.maxY - 0.15
+describe('F1(합성, RQ-33 이후) — 지지면 없는 사다리 꼭대기 이탈은 즉시 접지 스냅(요요)이 아니라 공중 전이여야 한다', () => {
+  /** 프로덕션 좌표를 참조하지 않는 로컬 합성 사다리(위 docblock REV
+   * 참고) — `@shared/sim/ladders`의 어떤 export도 쓰지 않는다. 폭·형태는
+   * 원래 F1 재현이 쓰던 값(수직 범위 0~4m)과 같게 유지해 아래 파생 상수·
+   * 단언의 수치적 의미는 그대로 보존한다. */
+  const SYNTHETIC_LADDER_NO_PLATFORM: LadderVolume = { minX: 0, maxX: 1, minZ: 0, maxZ: 3, minY: 0, maxY: 4, normalX: 1, normalZ: 0 }
+  const SYNTHETIC_LADDER_CENTER_X = (SYNTHETIC_LADDER_NO_PLATFORM.minX + SYNTHETIC_LADDER_NO_PLATFORM.maxX) / 2
+  const SYNTHETIC_LADDER_CENTER_Z = (SYNTHETIC_LADDER_NO_PLATFORM.minZ + SYNTHETIC_LADDER_NO_PLATFORM.maxZ) / 2
+
+  function createSyntheticLadderState(overrides: Partial<MoveState> = {}): MoveState {
+    return { x: SYNTHETIC_LADDER_CENTER_X, y: 1.5, z: SYNTHETIC_LADDER_CENTER_Z, vx: 0, vy: 0, vz: 0, grounded: true, ...overrides }
+  }
+
+  /** `EMPTY_GEOMETRY` 기반(플랫폼 없음) — walls·boxes는 빈 배열 그대로,
+   * ladders만 합성 사다리 하나로 교체한다(위 docblock REV — coder 요청
+   * 그대로). */
+  function syntheticNoSupportGeometry(): StaticGeometry {
+    return { ...EMPTY_GEOMETRY, ladders: [SYNTHETIC_LADDER_NO_PLATFORM] }
+  }
+
+  /** 평가자 재현 값과 동일한 간격(`maxY - 0.15` = 3.85, 상수에서 유도 —
+   * ADR-0010, 리터럴 금지) — 몇 틱 만에 꼭대기를 넘겨 재현 창을 짧게
+   * 유지한다. */
+  const EXIT_TEST_START_Y = SYNTHETIC_LADDER_NO_PLATFORM.maxY - 0.15
   /** 이탈 이후 궤적을 관찰하는 틱 수 — 평가자 실측(자연 정점~착지)보다
    * 넉넉한 여유(위 docblock 계산 근거: 상승 잔여+낙하 도합 약 24틱 예상,
-   * 2배 이상 여유). */
+   * 2배 이상 여유). 유한 상한이라는 사실 자체가 "요요에 빠지지 않고
+   * 수렴한다"는 단언의 결정론적 형태다(§3). */
   const POST_EXIT_OBSERVE_TICKS = 50
   /** 한 틱 사이 "물리적으로 그럴듯한" 최대 변위(m) — 사다리 전체 수직
    * 범위의 절반. 결함의 순간이동(≈3.95m, 범위의 거의 전체)과 정상 낙하
    * 궤적(중력 가속 하 한 틱 변위, 이 높이대에서는 이 값보다 훨씬 작다)을
    * 명확히 가르는 문턱이다 — 정확한 중력 상수 없이도(그 상수는
    * `movement.ts` 비공개 구현값이라 이 파일이 참조할 수 없다) 리터럴을
-   * 새로 발명하지 않고 `LADDER_ALPHA`에서 유도한다(ADR-0010). */
-  const MAX_PLAUSIBLE_TICK_DELTA_M = (LADDER_ALPHA.maxY - LADDER_ALPHA.minY) / 2
+   * 새로 발명하지 않고 합성 사다리 자신의 범위에서 유도한다(ADR-0010). */
+  const MAX_PLAUSIBLE_TICK_DELTA_M = (SYNTHETIC_LADDER_NO_PLATFORM.maxY - SYNTHETIC_LADDER_NO_PLATFORM.minY) / 2
 
   function climbToExit(): MoveState[] {
-    const start = createLadderState({ y: EXIT_TEST_START_Y })
-    const geometry = geometryWithLadders([LADDER_ALPHA])
+    const start = createSyntheticLadderState({ y: EXIT_TEST_START_Y })
+    const geometry = syntheticNoSupportGeometry()
     const trajectory: MoveState[] = []
     let state: MoveState = start
     for (let i = 0; i < POST_EXIT_OBSERVE_TICKS; i += 1) {
@@ -647,18 +699,18 @@ describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요�
     const trajectory = climbToExit()
     // 전제 확인 — 실제로 꼭대기(maxY)를 넘어서는 지점이 있었다(그 전까지는
     // 정상 등반이라 이 명제와 무관하다).
-    const exitIndex = trajectory.findIndex((s) => s.y > LADDER_ALPHA.maxY)
+    const exitIndex = trajectory.findIndex((s) => s.y > SYNTHETIC_LADDER_NO_PLATFORM.maxY)
     expect(exitIndex).toBeGreaterThanOrEqual(0)
 
     const atExit = trajectory[exitIndex]!
-    // 결함 재현 — 현재 구현은 이 틱에서 y=0, grounded=true로 스냅된다.
-    // 고쳐지면 grounded:false(공중)여야 한다.
+    // 결함 재현 — 원버그 구현은 이 틱에서 y=0, grounded=true로 스냅된다.
+    // 고쳐진 구현은 grounded:false(공중)여야 한다.
     expect(atExit.grounded).toBe(false)
   })
 
   it('이탈 이후 궤적에 순간이동(한 틱 사이 사다리 범위 절반을 넘는 불연속 낙하)이 없다 — 물리적으로 연속적인 낙하다', () => {
     const trajectory = climbToExit()
-    const exitIndex = trajectory.findIndex((s) => s.y > LADDER_ALPHA.maxY)
+    const exitIndex = trajectory.findIndex((s) => s.y > SYNTHETIC_LADDER_NO_PLATFORM.maxY)
     expect(exitIndex).toBeGreaterThanOrEqual(0)
 
     for (let i = exitIndex + 1; i < trajectory.length; i += 1) {
@@ -667,16 +719,19 @@ describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요�
     }
   })
 
-  it('궤적은 결국 접지 상태로 안정된다(무한 공중이 아니다) — 실제로 공중(낙하)을 거친 뒤 지지 높이(발판 없음, 0)로 착지한다', () => {
-    // REV(team-lead 지적) — 원래 단언(`trajectory[마지막].y ≈ 0`)은 이
-    // describe 상단 docblock이 "고정하지 않는다"고 명시한 바로 그
-    // 동작(착지 후 같은 입력을 유지하면 사다리에 다시 붙잡혀 재등반하는
-    // 것 — "정상적 반복", 버그 아님)과 충돌했다. 관찰 창(50틱) 안에서
-    // 재등반이 진행 중이면 마지막 프레임의 y가 0이 아닐 수 있다(coder
-    // 재현: 25틱 재등반 후 y=2.5). 이 단언이 실제로 고정하려던 명제는
-    // 제목 그대로 "무한 공중이 아니다"다 — ①실제로 공중(낙하) 구간을
-    // 거쳤고 ②그 뒤 지지 높이로 착지하는 시점이 존재한다는 것만 확인하고,
-    // 착지 이후(재등반 포함)는 묻지 않는다.
+  it('궤적은 유한 틱 안에서 결국 접지 상태로 수렴한다(무한 공중도, 요요도 아니다) — 실제로 공중(낙하)을 거친 뒤 지지 높이(발판 없음, 0)로 착지한다', () => {
+    // REV(team-lead 지적, 원래 F1에서 이어받음) — "궤적 마지막 프레임의
+    // y가 항상 0"이라고 단언하면, 위 docblock "고정하지 않는다"고 명시한
+    // 바로 그 동작(착지 후 같은 입력을 유지하면 사다리에 다시 붙잡혀
+    // 재등반하는 것 — "정상적 반복", 버그 아님)과 충돌한다. 관찰
+    // 창(50틱) 안에서 재등반이 진행 중이면 마지막 프레임의 y가 0이
+    // 아닐 수 있다(coder 재현: 25틱 재등반 후 y=2.5). 이 단언이 실제로
+    // 고정하려는 명제는 제목 그대로 "유한 틱 안에서 수렴한다"다 —
+    // ①실제로 공중(낙하) 구간을 거쳤고 ②그 뒤 지지 높이로 착지하는
+    // 시점이 관찰 창 안에 존재한다는 것만 확인하고, 착지 이후(재등반
+    // 포함)는 묻지 않는다 — "요요"란 ①·②가 관찰 창 안에 결코 나타나지
+    // 않고 스냅↔재상승만 무한 반복하는 것이므로, 이 단언이 실패하면
+    // (findIndex가 -1을 반환하면) 그것이 바로 요요의 재현이다.
     const trajectory = climbToExit()
 
     // 전제 확인 — 실제로 공중(낙하) 구간을 거쳤다. 원버그(공중 전이 없이
@@ -696,8 +751,8 @@ describe('F1 재현 — 사다리 꼭대기 이탈이 즉시 접지 스냅(요�
   })
 
   it('양성 대조군(과잉수정 방지) — 경계에 닿지 않는 등반·하강·정지 중에는 여전히 grounded:true가 유지된다(기존 "RQ-18 상호작용" 명제 재확인)', () => {
-    const geometry = geometryWithLadders([LADDER_ALPHA])
-    let state = createLadderState({ y: EXIT_TEST_START_Y - 1 }) // 꼭대기에서 충분히 먼 지점
+    const geometry = syntheticNoSupportGeometry()
+    let state = createSyntheticLadderState({ y: EXIT_TEST_START_Y - 1 }) // 꼭대기에서 충분히 먼 지점
     const observed: boolean[] = []
     for (let i = 0; i < 5; i += 1) {
       state = stepMovement(state, TOWARD_FACE, geometry) // 상승, 경계 접근 안 함
