@@ -1,0 +1,113 @@
+/**
+ * RQ-56 이름표 대상 판정(원장 24ab) — **조준선이 향한 플레이어**를 고른다.
+ *
+ * ## 왜 별도 모듈인가
+ *
+ * RQ-56이 요구하는 동치 — **"쏠 수 있으면 이름이 보이고, 이름이 보이면 쏠 수
+ * 있다"** — 는 두 판정이 **같아야** 성립한다. 비슷한 로직을 여기 다시 쓰면 그
+ * 순간부터 갈라질 수 있으므로, 서버 hitscan이 쓰는 `findClosestHit`을 **그대로
+ * 호출한다**(ADR-0010 값 복제 금지의 논리 버전). 이 파일이 하는 일은 클라이언트
+ * 스토어의 모양을 그 함수의 입력 모양으로 옮기는 것뿐이다.
+ *
+ * `GameRoom.handleFire`가 `findClosestHit(ray, candidates, DEFAULT_HITBOX,
+ * PRODUCTION_WALLS)`를 부르고, 여기서도 같은 히트박스·같은 차폐 목록을 넘긴다.
+ *
+ * ## 서버와 **일부러** 다른 두 가지
+ *
+ * 1. **탄퍼짐을 적용하지 않는다.** 서버는 발사 시 시드로 콘 안에서 방향을
+ *    흔든다(RQ-90). 이름표는 **지금 조준한 곳**을 알려 주는 표시이고 탄착점
+ *    예언이 아니다 — 크로스헤어가 확산을 "이만큼 퍼질 수 있다"로만 보여 주는
+ *    것과 같은 성격이다(원장 24e). CS도 조준하면 이름이 뜨지만 총알은 빗나갈
+ *    수 있다.
+ * 2. **랙 보상 되감기를 하지 않는다.** RQ-64의 되감기는 서버가 사수의 RTT만큼
+ *    과거로 돌리는 판정이다. 이름표는 **화면에 지금 보이는 것**에 붙어야 하므로
+ *    보간된 현재 표시 위치를 쓴다 — 되감으면 이름이 몸에서 떨어져 보인다.
+ *
+ * 즉 동치는 **"차폐와 조준선"** 축에서 성립하고, 확산·되감기라는 **확률·시간**
+ * 축은 애초에 이름표의 관심사가 아니다.
+ *
+ * ## 표현 계층이다 (RQ-61 대상 아님)
+ *
+ * 이 판정은 HP·킬·명중처럼 서버가 확정할 값이 아니다. 클라가 정해도 정보
+ * 누출이 늘지 않는다 — 타인 좌표는 **렌더하려면 어차피** 클라에 있어야 한다.
+ *
+ * 렌더 계층 면제 대상이 아니다(ADR-0008 §6은 WebGL·씬 그래프를 면제한다) —
+ * 이 파일은 순수 함수이고 `tests/unit/rq-56-nameplate-target.test.ts`가 시험한다.
+ */
+
+import { eyeOrigin, findClosestHit, type HitCandidate, type Vec3 } from '@shared/sim/combat'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import type { WallAABB } from '@shared/sim/movement'
+
+/** 이름표가 필요한 최소 플레이어 정보 — 클라 스토어(`PlayerView`)의 부분집합.
+ * 스토어 타입을 그대로 요구하지 않는 이유는 이 함수를 스토어 없이 시험하기
+ * 위해서다(`chatInputGate`의 `ChatGatedConnection`과 같은 좁힘). */
+export interface NameplateCandidate {
+  nickname: string
+  x: number
+  y: number
+  z: number
+}
+
+/** 조준선이 향한 대상. 없으면 `undefined`. */
+export interface NameplateTarget {
+  sessionId: string
+  nickname: string
+  /** 이름표를 띄울 월드 좌표(대상 머리 **위**). 화면 투영은 호출자가 한다. */
+  anchor: Vec3
+}
+
+/**
+ * 이름표를 띄울 머리 위 높이 — 머리 볼륨 상단(`headCenterM + headRadiusM`)에서
+ * 유도한다. 리터럴을 쓰면 히트박스가 바뀔 때 이름표만 몸에 겹치거나 뜬다.
+ *
+ * 여유분 `0.25`는 글자가 정수리에 붙지 않을 만큼만 띄우는 렌더 선택값이다
+ * (스펙에 없다 — RQ-56은 "머리 위"까지만 규정한다).
+ */
+const NAMEPLATE_HEAD_CLEARANCE_M = 0.25
+
+export function nameplateAnchorHeightM(): number {
+  return DEFAULT_HITBOX.headCenterM + DEFAULT_HITBOX.headRadiusM + NAMEPLATE_HEAD_CLEARANCE_M
+}
+
+/**
+ * 조준선이 향한 플레이어를 고른다.
+ *
+ * @param selfFoot 자신의 **발** 위치(예측 위치). 눈 높이는 여기서 유도한다.
+ * @param aimDirection 조준 방향 단위 벡터(`@client/input/aimMath`의 `yawPitchToDirection` 결과).
+ * @param others 자신을 **제외한** 플레이어들. 자기 자신이 섞이면 자기 이름이 뜬다.
+ * @param walls 차폐 목록 — 서버가 `findClosestHit`에 넘기는 것과 **같은 값**이어야 한다.
+ */
+export function resolveNameplateTarget(
+  selfFoot: Vec3,
+  aimDirection: Vec3,
+  others: ReadonlyMap<string, NameplateCandidate>,
+  walls: readonly WallAABB[],
+): NameplateTarget | undefined {
+  if (others.size === 0) return undefined
+
+  const candidates: HitCandidate[] = []
+  for (const [sessionId, player] of others) {
+    candidates.push({ id: sessionId, pose: { position: { x: player.x, y: player.y, z: player.z } } })
+  }
+
+  const hit = findClosestHit(
+    { origin: eyeOrigin(selfFoot, DEFAULT_HITBOX.eyeHeightM), direction: aimDirection },
+    candidates,
+    DEFAULT_HITBOX,
+    walls,
+  )
+  if (!hit) return undefined
+
+  const player = others.get(hit.id)
+  // 위 루프가 `others`에서 후보를 만들었으므로 정상 경로에서는 항상 있다.
+  // 방어적으로 두는 이유는 `findClosestHit`이 id를 그대로 돌려준다는 계약에
+  // 이 파일이 의존하기 때문이다 — 그 계약이 바뀌면 조용히 틀리는 대신 사라진다.
+  if (!player) return undefined
+
+  return {
+    sessionId: hit.id,
+    nickname: player.nickname,
+    anchor: { x: player.x, y: player.y + nameplateAnchorHeightM(), z: player.z },
+  }
+}
