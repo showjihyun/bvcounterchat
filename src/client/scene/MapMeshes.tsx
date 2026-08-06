@@ -1,6 +1,7 @@
 import { SCENE } from '@client/config/design-tokens'
 import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
-import { boxRenderBox, ladderRenderBox, wallRenderBox } from '@client/scene/mapGeometry'
+import { boxRenderBox, wallRenderBox } from '@client/scene/mapGeometry'
+import { ladderRailBoxes, ladderRungBoxes } from '@client/scene/ladderGeometry'
 
 /**
  * 맵 정적 지오메트리 렌더(원장 24f — RQ-30 벽 · RQ-32 박스·사다리).
@@ -30,8 +31,12 @@ import { boxRenderBox, ladderRenderBox, wallRenderBox } from '@client/scene/mapG
  * 남아 있을 뿐이다. `PRODUCTION_GEOMETRY`는 모듈 상수라 리렌더 시에도 배열이
  * 새로 만들어지지 않는다.
  *
- * ⚠️ 현재 오브젝트 수는 벽 4 + 박스 15 + 사다리 2 = **21개**로 드로우콜이
- * 문제되는 규모가 아니라 인스턴싱을 쓰지 않는다(`PlayerMeshes`와 같은 판단).
+ * ⚠️ 오브젝트 수는 벽 4 + 박스 15 + **사다리마다 레일 2 + 가로대 여러 개**다
+ * (원장 24t에서 사다리가 통짜에서 뼈대가 되며 늘었다). 가로대 수는 볼륨 높이와
+ * `SCENE.ladderRungSpacingM`에서 유도되므로 **여기 총합을 적지 않는다** — 적으면
+ * 튜닝값이 바뀔 때 조용히 거짓이 된다. 수십 개 수준이라 드로우콜이 문제되는
+ * 규모가 아니어서 인스턴싱을 쓰지 않는다(`PlayerMeshes`와 같은 판단).
+ * 그 전제가 깨지는 지점은 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
  * 맵이 커져 이 수가 크게 늘면 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
  *
  * 렌더 계층 면제 대상(ADR-0008 §6) — 이 파일 자체는 테스트 없음. 치수 환산
@@ -60,14 +65,22 @@ export function MapMeshes() {
           </mesh>
         )
       })}
-      {PRODUCTION_GEOMETRY.ladders.map((ladder, index) => {
-        const { center, size } = ladderRenderBox(ladder)
-        return (
-          <mesh key={`ladder-${index}`} position={center}>
+      {/* 사다리는 볼륨 통짜가 아니라 **등반면 뼈대**로 그린다(원장 24t) —
+          통짜로 그리면 사다리로 안 읽히고, 올라탄 동안에는 메시 내부라
+          `FrontSide` 컬링으로 화면에서 사라진다. 상세는 ladderGeometry.ts. */}
+      {PRODUCTION_GEOMETRY.ladders.map((ladder, ladderIndex) => {
+        const config = {
+          railThicknessM: SCENE.ladderRailThicknessM,
+          rungThicknessM: SCENE.ladderRungThicknessM,
+          rungSpacingM: SCENE.ladderRungSpacingM,
+        }
+        const parts = [...ladderRailBoxes(ladder, config), ...ladderRungBoxes(ladder, config)]
+        return parts.map(({ center, size }, partIndex) => (
+          <mesh key={`ladder-${ladderIndex}-${partIndex}`} position={center}>
             <boxGeometry args={size} />
             <meshStandardMaterial color={SCENE.ladder} />
           </mesh>
-        )
+        ))
       })}
     </group>
   )

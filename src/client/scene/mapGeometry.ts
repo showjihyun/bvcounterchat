@@ -63,7 +63,12 @@ export function boxRenderBox(box: BoxAABB): RenderBox {
   return aabbToRenderBox(box.minX, box.maxX, 0, box.topY, box.minZ, box.maxZ)
 }
 
-/** 사다리 — 볼륨이 이미 `minY`/`maxY`를 갖는다(RQ-21 등반 판정 범위). */
+/** 사다리 볼륨 전체(RQ-21 등반 판정 범위)를 상자로. **렌더 경로는 이것을 쓰지
+ * 않는다** — 원장 24t에서 사다리가 통짜 상자에서 **등반면 뼈대**로 바뀌었고
+ * 그 산술은 `@client/scene/ladderGeometry`가 갖는다. 여기 남는 이유는 그
+ * 뼈대가 **이 볼륨 안에 들어가는지** 검사하는 기준이 필요하기 때문이다
+ * (`tests/unit/24t-ladder-geometry.test.ts`) — 판정 범위와 표현의 정합을
+ * 재는 자가 사라지면 뼈대가 볼륨 밖으로 새어도 아무도 모른다. */
 export function ladderRenderBox(ladder: LadderVolume): RenderBox {
   return aabbToRenderBox(ladder.minX, ladder.maxX, ladder.minY, ladder.maxY, ladder.minZ, ladder.maxZ)
 }
