@@ -40,9 +40,15 @@ export function createMovementInputTracker(target: Window = window): MovementInp
   const pressed = new Set<string>()
   let jumpPending = false
 
+  /** 액션에 배정된 코드 중 **하나라도** 눌려 있는가(원장 24m — 액션당 복수
+   * 코드). `===` 비교로 되돌리면 배열과 문자열을 비교해 **항상 거짓**이 된다. */
+  function isDown(codes: readonly string[]): boolean {
+    return codes.some((code) => pressed.has(code))
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     pressed.add(event.code)
-    if (event.code === KEYMAP.jump) {
+    if (KEYMAP.jump.includes(event.code as never)) {
       jumpPending = true
     }
   }
@@ -56,10 +62,10 @@ export function createMovementInputTracker(target: Window = window): MovementInp
 
   return {
     getMoveInput(): MoveInput {
-      const forward = pressed.has(KEYMAP.moveForward) ? 1 : 0
-      const backward = pressed.has(KEYMAP.moveBackward) ? 1 : 0
-      const left = pressed.has(KEYMAP.moveLeft) ? 1 : 0
-      const right = pressed.has(KEYMAP.moveRight) ? 1 : 0
+      const forward = isDown(KEYMAP.moveForward) ? 1 : 0
+      const backward = isDown(KEYMAP.moveBackward) ? 1 : 0
+      const left = isDown(KEYMAP.moveLeft) ? 1 : 0
+      const right = isDown(KEYMAP.moveRight) ? 1 : 0
 
       const jump = jumpPending
       jumpPending = false
@@ -67,7 +73,7 @@ export function createMovementInputTracker(target: Window = window): MovementInp
       return {
         dirX: right - left,
         dirZ: forward - backward,
-        mode: pressed.has(KEYMAP.crouch) ? 'crouch' : pressed.has(KEYMAP.walk) ? 'walk' : 'run',
+        mode: isDown(KEYMAP.crouch) ? 'crouch' : isDown(KEYMAP.walk) ? 'walk' : 'run',
         jump,
       }
     },
