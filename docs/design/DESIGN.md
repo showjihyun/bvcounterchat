@@ -78,6 +78,7 @@
 | 벽(RQ-30) | `#b9ac91` | `SCENE.wall` |
 | 박스(RQ-32) | `#6b5d45` | `SCENE.box` |
 | 사다리(RQ-32) | `#4a4640` | `SCENE.ladder` |
+| 고지대 플랫폼(RQ-33) | `#a89574` | `SCENE.platform` |
 
 ✅ **벽·박스·사다리는 원장 24f에서 렌더된다**(`src/client/scene/MapMeshes.tsx`).
 초안이 적었던 "클라이언트에 렌더 메시가 없다"는 **더는 사실이 아니다** — 그때는

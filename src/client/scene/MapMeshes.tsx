@@ -41,6 +41,23 @@ import { ladderRailBoxes, ladderRungBoxes } from '@client/scene/ladderGeometry'
  * 렌더 계층 면제 대상(ADR-0008 §6) — 이 파일 자체는 테스트 없음. 치수 환산
  * 산술만 `@client/scene/mapGeometry`로 분리해 단위 테스트한다.
  */
+/**
+ * 이 컴포넌트가 **실제로 그리는** `StaticGeometry` 종류 — 누락 감지용 단일 출처.
+ *
+ * **왜 필요한가**: 렌더 계층은 테스트 면제라(ADR-0008 §6) "새 지오메트리 종류를
+ * 판정에 더하고 렌더에 안 더했다"는 결함을 잡을 그물이 없다. 실제로 RQ-33이
+ * `platforms`를 판정에 더하면서 렌더를 빠뜨렸고, **지면에 4m×4m 보이지 않는
+ * 차단물**이 생길 뻔했다(독립 평가 관찰 O1) — 원장 24f가 벽·박스·사다리에서
+ * 고친 바로 그 결함이다.
+ *
+ * `tests/unit/24y-map-render-coverage.test.ts`가 이 목록과 `PRODUCTION_GEOMETRY`의
+ * 키 집합이 **같은지** 단언한다. 다섯 번째 종류가 생기면 테스트가 먼저 실패한다.
+ *
+ * ⚠️ 이 배열에 이름만 더하고 아래 JSX에 루프를 안 더하면 그물이 뚫린다 — 목록과
+ * 루프를 **같은 커밋에서** 함께 고쳐야 한다. 그 짝은 사람이 지킨다.
+ */
+export const RENDERED_GEOMETRY_KINDS = ['walls', 'boxes', 'ladders', 'platforms'] as const
+
 export function MapMeshes() {
   return (
     <group name="map-static-geometry">
@@ -52,6 +69,19 @@ export function MapMeshes() {
           <mesh key={`wall-${index}`} position={center}>
             <boxGeometry args={size} />
             <meshStandardMaterial color={SCENE.wall} />
+          </mesh>
+        )
+      })}
+      {/* RQ-33 고지대 플랫폼(원장 24y). ⚠️ **판정에 종류를 더하고 여기 안 더하면
+          지면에 보이지 않는 차단물이 생긴다** — 원장 24f가 벽·박스·사다리에서 이미
+          겪은 결함이고, 이 라운드가 플랫폼에서 그것을 반복할 뻔했다(독립 평가 관찰
+          O1). 그 누락을 자동으로 잡는 것이 아래 `RENDERED_GEOMETRY_KINDS`다. */}
+      {(PRODUCTION_GEOMETRY.platforms ?? []).map((platform, index) => {
+        const { center, size } = boxRenderBox(platform)
+        return (
+          <mesh key={`platform-${index}`} position={center}>
+            <boxGeometry args={size} />
+            <meshStandardMaterial color={SCENE.platform} />
           </mesh>
         )
       })}
