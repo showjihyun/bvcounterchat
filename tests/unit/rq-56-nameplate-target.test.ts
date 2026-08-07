@@ -8,6 +8,7 @@ import { eyeOrigin, findClosestHit, type Vec3 } from '@shared/sim/combat'
 import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import { PLAYER } from '@shared/constants'
+import { canAct } from '@shared/sim/lifecycle'
 
 /**
  * RQ-56 이름표 대상 판정(원장 24ab).
@@ -71,7 +72,7 @@ function serverHitIdWithEyeHeight(
 ): string | undefined {
   const hit = findClosestHit(
     { origin: eyeOrigin(SELF_FOOT, eyeHeightM), direction },
-    [...candidates].filter(([, p]) => p.hp > 0).map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
+    [...candidates].filter(([, p]) => canAct(p.hp)).map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
     DEFAULT_HITBOX,
     walls,
   )
