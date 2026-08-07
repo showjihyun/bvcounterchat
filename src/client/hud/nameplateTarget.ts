@@ -17,19 +17,33 @@
  * CROUCH_HITBOX, mode)`를 호출해 후보별로 다른 히트박스를 쓴다(선 자세
  * `DEFAULT_HITBOX` vs 앉은 자세 `CROUCH_HITBOX`). 이 파일은 여전히
  * `DEFAULT_HITBOX` 하나만 균일하게 쓴다 — **차폐 목록(`walls`)은 여전히
- * 같지만, 히트박스는 더 이상 같지 않다.**
+ * 같지만, 대상 히트박스는 더 이상 같지 않다.**
  *
- * **동치가 앉은 대상에서 깨진다**: 이 파일이 판정하는 볼륨은 클라
- * `[0,1.5]`(바디)+`[1.5,1.8]`(머리)로 고정인데, 서버가 실제로 판정하는
- * 볼륨은 앉은 대상의 경우 `[0,1.05]`+`[1.05,1.35]`다 — **이름표는 뜨는데
- * 그 높이를 쏘면 맞지 않는** 구간이 생긴다(RQ-56의 "쏠 수 있으면 보인다"
- * 위반, 24ab 리뷰 blocker 1과 같은 계열의 재발 — 그때는 시신, 이번엔 자세).
+ * ✅ **REV2(PR #68 리뷰 blocker, 2026-08-07) — 눈 원점(사수 자신의 레이
+ * 시작점)은 이 PR에서 복구했다.** `resolveNameplateTarget`이 항상
+ * `DEFAULT_HITBOX.eyeHeightM`으로 레이 원점을 잡아, 사수 자신이 앉아 있을
+ * 때도 이름표 레이만 선 자세 눈높이(1.7)에서 출발하고 카메라·서버 레이는
+ * 앉은 눈높이(1.221875)에서 출발하는 **평행선 어긋남**(원점만 y로
+ * 0.478125m 차이, 거리 무관하게 일정)이 있었다 — 앉아서 대상 머리를
+ * 정조준해도 이름표 레이는 그 옆을 지나 이름이 사라지고, 대상 위쪽을
+ * 겨누면 반대로 이름만 떴다. 6번째 파라미터 `selfEyeHeightM`(호출자가
+ * `hitboxForMode(...).eyeHeightM`을 계산해 넘긴다, §아래 함수 docblock)으로
+ * 닫았다 — **사수 자신의 눈 원점 축은 이제 서버·카메라와 일치한다.**
  *
- * **동치 복구는 이번 PR 범위가 아니다 — 원장 24ba로 이월한다.** 복구하려면
- * 이 파일이 각 후보의 `mode`를 알아야 하는데, 서버 `Player` 스키마는
- * 자세를 다른 클라이언트에 동기화하지 않는다(원장 **24az** — 스키마 필드
- * 0건). 즉 와이어 프로토콜 확장(스키마에 `mode` 필드 추가)이 선행이고,
- * 이 파일의 히트박스 선택 로직 변경은 그 뒤에 온다.
+ * **동치가 앉은 대상에서는 아직 깨져 있다 — 남은 갈라짐은 대상 히트박스
+ * 축뿐이다(원장 24ba).** 이 파일이 판정하는 대상 볼륨은 클라
+ * `[0,1.5]`(바디)+`[1.5,1.8]`(머리)로 여전히 고정인데, 서버가 실제로
+ * 판정하는 볼륨은 앉은 대상의 경우 `[0,1.05]`+`[1.05,1.35]`다 — **이름표는
+ * 뜨는데 그 높이를 쏘면 맞지 않는** 구간이 남는다(RQ-56의 "쏠 수 있으면
+ * 보인다" 위반, 24ab 리뷰 blocker 1과 같은 계열의 재발 — 그때는 시신,
+ * 이번엔 자세).
+ *
+ * **대상 히트박스 축의 동치 복구는 이번 PR 범위가 아니다 — 원장 24ba로
+ * 이월한다.** 복구하려면 이 파일이 각 후보의 `mode`를 알아야 하는데, 서버
+ * `Player` 스키마는 자세를 다른 클라이언트에 동기화하지 않는다(원장
+ * **24az** — 스키마 필드 0건). 즉 와이어 프로토콜 확장(스키마에 `mode`
+ * 필드 추가)이 선행이고, 이 파일의 대상 히트박스 선택 로직 변경은 그
+ * 뒤에 온다.
  *
  * ⚠️ **테스트가 그 동치를 고정하는 범위는 차폐 목록·조준 벡터 두 축까지다** —
  * 히트박스·눈 원점 축은 아직 변이가 살아남는다(원장 24ae). 즉 이 주석의
@@ -115,15 +129,28 @@ export function nameplateAnchorHeightM(): number {
  * @param aimDirection 조준 방향 단위 벡터(`@client/input/aimMath`의 `yawPitchToDirection` 결과).
  * @param others 자신을 **제외한** 플레이어들. 자기 자신이 섞이면 자기 이름이 뜬다.
  * @param walls 차폐 목록 — 서버가 `findClosestHit`에 넘기는 것과 **같은 값**이어야 한다.
+ * @param anchorPosition 대상의 **보간 표시 위치**(발)를 돌려준다. `undefined`를
+ *   돌려주면 스냅샷 위치로 떨어진다 — 보간 이력이 아직 없는 첫 프레임의 폴백이다.
+ * @param selfEyeHeightM **REV2(PR #68 blocker, 2026-08-07)** — 사수 자신의 레이
+ *   원점 눈높이. 생략하면 `DEFAULT_HITBOX.eyeHeightM`(선 자세) — 기존 호출부
+ *   전부가 그대로 유효한 안전한 기본값이다. `mode`가 아니라 계산된 숫자를 받는
+ *   이유: `eyeOrigin`·`effectiveSpreadConeRadius`가 이미 확립한 "값을 함수
+ *   내부에서 직접 import하지 않고 호출자가 넘긴다"(config→sim 의존 방향) 관례를
+ *   그대로 따른다 — 호출자(`PlayerControls.tsx`)는 이미
+ *   `hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode).eyeHeightM`을 계산해
+ *   카메라·서버 레이 양쪽에 쓰고 있으므로 그 값을 그대로 넘기면 된다 — 이
+ *   파일이 `hitboxForMode`/`CROUCH_HITBOX`를 새로 import할 필요가 없다.
+ *   ⚠️ **닫는 범위는 사수 자신의 눈 원점 축뿐**이다 — 대상 후보의 히트박스
+ *   (`bodyRadiusM` 등)가 자세에 따라 달라지는 축은 여전히 원장 24ba의
+ *   영역이다(위 모듈 상단 REV2 절 참고).
  */
 export function resolveNameplateTarget(
   selfFoot: Vec3,
   aimDirection: Vec3,
   others: ReadonlyMap<string, NameplateCandidate>,
   walls: readonly WallAABB[],
-  /** 대상의 **보간 표시 위치**(발)를 돌려준다. `undefined`를 돌려주면 스냅샷
-   * 위치로 떨어진다 — 보간 이력이 아직 없는 첫 프레임의 폴백이다. */
   anchorPosition?: (sessionId: string) => Vec3 | undefined,
+  selfEyeHeightM: number = DEFAULT_HITBOX.eyeHeightM,
 ): NameplateTarget | undefined {
   if (others.size === 0) return undefined
 
@@ -136,7 +163,7 @@ export function resolveNameplateTarget(
   if (candidates.length === 0) return undefined
 
   const hit = findClosestHit(
-    { origin: eyeOrigin(selfFoot, DEFAULT_HITBOX.eyeHeightM), direction: aimDirection },
+    { origin: eyeOrigin(selfFoot, selfEyeHeightM), direction: aimDirection },
     candidates,
     DEFAULT_HITBOX,
     walls,

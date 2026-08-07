@@ -233,6 +233,12 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
           connection.interpolator.copyPositionInto(id, connection.now(), anchorScratch)
             ? anchorScratch
             : undefined,
+        // PR #68 blocker — 사수 자신의 눈 원점도 자세(mode)를 따라야
+        // 카메라(:293)·서버 레이(GameRoom.ts) 원점과 일치한다. `sent.mode`
+        // (게이트 이후 값, F8과 동일한 "sent 기준" 규칙)로 계산한다 —
+        // `hitboxForMode`는 두 인자 중 하나를 그대로 반환할 뿐 새 객체를
+        // 만들지 않는다(프레임 예산 ADR-0001, 이 루프는 30Hz라도 같은 규율).
+        hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, sent.mode).eyeHeightM,
       )
       if (!target) {
         uiStore.getState().setNameplate(null)
