@@ -488,3 +488,119 @@ describe("RQ-92 v2.4(GA-73) — nameplateAnchorHeightM(mode)", () => {
     expect(nameplateAnchorHeightM('crouch')).toBeCloseTo(1.6, 3) // 앵커 — v2.4 골든 GA-73 표기값
   })
 })
+
+/**
+ * PR #68 리뷰 F1 blocker(평가자 실측, 원장 24az 후속) — **앵커 "높이"만
+ * 시간축이 다르다.** 몸은 보간 지연된 자세로 그려지는데(`PlayerMeshes
+ * .tsx:152` — `remoteMeshHeightM(interpolator.getMode(sessionId,
+ * renderTime))`), 이름표 앵커 높이는 store의 **최신** 자세로 계산됐다
+ * (`nameplateTarget.ts:237` — `nameplateAnchorHeightM(player.mode)`).
+ * 앵커 **위치**(x·z, 발 높이)는 이미 `anchorPosition` 콜백으로 보간기를
+ * 쓴다(PR #66 수정) — **높이만** 짝이 안 맞았다. 정지 상태(자세 불변)에서는
+ * 두 값이 항상 같아 드러나지 않고, **전환 직후 보간 지연 창(66.67ms,
+ * `INTERPOLATION_DELAY_MS`) 안에서만** 어긋난다 — 평가자 실측: 앉기
+ * 직후 그려진 몸은 아직 1.8m인데 앵커는 1.6m(0.2m 겹침), 일어서기 직후
+ * 그려진 몸은 아직 1.35m인데 앵커는 2.05m(0.7m 허공 — GA-73의 `then`이
+ * 적은 바로 그 수치, PR #66에서 blocker였던 0.40m보다 크다).
+ *
+ * **API 계약(test-writer 결정) — `resolveNameplateTarget`에 7번째 파라미터로
+ * `anchorMode?: (sessionId: string) => MoveInput['mode'] | undefined`를
+ * 추가한다.** 위치·시그니처 모양은 `anchorPosition`(5번째)과 완전히
+ * 대칭이다 — "최신 스냅샷 값"과 "호출자가 보간기에서 얻어 넘기는 지연
+ * 값"을 분리한다는 같은 원칙을 앵커의 위치 축과 높이 축에 동일하게
+ * 적용한다. 프로덕션 호출부는 `interpolator.getMode(id, now())`를
+ * 넘긴다(평가자 제안과 동일 — `PlayerMeshes.tsx`가 몸 높이에 쓰는 것과
+ * **같은 호출**이라 두 값이 항상 같은 시간축을 본다는 것이 구조적으로
+ * 보장된다).
+ *
+ * **옵셔널/필수 판단(team-lead 지시 — 원장 24bd 함정을 저울질)**: 이
+ * 파라미터는 **옵셔널일 수밖에 없다** — TypeScript는 이미 옵셔널인
+ * 6번째 인자(`selfEyeHeightM`) 뒤에 **필수** 인자를 두는 것을 함수
+ * 선언 자체에서 거부한다(문법 오류, 호출부 문제가 아니다). "순증만"
+ * 규칙도 같은 결론을 강제한다 — 기존 15건 넘는 호출부가 이 인자를 전혀
+ * 모르므로, 필수로 만들려면 그 호출부를 전부 고쳐야 한다.
+ *
+ * ⚠️ **그래서 생략 시 폴백은 "안전하게 틀림"이 아니라 `anchorPosition`이
+ * 이미 확립한 것과 동일한 원칙(최신 정보로 성능 저하 없이 대체)을 따른다
+ * — `player.mode`(후보 자신의 최신 자세)로 떨어진다.** 이것은 원장
+ * 24bd가 경고한 "조용히 틀린 값"과 **같은 모양의 위험을 그대로 갖는다**
+ * (인지하고 받아들인다, 회피하지 않는다) — `anchorPosition`을 생략하면
+ * "스냅샷 위치"(지연 없음)로 떨어지는 것과 정확히 같은 등급의 위험이고,
+ * 그 위험은 지금까지 **프로덕션 호출부가 항상 명시적으로 채운다**는
+ * 코드 정독·스모크(fe.md 렌더 배선 면제 경계)로 관리돼 왔다. 이 라운드가
+ * 새로 여는 위험이 아니라 이미 있던 위험과 **같은 완화 수단**을 그대로
+ * 적용하는 것이다. `PlayerControls.tsx`가 `anchorPosition`을 요구하는 곳에
+ * `anchorMode`도 **함께, 항상** 넘기는지는 이 파일이 강제하지 못한다 —
+ * 코드 리뷰가 "위치는 넘기면서 높이는 빠뜨렸다"류 결함을 잡아야 한다(§
+ * 아래 "함정 재확인" 테스트가 그 사실 자체는 고정한다).
+ *
+ * ⚠️ **그룹 판정(GA-74)은 건드리지 않는다** — 평가자 판정: 대상 선택과
+ * 히트박스는 **최신** `player.mode`가 맞다(서버도 항상 최신 입력으로
+ * 판정한다, RQ-61). 시간축을 맞춰야 하는 것은 **표시(앵커 높이)** 뿐이다
+ * — 아래 "그룹 판정 불변" 테스트가 이 경계를 직접 고정한다.
+ */
+describe('RQ-92 v2.4 F1 blocker(원장 24az 후속) — 이름표 앵커 높이가 그려진 몸(보간 지연 자세)과 시간축을 맞춘다', () => {
+  it("전환 직후(앉는 중) — 대상의 최신 mode는 'crouch'지만 그려진 몸은 아직 지연된 'run'이면, 앵커 높이는 그려진 몸(anchorMode)을 따른다 — 최신 mode(crouch)가 아니다", () => {
+    // 대상이 앉아 있으므로(그룹 판정은 최신 mode인 crouch를 쓴다, 위 "그룹
+    // 판정 불변" 테스트가 그 축을 고정) 실제 히트박스(CROUCH_HITBOX) 머리를
+    // 정조준해야 명중한다 — AIM_EAST(수평, 선 자세 눈높이 1.7)는 앉은
+    // 히트박스 범위([0,1.35]) 밖이라 아예 빗나간다.
+    const distance = 10
+    const aimAtCrouchHead: Vec3 = { x: distance, y: CROUCH_HITBOX.headCenterM - DEFAULT_HITBOX.eyeHeightM, z: 0 }
+    const map = others({ enemy: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const target = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [], undefined, undefined, () => 'run')
+
+    expect(target?.sessionId).toBe('enemy') // 대상 선택 자체는 영향받지 않는다.
+    expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM('run'), 12)
+    // 공허 방지 — "최신 mode를 그대로 썼다면" 나왔을 값과는 분명히 달라야 한다.
+    expect(target?.anchor.y).not.toBeCloseTo(nameplateAnchorHeightM('crouch'), 2)
+  })
+
+  it("전환 직후(일어서는 중) — 대상의 최신 mode는 'run'이지만 그려진 몸은 아직 지연된 'crouch'면, 앵커 높이는 그려진 몸을 따른다(GA-73 then의 0.7m 허공 수치를 직접 반증)", () => {
+    const map = others({ enemy: { ...targetFootAt(10), mode: 'run' as MoveInput['mode'] } })
+    const target = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, undefined, () => 'crouch')
+
+    expect(target?.sessionId).toBe('enemy')
+    expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM('crouch'), 12)
+    expect(target?.anchor.y).not.toBeCloseTo(nameplateAnchorHeightM('run'), 2)
+  })
+
+  it('그룹 판정(GA-74) 불변 — anchorMode가 무엇을 반환하든 대상 선택·히트박스 판정은 여전히 후보 자신의 최신 mode를 쓴다', () => {
+    // 이전 라운드의 "명중하지 않는다" 차등 지점(앉은 헤드 상단과 선 자세
+    // 바디 상단 사이의 빈 공간)을 그대로 재사용한다 — 앉은 대상의 실제
+    // 히트박스(CROUCH_HITBOX)로는 미명중이어야 하는 높이. anchorMode가
+    // 'run'(=DEFAULT_HITBOX였다면 명중했을 값)을 반환해도, 히트 판정
+    // 자체는 후보의 최신 mode(crouch)를 그대로 써야 하므로 여전히
+    // 미명중이어야 한다 — anchorMode가 판정 로직에 새지 않는다는 것을
+    // 직접 증명한다.
+    const distance = 10
+    const map = others({ target: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const gapHeightM = (CROUCH_HITBOX.headCenterM + CROUCH_HITBOX.headRadiusM + DEFAULT_HITBOX.bodyTopM) / 2
+    const dy = gapHeightM - DEFAULT_HITBOX.eyeHeightM
+    const aimAtGap: Vec3 = { x: distance, y: dy, z: 0 }
+
+    const target = resolveNameplateTarget(SELF_FOOT, aimAtGap, map, [], undefined, undefined, () => 'run')
+    expect(target).toBeUndefined()
+  })
+
+  it('양성 대조군 — anchorMode가 후보의 최신 mode와 같은 값을 반환하면(전환 없음, 정지 상태) 결과가 anchorMode를 생략했을 때와 완전히 같다', () => {
+    const distance = 10
+    const aimAtCrouchHead: Vec3 = { x: distance, y: CROUCH_HITBOX.headCenterM - DEFAULT_HITBOX.eyeHeightM, z: 0 }
+    const map = others({ enemy: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const withoutAnchorMode = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [])
+    const withMatchingAnchorMode = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [], undefined, undefined, () => 'crouch')
+
+    expect(withoutAnchorMode?.sessionId).toBe('enemy') // 공허 방지 — 실제로 명중해야 한다.
+    expect(withMatchingAnchorMode).toEqual(withoutAnchorMode)
+  })
+
+  it("첫 프레임 폴백 — anchorMode가 undefined를 반환하면(아직 보간 이력 없음) 후보의 최신 mode로 떨어진다(anchorPosition의 '스냅샷 폴백'과 동일한 원칙)", () => {
+    const distance = 10
+    const aimAtCrouchHead: Vec3 = { x: distance, y: CROUCH_HITBOX.headCenterM - DEFAULT_HITBOX.eyeHeightM, z: 0 }
+    const map = others({ enemy: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const target = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [], undefined, undefined, () => undefined)
+
+    expect(target?.sessionId).toBe('enemy') // 공허 방지 — 실제로 명중해야 한다.
+    expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM('crouch'), 12)
+  })
+})
