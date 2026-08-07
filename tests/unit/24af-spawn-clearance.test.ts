@@ -94,7 +94,9 @@ describe('24af 명제 3(실측) — 모든 스폰이 모든 차단 지오메트�
         }
       }
     }
-    // eslint-disable-next-line no-console -- 실측 결과를 Red 보고서에 그대로 옮기기 위한 의도적 출력.
+    // 실측 결과를 보고서에 그대로 옮기기 위한 의도적 출력(O6 — `tests/`에는
+    // `no-console` 규칙이 적용되지 않아 이전의 eslint-disable 지시자는
+    // "사용되지 않는 지시자" 경고를 유발했다, `03_evaluator_report.md` §O6).
     console.log(`[24af 명제3 실측] 전역 최소 간극 = ${minDistance}m @ ${minAt} (bodyRadiusM=${BODY_RADIUS_M}m)`)
     expect(minDistance).toBeGreaterThanOrEqual(BODY_RADIUS_M)
   })

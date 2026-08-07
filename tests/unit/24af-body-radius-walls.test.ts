@@ -46,6 +46,21 @@ import { PRODUCTION_WALLS, WALL_EAST, WALL_WEST, WALL_NORTH, WALL_SOUTH } from '
  * 멈추는가"(하드 클램프·슬라이드 등 구현 방식)를 규정하지 않는다 — 오직
  * "간극이 반경 미만으로 좁혀지지 않는다"(상한, Red의 핵심)와 "실제로
  * 근접면 부근까지 밀렸다"(하한, 고착 아님)만 부등식으로 확인한다.
+ *
+ * **REV(독립 평가 O1 대응, `_workspace/24af/03_evaluator_report.md` §8
+ * O1) — 최종 틱 1점이 아니라 매 틱 최솟값을 단언한다.** 최초본은 100틱
+ * 반복 후 **최종 상태 한 점**만 표본했다 — 평가자가 격리 워크트리에서
+ * 심은 변이 M4(절단 **목표점**은 반경 적용 좌표로 두면서 **비교 조건**만
+ * 원래 벽면으로 되돌리는 변형)가 이 표본 방식을 통과했다: M4의 실제
+ * 동작은 틱 75에서 간극이 **0**(이 라운드가 고치려던 상태)을 찍은 뒤
+ * `14.7 ↔ 14.9`로 2틱 주기 진동하는데, `TICKS=100`이 우연히 짝수 위상
+ * (간극 0.3 쪽)에서 끝나 최종값만 보면 문제가 전혀 드러나지 않았다(홀수
+ * 틱에서 끝났다면 간극 0.1로 실패했을 것 — 평가자 실측). 이제
+ * `runTicksTrackingMinClearance`가 매 틱 간극을 계산해 **누적 최솟값**을
+ * 반환하고, 그 최솟값에 하한(`>= bodyRadiusM`)을 건다 — 최종 틱의 간극은
+ * 이 최솟값 집합의 원소 중 하나이므로 이 단언은 기존 단언보다 항상
+ * **강하다**(약화 아님, CLAUDE.md 규칙). 진동이 있으면 어느 틱에서든
+ * 최솟값이 그 저점을 잡아낸다 — 표본 위상에 더 이상 의존하지 않는다.
  */
 
 const BODY_RADIUS_M = DEFAULT_HITBOX.bodyRadiusM
@@ -63,13 +78,27 @@ function createGroundedState(overrides: Partial<MoveState> = {}): MoveState {
   return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true, ...overrides }
 }
 
-function runTicks(input: MoveInput, ticks: number, initial: MoveState): MoveState {
+/** 매 틱 간극(`signedNearFace - sign*axisCoord(state)`)을 계산해 **누적
+ * 최솟값**과 최종 상태를 함께 반환한다(O1 대응 — 위 파일 docblock REV
+ * 절 참고). 최종 상태만 보는 것보다 항상 더 엄격하다: 진동·일시적 침범이
+ * 있으면 그 저점이 `minClearance`에 반영된다. */
+function runTicksTrackingMinClearance(
+  input: MoveInput,
+  ticks: number,
+  initial: MoveState,
+  axisCoord: (s: MoveState) => number,
+  signedNearFace: number,
+  sign: 1 | -1,
+): { finalState: MoveState; minClearance: number } {
   let state = initial
   const geometry: StaticGeometry = { walls: PRODUCTION_WALLS, boxes: [], ladders: [] }
+  let minClearance = Number.POSITIVE_INFINITY
   for (let i = 0; i < ticks; i += 1) {
     state = stepMovement(state, input, geometry)
+    const clearance = signedNearFace - sign * axisCoord(state)
+    if (clearance < minClearance) minClearance = clearance
   }
-  return state
+  return { finalState: state, minClearance }
 }
 
 describe('24af 명제 1 — 벽에 밀착해도 중심이 근접면에서 bodyRadiusM만큼 떨어진다(±X·±Z)', () => {
@@ -96,23 +125,31 @@ describe('24af 명제 1 — 벽에 밀착해도 중심이 근접면에서 bodyRa
   ]
 
   it.each(CASES)(
-    '24af/RQ-30/RQ-20: 벽($label) 방향으로 지속 이동해도(100틱) 중심-근접면 간극이 bodyRadiusM(0.3m) 이상이다',
+    '24af/RQ-30/RQ-20: 벽($label) 방향으로 지속 이동하는 동안(100틱, 매 틱 관측) 중심-근접면 간극이 한 순간도 bodyRadiusM(0.3m) 미만으로 좁혀지지 않는다',
     ({ input, axisCoord, nearFace, sign }) => {
-      const state = runTicks(input, TICKS, createGroundedState())
-      const signedCoord = sign * axisCoord(state)
       const signedNearFace = sign * nearFace
-      const clearance = signedNearFace - signedCoord
+      const { finalState, minClearance } = runTicksTrackingMinClearance(
+        input,
+        TICKS,
+        createGroundedState(),
+        axisCoord,
+        signedNearFace,
+        sign,
+      )
 
-      // 핵심 Red 단언 — 오늘 구현(반경 미적용)은 clearance≈0이라 이 하한을
-      // 만족하지 못한다. 반경이 도입되면 clearance≈bodyRadiusM(0.3m)이 되어
-      // 통과한다.
-      expect(clearance).toBeGreaterThanOrEqual(BODY_RADIUS_M - TOLERANCE_M)
+      // 핵심 단언(O1 대응) — 100틱 **전체**에서 관측된 간극의 최솟값이
+      // 반경 미만으로 내려간 적이 없다. 오늘(반경 미적용) 구현은 물론,
+      // "목표점은 반경 적용, 비교 조건은 원래 벽면"처럼 진동을 유발하는
+      // 부분 수정도 이 최솟값 단언이 저점을 그대로 잡는다(최종 틱 1점
+      // 표본으로는 우연한 위상에서 진동을 놓칠 수 있었다 — 위 파일
+      // docblock REV 절 참고).
+      expect(minClearance).toBeGreaterThanOrEqual(BODY_RADIUS_M - TOLERANCE_M)
       // 고착 아님 — 반경만큼 떨어지되, 근접면에서 훨씬 먼 곳에 멈춰서는 안
       // 된다(정지 전략은 규정하지 않지만 "밀착"이라는 명제 자체는 지켜야
       // 한다).
-      expect(clearance).toBeLessThan(BODY_RADIUS_M + APPROACH_MARGIN_M)
+      expect(minClearance).toBeLessThan(BODY_RADIUS_M + APPROACH_MARGIN_M)
       // 실제로 진행 방향으로 전진했다(0에서 못박힌 것이 아니다).
-      expect(signedCoord).toBeGreaterThan(0)
+      expect(sign * axisCoord(finalState)).toBeGreaterThan(0)
     },
   )
 })

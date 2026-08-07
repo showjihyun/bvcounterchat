@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState, type StaticGeometry } from '@shared/sim/movement'
+import { MOVEMENT, NET } from '@shared/constants'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { BOX_ALPHA } from '@shared/sim/boxes'
 import { PLATFORM_ALPHA } from '@shared/sim/platforms'
@@ -33,6 +34,32 @@ import { PLATFORM_ALPHA } from '@shared/sim/platforms'
  *
  * **레벨(ADR-0008)**: 순수 산술 — 단위. **결정론**: 정수 틱 반복만 사용,
  * `Math.random()`·`Date.now()` 없음.
+ *
+ * **REV(독립 평가 O2 대응, `_workspace/24af/03_evaluator_report.md` §8
+ * O2) — 윗면 회귀 가드를 "박스 밖에서 근접면을 넘어 들어오는" 궤적으로
+ * 다시 짰다.** 최초본은 **박스 중심에서 출발**해 원면(먼 쪽 면) 밖으로
+ * 걸어 나가는 궤적을 시험했다 — `clampAgainstWalls`의 절단 조건
+ * (`prevX <= near && x > near`, 즉 "근접면을 **넘어서는** 순간에만
+ * 발동")은 중심에서 출발하면 애초에 만족되지 않는다(출발 자체가 이미
+ * "면 안쪽"이라 "밖에서 안으로 넘어옴"이 없다). 그 결과 M2(`y < topY ||
+ * true`, 상단 계약을 통째로 깨 항상 차단)·M3(`y <= topY`, 경계 부등호
+ * 반전)를 심어도 두 가드 모두 실패하지 않았다 — "계약을 지킨다"고
+ * 선언했지만 실제로는 절단 조건 자체를 시험하지 않는 공허한 가드였다.
+ * 지금은 `sim-movement-boxes.test.ts`의 "경계값(팀리드 결정)" 테스트와
+ * 동일한 패턴 — **단 1틱**만 전진시켜, 그 1틱이 절단 조건을 실제로
+ * 만족시키는데도(근접면을 넘어선다) 차단되지 않고 **정확한 미차단
+ * 기대값**(`start.x ± SPEED*TICK_SECONDS`)에 도달하는지 `toBeCloseTo`로
+ * 단언한다 — "차단되지 않았다"를 방향 부등식이 아니라 **정확한 값**으로
+ * 확인해 부분 차단(느슨해진 반경)도 잡는다.
+ *
+ * ⚠️ **시작 위치는 `wall.minX`가 아니라 반경 도입 후 실제 절단 목표점
+ * (`nearMinX = box.minX − bodyRadiusM`) 기준으로 잡아야 한다(격리
+ * 워크트리 1차 실험에서 직접 확인 — `box.minX − 0.1`로 잡았더니 그 값이
+ * 이미 `nearMinX`(`box.minX − 0.3`)보다 안쪽이라 절단 조건(`prevX <=
+ * nearMinX`)이 애초에 성립하지 않아 M2·M3 둘 다 잡지 못했다).** 이제
+ * `BOX_ALPHA.minX − BODY_RADIUS_M − JUST_OUTSIDE_NEAR_TARGET_M`에서
+ * 출발해 1틱(0.2m)이 정확히 `nearMinX`를 넘어서게 한다 — 이래야 "박스가
+ * 실제로 차단 목록에서 빠졌다"는 것이 이 1틱의 결과로 관측 가능해진다.
  */
 
 const BODY_RADIUS_M = DEFAULT_HITBOX.bodyRadiusM
@@ -42,6 +69,18 @@ const TOLERANCE_M = 1e-6
 const APPROACH_MARGIN_M = 2
 /** 이 파일이 쓰는 시작점~근접면 거리(5m 이상)를 6m/s로 걷기 충분한 여유. */
 const TICKS = 60
+/** 1틱의 경과 시간(초) — `sim-movement-boxes.test.ts`의 "경계값" 테스트와
+ * 동일 산식(ADR-0010, 리터럴 금지). */
+const TICK_SECONDS = NET.TICK_MS / 1000
+/** 절단 목표점(`nearMinX`/`nearMaxX` = 근접면 ∓ `BODY_RADIUS_M`) 바깥
+ * 0.1m — 1틱 변위(0.2m, `MOVEMENT.SPEED`×`TICK_SECONDS`)보다 작아 정확히
+ * 그 목표점을 넘어서는 시작 여유(`sim-movement-boxes.test.ts` "경계값"
+ * 테스트와 동일 근거: 1틱 변위와 정확히 같은 여유를 쓰면 다음 위치가
+ * 목표점과 완전히 같아져 차단 여부와 무관하게 결과가 같아지는 공허한
+ * 그물이 된다). 근접면(`wall.minX`/`wall.maxX`) 자체가 아니라 **반경
+ * 적용 후 목표점**을 기준으로 잡는다 — 위 파일 docblock REV 절 "시작
+ * 위치" 경고 참고. */
+const JUST_OUTSIDE_NEAR_TARGET_M = 0.1
 
 function createGroundedState(overrides: Partial<MoveState> = {}): MoveState {
   return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true, ...overrides }
@@ -74,23 +113,33 @@ describe('24af 명제 2 — 박스: 상단보다 낮은 높이에서 밀착해�
     expect(state.y).toBeCloseTo(0, 6)
   })
 
-  it('24af/RQ-22 회귀 가드(과잉수정 방지) — 박스 윗면(y>=topY)에 서 있으면 반경과 무관하게 계속 막히지 않는다(원장 25a-4 계약 유지)', () => {
-    const center = { x: (BOX_ALPHA.minX + BOX_ALPHA.maxX) / 2, z: (BOX_ALPHA.minZ + BOX_ALPHA.maxZ) / 2 }
-    const start = createGroundedState({ x: center.x, y: BOX_ALPHA.topY, z: center.z })
+  it('24af/RQ-22 회귀 가드(과잉수정 방지) — 박스 밖(근접면 0.1m 바깥, y=topY)에서 면을 넘어 들어와도 반경과 무관하게 막히지 않는다(원장 25a-4 계약 유지)', () => {
+    // 절단 목표점(nearMinX = minX − bodyRadiusM) **바깥**에서 출발한다 —
+    // clampAgainstWalls의 절단 조건(prevX <= nearMinX && x > nearMinX)이
+    // 이번 틱에 실제로 성립해야 "차단되지 않았다"는 단언이 그 조건을
+    // 진짜로 시험한 것이 된다(O2 대응, 위 파일 docblock REV 절 — 근접면
+    // 자체가 아니라 목표점 기준으로 여유를 잡는 이유도 그 절 참고).
+    const centerZ = (BOX_ALPHA.minZ + BOX_ALPHA.maxZ) / 2
+    const start = createGroundedState({
+      x: BOX_ALPHA.minX - BODY_RADIUS_M - JUST_OUTSIDE_NEAR_TARGET_M,
+      y: BOX_ALPHA.topY,
+      z: centerZ,
+    })
     const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
     const geometry: StaticGeometry = { walls: [], boxes: [BOX_ALPHA], ladders: [] }
 
-    let state = start
-    let crossedFarFace = false
-    const CROSS_TICKS = 20 // 중심→원면(1.5m)을 6m/s(0.2m/틱)로 넘기 충분한 여유
-    for (let i = 0; i < CROSS_TICKS; i += 1) {
-      state = stepMovement(state, input, geometry)
-      if (state.x > BOX_ALPHA.maxX) crossedFarFace = true
-    }
-    // 전제 확인이자 본 단언 — 반경이 옆면 차단(y<topY)에만 적용된다면, 윗면에
-    // 선 채로는 원면(maxX)을 자유롭게 넘어야 한다(walls-only 결함처럼 박스
-    // 자체를 통째로 넓혀버리는 과잉수정이면 이 단언이 깨진다).
-    expect(crossedFarFace).toBe(true)
+    const next = stepMovement(start, input, geometry)
+
+    // 전제 확인 — 이 1틱이 실제로 절단 목표점을 넘어선다(절단 조건을
+    // 실제로 만족시킨다는 증거, 공허한 그물 방지).
+    expect(next.x).toBeGreaterThan(BOX_ALPHA.minX - BODY_RADIUS_M)
+    // 본 단언(O2 핵심) — 방향 부등식이 아니라 **정확한 미차단 기대값**으로
+    // 확인한다. 차단됐다면 근접면(또는 근접면-반경)에 멈췄을 것이다 —
+    // y>=topY라 이 박스가 boxesBlockingAt에서 빠지므로, 기대값은 순수하게
+    // 입력 속도만으로 계산한 값과 같아야 한다.
+    const expectedX = start.x + MOVEMENT.SPEED * TICK_SECONDS
+    expect(next.x).toBeCloseTo(expectedX, 6)
+    expect(next.grounded).toBe(true)
   })
 })
 
@@ -114,19 +163,27 @@ describe('24af 명제 2 — 플랫폼: 상단보다 낮은 높이에서 밀착�
     expect(state.y).toBeCloseTo(0, 6) // 오르지 못했다(GA-60과 동일 귀결)
   })
 
-  it('24af/RQ-33 회귀 가드(과잉수정 방지) — 플랫폼 윗면(y>=topY)에 서 있으면 반경과 무관하게 계속 막히지 않는다(GA-59 전이 이후 이동 자유)', () => {
-    const center = { x: (PLATFORM_ALPHA.minX + PLATFORM_ALPHA.maxX) / 2, z: (PLATFORM_ALPHA.minZ + PLATFORM_ALPHA.maxZ) / 2 }
-    const start = createGroundedState({ x: center.x, y: PLATFORM_ALPHA.topY, z: center.z })
-    const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
+  it('24af/RQ-33 회귀 가드(과잉수정 방지) — 플랫폼 밖(근접면 0.1m 바깥, y=topY)에서 면을 넘어 들어와도 반경과 무관하게 막히지 않는다(GA-59 전이 이후 이동 자유)', () => {
+    // GA-60 절에서 접근에 쓴 면(동쪽, maxX)의 절단 목표점(nearMaxX = maxX
+    // + bodyRadiusM) **바깥**에서 안쪽(-X)으로 넘어 들어오는 1틱을
+    // 시험한다(O2 대응, 위 파일 docblock REV 절과 동일 패턴).
+    const centerZ = (PLATFORM_ALPHA.minZ + PLATFORM_ALPHA.maxZ) / 2
+    const start = createGroundedState({
+      x: PLATFORM_ALPHA.maxX + BODY_RADIUS_M + JUST_OUTSIDE_NEAR_TARGET_M,
+      y: PLATFORM_ALPHA.topY,
+      z: centerZ,
+    })
+    const input: MoveInput = { dirX: -1, dirZ: 0, mode: 'run', jump: false }
     const geometry: StaticGeometry = { walls: [], boxes: [], ladders: [], platforms: [PLATFORM_ALPHA] }
 
-    let state = start
-    let crossedFarFace = false
-    const CROSS_TICKS = 20 // 중심→원면(2m)을 6m/s(0.2m/틱)로 넘기 충분한 여유
-    for (let i = 0; i < CROSS_TICKS; i += 1) {
-      state = stepMovement(state, input, geometry)
-      if (state.x > PLATFORM_ALPHA.maxX) crossedFarFace = true
-    }
-    expect(crossedFarFace).toBe(true)
+    const next = stepMovement(start, input, geometry)
+
+    // 전제 확인 — 이 1틱이 실제로 절단 목표점(maxX + bodyRadiusM)을
+    // 넘어선다.
+    expect(next.x).toBeLessThan(PLATFORM_ALPHA.maxX + BODY_RADIUS_M)
+    // 본 단언(O2 핵심) — 정확한 미차단 기대값과 비교한다.
+    const expectedX = start.x - MOVEMENT.SPEED * TICK_SECONDS
+    expect(next.x).toBeCloseTo(expectedX, 6)
+    expect(next.grounded).toBe(true)
   })
 })
