@@ -77,6 +77,29 @@ export function eyeOrigin(footPosition: Vec3, eyeHeightM: number): Vec3 {
   return { x: footPosition.x, y: footPosition.y + eyeHeightM, z: footPosition.z }
 }
 
+/**
+ * RQ-92 v2.2 — 자세(`mode`)에 따라 눈높이·히트박스를 즉시 전환한다.
+ * `mode==='crouch'`면 `crouch`를, 그 외(run·walk)는 `standing`을 값 그대로
+ * 반환한다 — 순수 함수라 이전 호출을 기억하지 않으므로 "즉시 전환·보간
+ * 없음"(GA-67)이 계약 자체로 성립한다.
+ *
+ * `standing`·`crouch` 값을 함수 내부에서 직접 import하지 않고 호출자가 둘
+ * 다 인자로 넘긴다 — `eyeOrigin`·`effectiveSpreadConeRadius`와 동일한 정신
+ * (`combat-tuning.ts`가 명시한 "의존 방향은 config→sim" 유지).
+ *
+ * `grounded`는 받지 않는다 — RQ-92 원문이 "앉은 채 점프해도 crouch-jump
+ * 특례를 두지 않는다"고 명시했으므로 공중 여부는 이 판정에 관여하지 않는다
+ * (판정 근거 제한 — `effectiveSpreadConeRadius`의 타입 잠금 테스트와 동일한
+ * 정신, 이 함수 쪽은 후속 하드닝 라운드에서 같은 기법으로 고정한다).
+ */
+export function hitboxForMode(
+  standing: HitboxConfig & { eyeHeightM: number },
+  crouch: HitboxConfig & { eyeHeightM: number },
+  mode: MoveInput['mode'],
+): HitboxConfig & { eyeHeightM: number } {
+  return mode === 'crouch' ? crouch : standing
+}
+
 /** 레이 뒤쪽(t<0) 오탐을 배제하는 여유(가정 B). */
 const FORWARD_EPS = 1e-9
 /** 레이 방향이 y축에 사실상 평행한지 판정하는 임계 — 방향이 정규화된

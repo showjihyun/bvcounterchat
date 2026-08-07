@@ -16,6 +16,8 @@ import {
   effectiveSpreadConeRadius,
   eyeOrigin,
   findClosestHit,
+  hitboxForMode,
+  type ClosestHit,
   type HitCandidate,
   type Ray,
 } from '@shared/sim/combat'
@@ -39,7 +41,7 @@ import {
   sampleRewoundPosition,
   type PositionSnapshot,
 } from '@shared/sim/rewind'
-import { DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
+import { CROUCH_HITBOX, DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
 import { sanitizeNickname } from '@shared/identity/nickname'
 import { filterProfanity } from '@shared/chat/profanityFilter'
 import { isValidStatsUuid } from '@shared/stats/uuid'
@@ -612,11 +614,23 @@ export class GameRoom extends Room<GameState> {
    * **즉시 판정(가정 D)**: 다음 시뮬레이션 틱을 기다리지 않고 수신 즉시
    * 판정한다 — RQ-12 원문 "hitscan(즉시 판정 레이캐스트)"의 직역.
    * **레이 원점**: `eyeOrigin(...)`(`@shared/sim/combat`, RQ-15~16 라운드
-   * REV §12) — 사수의 현재 추적 위치(`moveStates`, RQ-20)에
-   * `DEFAULT_HITBOX.eyeHeightM`을 더한 지점을 인라인 산술이 아니라 이
-   * 공유 함수로 계산해, 클라이언트 1인칭 카메라 높이 계산과 값이 어긋나지
-   * 않게 한다. **사수 자신의 레이 원점은 되감기지 않는다**(RQ-64 원문 —
-   * "대상 플레이어의 위치"만 되감는다, 사수 자신은 대상이 아니다).
+   * REV §12) — 사수의 현재 추적 위치(`moveStates`, RQ-20)에 눈높이를 더한
+   * 지점을 인라인 산술이 아니라 이 공유 함수로 계산해, 클라이언트 1인칭
+   * 카메라 높이 계산과 값이 어긋나지 않게 한다. **사수 자신의 레이 원점은
+   * 되감기지 않는다**(RQ-64 원문 — "대상 플레이어의 위치"만 되감는다, 사수
+   * 자신은 대상이 아니다).
+   * **RQ-92 v2.2 자세(mode)**: 눈높이·히트박스는 더 이상 `DEFAULT_HITBOX`
+   * 고정이 아니다 — `hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode)`로
+   * **사수 자신의** `pendingInputs.mode`가 자신의 레이 원점(눈높이)에,
+   * **각 피격 후보 자신의** `pendingInputs.mode`가 그 후보의 히트박스에
+   * 개별 반영된다(자세 판정은 서버가 관측하는 값으로만 — RQ-61). 전환은
+   * 같은 판정 안에서 즉시 반영된다(`hitboxForMode`가 순수 함수라 보간·진행도
+   * 상태 자체가 없다, GA-67). `findClosestHit`의 `hitbox` 인자가 후보
+   * 전체에 균일하게 적용되므로, 서로 다른 자세가 섞인 후보 집합은 자세별로
+   * 묶어(`standingCandidates`·`crouchCandidates`) `findClosestHit`을 그룹당
+   * 한 번씩 호출한 뒤 **거리로** 더 가까운 쪽을 취한다 — `findClosestHit`의
+   * "가장 가까운 것 하나" 계약은 그룹 안에서만 성립하므로, 그룹 간 최단
+   * 거리 비교는 이 함수가 직접 한다(아래 `closest` 산출부).
    * **되감기 대상 포즈(RQ-64)**: 각 대상의 포즈는 `moveStates`(현재 위치)가
    * 아니라 `sampleRewoundPosition(positionHistory.get(id) ?? [], state.tick,
    * rewindTicksFor(input.rttMs))`로 구한다(없으면 `moveStates`로 폴백 —
@@ -749,8 +763,12 @@ export class GameRoom extends Room<GameState> {
     )
     const spreadDirection = applySpread(aimDirection, createRng(spreadSeed), effectiveConeRadius)
 
+    // RQ-92 v2.2: 사수 자신의 눈높이도 자신의 `mode`(위에서 이미 읽은
+    // `shooterInput`)로 결정한다 — 앉았으면(`'crouch'`) 레이 원점이 발+1.222m,
+    // 그 외(run·walk)는 발+1.700m다(GA-64).
+    const shooterHitbox = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, shooterInput.mode)
     const ray: Ray = {
-      origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, DEFAULT_HITBOX.eyeHeightM),
+      origin: eyeOrigin({ x: shooterState.x, y: shooterState.y, z: shooterState.z }, shooterHitbox.eyeHeightM),
       direction: spreadDirection,
     }
 
@@ -758,7 +776,13 @@ export class GameRoom extends Room<GameState> {
     // 대상 전원에게 동일하게 적용되는 값이라 순회 밖에서 한 번만 계산한다.
     const rewindTicks = rewindTicksFor(input.rttMs)
 
-    const candidates: HitCandidate[] = []
+    // RQ-92 v2.2: 후보를 **자신의** `pendingInputs.mode`로 자세별 두
+    // 그룹(선 자세·앉은 자세)으로 나눈다 — `findClosestHit`의 `hitbox`
+    // 인자가 후보 전체에 균일하게 적용되므로, 서로 다른 자세가 섞인 후보
+    // 집합을 한 번의 호출로 정확히 판정할 수 없다(아래 `closest` 산출부에서
+    // 그룹별 결과를 거리로 다시 비교한다).
+    const standingCandidates: HitCandidate[] = []
+    const crouchCandidates: HitCandidate[] = []
     this.state.players.forEach((player, sessionId) => {
       if (sessionId === shooterId) return // RQ-17: 팀 없음 — 사수 자신만 제외, 그 외 전원이 대상
       // 리뷰 minor 3 — 시신 통과(사용자 결정, 스펙·골든 미규정 영역):
@@ -776,7 +800,17 @@ export class GameRoom extends Room<GameState> {
       const rewound = sampleRewoundPosition(this.positionHistory.get(sessionId) ?? [], this.state.tick, rewindTicks)
       const targetState = rewound ?? this.moveStates.get(sessionId)
       if (!targetState) return
-      candidates.push({ id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } })
+      const candidate: HitCandidate = { id: sessionId, pose: { position: { x: targetState.x, y: targetState.y, z: targetState.z } } }
+      // RQ-92 v2.2: 이 후보 **자신의** 가장 최근 'move' 입력(`mode`)으로
+      // 자세를 판정한다(RQ-61 — 사수가 보고한 값이 아니다). 아직 값이
+      // 없으면(방금 접속) `IDLE_MOVE_INPUT`(mode:'run')으로 폴백 — 다른 모든
+      // `pendingInputs` 소비 지점과 동일한 관례.
+      const candidateMode = (this.pendingInputs.get(sessionId) ?? IDLE_MOVE_INPUT).mode
+      if (candidateMode === 'crouch') {
+        crouchCandidates.push(candidate)
+      } else {
+        standingCandidates.push(candidate)
+      }
     })
 
     // RQ-12 v1.7: hitscan 차폐 질의는 `wallsOverride`가 설정돼 있으면(`[]`
@@ -784,7 +818,17 @@ export class GameRoom extends Room<GameState> {
     // 을 쓴다 — 이동 충돌(`stepPlayerMovement`, RQ-30)은 이 오버라이드와
     // 무관하게 항상 `PRODUCTION_WALLS`만 쓴다(위 필드 코멘트, 범위 한정).
     const occlusionWalls = this.wallsOverride ?? PRODUCTION_WALLS
-    const closest = findClosestHit(ray, candidates, DEFAULT_HITBOX, occlusionWalls)
+    const standingHit = findClosestHit(ray, standingCandidates, DEFAULT_HITBOX, occlusionWalls)
+    const crouchHit = findClosestHit(ray, crouchCandidates, CROUCH_HITBOX, occlusionWalls)
+    // RQ-92 v2.2: `findClosestHit`의 "관통 없음 — 가장 가까운 것 하나만"
+    // 계약(가정 F)은 **그룹 안에서만** 성립한다 — 두 그룹을 합친 전체에서
+    // 가장 가까운 하나를 얻으려면 이 함수가 직접 거리로 비교해야 한다.
+    let closest: ClosestHit | undefined
+    if (standingHit && crouchHit) {
+      closest = (standingHit.result.distance as number) <= (crouchHit.result.distance as number) ? standingHit : crouchHit
+    } else {
+      closest = standingHit ?? crouchHit
+    }
     if (!closest || !closest.result.region) return
 
     const victim = this.state.players.get(closest.id)

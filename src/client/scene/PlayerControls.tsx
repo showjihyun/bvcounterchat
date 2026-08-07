@@ -16,8 +16,10 @@ import { resolveNameplateTarget, type NameplateCandidate } from '@client/hud/nam
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import * as THREE from 'three'
 import type { InterpolationPosition } from '@client/net/interpolation'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { hitboxForMode } from '@shared/sim/combat'
 import { NET } from '@shared/constants'
+import type { MoveInput } from '@shared/sim/movement'
 
 interface PlayerControlsProps {
   store: StoreApi<GameStoreState>
@@ -64,13 +66,28 @@ interface PlayerControlsProps {
  * 이월돼 있다 — 그 전까지 이 파일과 `eyeOrigin`의 정의가 갈라지면 조준선과
  * 서버 판정이 어긋난다는 점을 유지보수자가 알고 있어야 한다.
  *
- * 카메라 높이 값 자체: `@shared/config/combat-tuning`의 `DEFAULT_HITBOX
- * .eyeHeightM`을 그대로 재사용한다(값 복제 금지, ADR-0010) — 서버
- * `GameRoom.handleFire`의 레이 원점이 같은 상수를 쓰므로 1인칭 시점과
- * 서버 판정 레이 원점이 시각적으로 정합한다. 현재 값 1.7m는 현실적인 평균
- * 눈높이다 — RQ-15/16 라운드에서 스폰 로테이션이 들어와 겹쳐 스폰이
- * 사라지면서 잠정값 1.9m에서 복원했다(22a 후속 이월 ①, 경위는
- * `combat-tuning.ts` 주석).
+ * 카메라 높이 값 자체: `@shared/config/combat-tuning`의 `DEFAULT_HITBOX`·
+ * `CROUCH_HITBOX`와 `@shared/sim/combat`의 `hitboxForMode`를 그대로
+ * 재사용한다(값 복제 금지, ADR-0010) — 서버 `GameRoom.handleFire`의 레이
+ * 원점이 **사수 자신의 `mode`**로 같은 함수를 호출하므로(RQ-92 v2.2), 1인칭
+ * 시점과 서버 판정 레이 원점이 앉은 자세에서도 시각적으로 정합한다. 현재
+ * 선 자세 값 1.7m는 현실적인 평균 눈높이다 — RQ-15/16 라운드에서 스폰
+ * 로테이션이 들어와 겹쳐 스폰이 사라지면서 잠정값 1.9m에서 복원했다(22a
+ * 후속 이월 ①, 경위는 `combat-tuning.ts` 주석).
+ *
+ * **RQ-92 v2.2 — 자세(mode)**: 서버는 `mode`를 클라이언트 자기신고가 아니라
+ * `pendingInputs`(가장 최근 'move' 메시지)로 판정한다(RQ-61). 이 컴포넌트도
+ * 같은 값(로컬 키 입력에서 유도한 `mode`)을 쓰되, **`useFrame`에서 다시
+ * `movementTracker.getMoveInput()`을 부르지 않는다** — 그 함수는 엣지
+ * 트리거 `jump`를 호출마다 소비하므로(`movementInput.ts`), 60fps 루프에서
+ * 한 번 더 부르면 30Hz 전송 루프가 이미 소비한 점프 입력을 한 번 더
+ * "먹어" 버린다(22f 결함과 동일한 클래스). 대신 30Hz 루프가 이미 계산한
+ * `local.mode`를 `modeRef`(원시값, 새 객체 아님)에 적어 두고 `useFrame`은
+ * 그 값만 읽는다 — `hitboxForMode`는 인자로 받은 두 객체 중 하나를 그대로
+ * 반환할 뿐 새로 만들지 않으므로 프레임 예산(ADR-0001)을 깨지 않는다. 이
+ * 자세는 **서버가 아직 반영하기 전의 로컬 예측**이다(RQ-62와 동일한 성격) —
+ * 서버 판정(HP·명중)은 여전히 서버의 `mode` 해석만 신뢰하고(RQ-61), 이
+ * 값은 순수하게 1인칭 카메라의 표현(눈높이 렌더)에만 쓴다.
  *
  * RQ-40 입력 차단(리뷰 M4): 게임 레이어로 나가는 두 출구(이동 전송·발사
  * 전송)는 `@client/input/chatInputGate`의 `createChatGatedActions`가 만든
@@ -83,6 +100,10 @@ interface PlayerControlsProps {
 export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {
   const { camera, gl } = useThree()
   const mouseLookRef = useRef<MouseLookController | null>(null)
+  // RQ-92 v2.2 — 로컬 입력에서 유도한 가장 최근 자세. 30Hz 루프(아래)가
+  // 갱신하고 `useFrame`(60fps)이 읽기만 한다(모듈 코멘트 "카메라 높이 값
+  // 자체" 참고 — `getMoveInput()` 재호출로 jump를 이중 소비하지 않기 위함).
+  const modeRef = useRef<MoveInput['mode']>('run')
 
   useEffect(() => {
     const canvas = gl.domElement
@@ -137,6 +158,9 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 필요해 같은 유효범위 안에 있어야 한다).
     const movementIntervalId = window.setInterval(() => {
       const local = movementTracker.getMoveInput()
+      // RQ-92 v2.2 — 1인칭 카메라 눈높이가 읽을 자세(원시값 대입, 새 객체
+      // 아님 — 모듈 코멘트 참고).
+      modeRef.current = local.mode
       const { yaw } = mouseLook.getAngles()
       const world = rotateLocalMoveDirection(local, yaw)
       // RQ-40 M4: 채팅 게이트는 `gatedActions.sendMoveInput` 안에서 처리한다.
@@ -240,10 +264,14 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 않는다(프레임 예산 규칙, `harness/workflow/fe.md`).
     applyLookToCamera(camera, yaw, pitch)
 
+    // RQ-92 v2.2 — 새 객체를 만들지 않는다(`hitboxForMode`는 인자로 받은
+    // 두 객체 중 하나를 그대로 반환한다, 프레임 예산 ADR-0001).
+    const eyeHeightM = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, modeRef.current).eyeHeightM
+
     const state = store.getState()
     const predicted = state.selfPredictedState
     if (predicted) {
-      camera.position.set(predicted.x, predicted.y + DEFAULT_HITBOX.eyeHeightM, predicted.z)
+      camera.position.set(predicted.x, predicted.y + eyeHeightM, predicted.z)
       return
     }
     // 예측이 아직 없으면(접속 직후, 첫 입력 전송 전) 서버 스냅샷으로
@@ -251,7 +279,7 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     const selfId = state.selfSessionId
     const fallback = selfId ? state.players.get(selfId) : undefined
     if (fallback) {
-      camera.position.set(fallback.x, fallback.y + DEFAULT_HITBOX.eyeHeightM, fallback.z)
+      camera.position.set(fallback.x, fallback.y + eyeHeightM, fallback.z)
     }
   })
 
