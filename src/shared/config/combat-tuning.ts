@@ -56,6 +56,38 @@ export const DEFAULT_HITBOX: HitboxConfig & { eyeHeightM: number } = {
   eyeHeightM: 1.7, // 현실적인 평균 눈높이(RQ-31 비겹침 스폰 도입으로 복원, item E)
 }
 
+/**
+ * RQ-92 v2.2 — 앉은 자세(mode==='crouch')의 눈높이·히트박스. `DEFAULT_HITBOX`
+ * (선 자세)에서 두 원시 비율(CS 관례, `requirements.md` v2.2 사용자 결정)로
+ * 유도한다(ADR-0010, 리터럴 금지 — 앉은 값 5개를 매직넘버로 직접 박지
+ * 않는다).
+ *
+ * 두 비율이 다른 것은 CS 자체가 그렇기 때문이다: 눈높이는 `×46/64`, 전신
+ * (발~정수리, `headCenterM+headRadiusM`)은 `×54/72`. 헤드 반경은 스케일하지
+ * 않는다 — 그래서 `headCenterM`·`bodyTopM`은 스케일된 전신 높이에서
+ * **역산**한다(`headCenterM = 전신높이 - headRadiusM`,
+ * `bodyTopM = headCenterM - headRadiusM`) — 이 역산이 "머리 볼륨이 몸통
+ * 상단과 겹치지 않고 맞닿는다"(가정 A)를 앉은 자세에서도 자동으로 보존한다.
+ * `headRadiusM`·`bodyRadiusM`·`bodyBottomM`은 `DEFAULT_HITBOX`와 완전히
+ * 동일(불변).
+ */
+const CROUCH_EYE_HEIGHT_RATIO = 46 / 64
+const CROUCH_TOTAL_HEIGHT_RATIO = 54 / 72
+
+const CROUCH_EYE_HEIGHT_M = DEFAULT_HITBOX.eyeHeightM * CROUCH_EYE_HEIGHT_RATIO
+const CROUCH_TOTAL_HEIGHT_M = (DEFAULT_HITBOX.headCenterM + DEFAULT_HITBOX.headRadiusM) * CROUCH_TOTAL_HEIGHT_RATIO
+const CROUCH_HEAD_CENTER_M = CROUCH_TOTAL_HEIGHT_M - DEFAULT_HITBOX.headRadiusM
+const CROUCH_BODY_TOP_M = CROUCH_HEAD_CENTER_M - DEFAULT_HITBOX.headRadiusM
+
+export const CROUCH_HITBOX: HitboxConfig & { eyeHeightM: number } = {
+  bodyRadiusM: DEFAULT_HITBOX.bodyRadiusM,
+  bodyBottomM: DEFAULT_HITBOX.bodyBottomM,
+  bodyTopM: CROUCH_BODY_TOP_M,
+  headRadiusM: DEFAULT_HITBOX.headRadiusM,
+  headCenterM: CROUCH_HEAD_CENTER_M,
+  eyeHeightM: CROUCH_EYE_HEIGHT_M,
+}
+
 /** 정지·앉기(기본) 콘 반경 원시값(도) — `requirements.md` v1.8 확정값.
  * 라디안 변환은 아래 `DEFAULT_SPREAD`에서 유도한다(ADR-0010, 리터럴 금지 —
  * 프로덕션 코드가 변환된 라디안 값을 직접 복제하지 않는다). */

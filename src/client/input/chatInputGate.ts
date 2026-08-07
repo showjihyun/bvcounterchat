@@ -12,13 +12,34 @@ import type { AimDirection } from '@client/input/aimMath'
  * "DOM 결합부와 순수 함수를 파일로 분리한다" 위치·성격.
  */
 
-/** 채팅 포커스 중일 때 이동 입력 대신 쓰는 무입력 값. `mode`는 계약이
- * 규정하지 않는다(방향이 0이면 어떤 `mode`든 이동 산술 결과는 정지 —
- * test-writer §3.2, 과잉 사양 회피) — 호출자가 넘긴 `input.mode`를 그대로
- * 보존한다. */
+/**
+ * 채팅 포커스 중일 때 이동 입력 대신 쓰는 무입력 값.
+ *
+ * **REV(RQ-40 v2.3, 2026-08-07, GA-69) — `mode`도 중립화한다.** 원래 이
+ * 자리는 "`mode`는 계약이 규정하지 않는다(방향이 0이면 어떤 `mode`든 이동
+ * 산술 결과는 정지 — test-writer §3.2, 과잉 사양 회피)"였고 호출자가 넘긴
+ * `input.mode`를 그대로 통과시켰다. **그 전제가 RQ-92 v2.2로 거짓이
+ * 됐다** — `mode`는 더 이상 이동 산술에만 쓰이는 값이 아니다. 서버가
+ * `mode==='crouch'`를 관측하면 `hitboxForMode`(`@shared/sim/combat`)로
+ * 눈높이·히트박스를 즉시 낮춘다(RQ-92 v2.2) — 방향·점프가 0(무입력)이어도
+ * `mode`만으로 서버가 판정하는 자세가 바뀐다. 게이트하지 않으면 채팅 중
+ * 크라우치 수식키(Ctrl)를 누른 채 타이핑하는 것만으로 서버에서 실제로
+ * 앉는다(evaluator F7 실증). RQ-40 원문이 "'이동 입력'에는 방향·점프뿐
+ * 아니라 자세(`mode`)도 포함된다"로 개정돼(v2.3) 이 gap을 직접 막았다 —
+ * `mode`도 `'run'`(중립값)으로 치환한다(GA-69).
+ *
+ * ⚠️ **소비자 주의(RQ-40 v2.3 F8, 2026-08-07)**: 이 반환값(게이트 *이후*
+ * `mode`)을 신뢰해야 하는 소비처는 서버 전송뿐만이 아니다 —
+ * `PlayerControls.tsx`의 1인칭 카메라 눈높이(`modeRef`)도 이 값(정확히는
+ * `createChatGatedActions.sendMoveInput`이 돌려주는 `sent.mode`)을 읽어야
+ * 한다. 게이트 *이전* 원시 `mode`(`movementTracker.getMoveInput()`의 결과)를
+ * 읽으면 채팅 포커스 중에도 원시 자세가 화면에 새어나간다 — 그 파일 모듈
+ * 코멘트의 같은 REV 절 참고. 크로스헤어(`crosshairGapPx`)가 이미 겪은
+ * 문제(PR #61 리뷰 blocker)와 같은 클래스다.
+ */
 export function gateMoveInput(chatFocused: boolean, input: MoveInput): MoveInput {
   if (!chatFocused) return input
-  return { ...input, dirX: 0, dirZ: 0, jump: false }
+  return { ...input, dirX: 0, dirZ: 0, mode: 'run', jump: false }
 }
 
 /** 채팅 포커스 중이면 사격 의도를 항상 false로 치환한다. */

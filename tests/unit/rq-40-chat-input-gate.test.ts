@@ -37,13 +37,33 @@ import { CROSSHAIR } from '@client/config/design-tokens'
  *   export function gateMoveInput(chatFocused: boolean, input: MoveInput): MoveInput
  *   export function gateFireIntent(chatFocused: boolean, wantsFire: boolean): boolean
  *
- * `gateMoveInput`은 `chatFocused`가 true면 방향·점프가 전부 무입력인
- * `MoveInput`을 반환하고(어떤 방향키를 누르고 있었든 무관), false면 `input`을
- * 그대로(값 동일하게) 반환한다. `mode` 필드의 정확한 값(무입력 상태에서
- * 'run'인지 다른 값인지)은 이 계약이 규정하지 않는다 — 방향이 0이면 어떤
- * `mode`든 이동 산술(`@shared/sim/movement`)의 결과는 정지이므로, 이 필드
- * 값에 결합하는 것은 과잉 사양이다. `gateFireIntent`는 동일한 정신으로
- * 사격 의도(boolean)를 게이트한다.
+ * `gateMoveInput`은 `chatFocused`가 true면 방향·점프가 전부 무입력이고
+ * **`mode`도 `'run'`으로 중립화된** `MoveInput`을 반환하고(어떤 방향키·
+ * 수식키를 누르고 있었든 무관), false면 `input`을 그대로(값 동일하게)
+ * 반환한다. `gateFireIntent`는 동일한 정신으로 사격 의도(boolean)를
+ * 게이트한다.
+ *
+ * **REV(RQ-40 v2.3, 2026-08-07, GA-69 신설) — `mode` 중립화 계약으로
+ * 뒤집힘(team-lead 지시, 예외적 기존 계약 변경)**: 이 계약은 원래
+ * "`mode` 필드의 정확한 값(무입력 상태에서 'run'인지 다른 값인지)은
+ * 이 계약이 규정하지 않는다 — 방향이 0이면 어떤 `mode`든 이동 산술
+ * (`@shared/sim/movement`)의 결과는 정지이므로, 이 필드 값에 결합하는
+ * 것은 과잉 사양이다"였다. **그 근거가 RQ-92 v2.2로 거짓이 됐다** —
+ * `mode`는 더 이상 이동 산술에만 쓰이는 값이 아니다. 서버가
+ * `mode==='crouch'`를 관측하면 `hitboxForMode`(`@shared/sim/combat`)로
+ * 눈높이·히트박스를 즉시 낮춘다(RQ-92 v2.2, GA-64~67) — 방향·점프가
+ * 0(무입력)이어도 `mode`만으로 서버가 판정하는 자세가 바뀐다. 그 결과
+ * 채팅 입력 중 크라우치 수식키(Ctrl)를 누른 채 타이핑하면 실제로
+ * 서버에서 플레이어가 앉는 결함이 생겼다(evaluator F7 실증 — 채팅
+ * 입력 중 Ctrl+A·Ctrl+V를 누르면 서버가 실제로 앉혀 히트박스 범위가
+ * [0,1.8]에서 [0,1.35]로 낮아지고 카메라도 내려가는 것을 재현했다).
+ * RQ-40 원문이
+ * "'이동 입력'에는 방향·점프뿐 아니라 자세(`mode`)도 포함된다 — 채팅을
+ * 입력하는 동안 누른 수식키가 서버 판정에 반영되어서는 안 된다"로
+ * 개정돼(v2.3, `requirements.md`) 이 gap을 직접 막았다 — **`mode`도
+ * `'run'`(중립값)으로 치환해야 한다**는 것이 새 계약이다(GA-69,
+ * `harness/evals/golden/track-a-product.jsonl`). 다음 사람이 왜
+ * 뒤집혔는지 알 수 있도록 원래 문장을 위에 그대로 남긴다.
  *
  * **결정론**: DOM·타이머·네트워크 어디에도 의존하지 않는 순수 함수 호출
  * 뿐이다 — fake timer도 불필요하다.
@@ -62,6 +82,18 @@ describe('RQ-40 채팅 입력 차단 — gateMoveInput', () => {
   it('양성 대조군 — 채팅 포커스가 아니면 이동 입력이 값 그대로 전달된다(과잉 게이팅 방지)', () => {
     const gated = gateMoveInput(false, FULL_INPUT)
     expect(gated).toEqual(FULL_INPUT)
+  })
+
+  /**
+   * RQ-40 v2.3/GA-69(evaluator F7 대응) — `mode`도 중립화 대상이다. 지금
+   * 구현은 방향·점프만 지우고 `mode`는 원본을 그대로 통과시키므로 이
+   * 테스트는 **실패해야 정상**이다(Red) — RQ-92 v2.2로 `mode==='crouch'`가
+   * 서버 판정(눈높이·히트박스)에 직접 반영되게 되면서, 채팅 중 크라우치
+   * 수식키를 누른 채 타이핑하면 서버에서 실제로 앉는 결함이 생겼다.
+   */
+  it("RQ-40 v2.3/GA-69: 채팅 포커스 중이면 mode도 'run'으로 중립화된다 — 방향·점프가 0이어도 mode만으로 서버 판정(눈높이·히트박스)이 바뀔 수 있다(RQ-92 v2.2)", () => {
+    const gated = gateMoveInput(true, FULL_INPUT)
+    expect(gated.mode).toBe('run')
   })
 })
 
@@ -139,6 +171,26 @@ describe('RQ-40 배선 가드 — createChatGatedActions(리뷰 M4, choke point 
     expect(sent.dirX).toBe(0)
     expect(sent.dirZ).toBe(0)
     expect(sent.jump).toBe(false)
+  })
+
+  /**
+   * RQ-40 v2.3/GA-69(evaluator F7 대응) — **두 층 다 덮는다**는 지시:
+   * 순수 함수(`gateMoveInput`) 하나만 고정하면 `createChatGatedActions`
+   * 배선이 그 함수를 호출하지 않아도(또는 `mode`만 빠뜨려도) 위 순수
+   * 함수 테스트는 여전히 초록이다 — 22b `applyLookToCamera` 가드가
+   * 이미 겪은 것과 같은 구멍(이 파일 상단 "리뷰 major M4" 절). choke
+   * point(`createChatGatedActions`)가 실제로 `sendMoveInput`에 실어
+   * 보내는 값까지 관측해야 배선 누락을 잡는다. 지금 구현은 이 테스트가
+   * **실패해야 정상**이다(Red).
+   */
+  it("RQ-40 v2.3/GA-69(서버까지 가는 경로): 채팅 포커스 중이면 sendMoveInput으로 전달되는 mode도 'run'이다", () => {
+    const { connection } = createConnectionStub()
+    const gated = createChatGatedActions(() => true, connection)
+
+    gated.sendMoveInput(RAW_INPUT)
+
+    const sent = (connection.sendMoveInput as ReturnType<typeof vi.fn>).mock.calls[0]![0] as MoveInput
+    expect(sent.mode).toBe('run')
   })
 
   it('채팅 포커스 중이면 fire() 호출이 스텁 room.send까지 도달하지 않는다', () => {

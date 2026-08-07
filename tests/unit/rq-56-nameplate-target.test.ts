@@ -5,9 +5,10 @@ import {
   type NameplateCandidate,
 } from '@client/hud/nameplateTarget'
 import { eyeOrigin, findClosestHit, type Vec3 } from '@shared/sim/combat'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import { PLAYER } from '@shared/constants'
+import { canAct } from '@shared/sim/lifecycle'
 
 /**
  * RQ-56 이름표 대상 판정(원장 24ab).
@@ -53,6 +54,25 @@ function serverHitId(
   const hit = findClosestHit(
     { origin: eyeOrigin(SELF_FOOT, DEFAULT_HITBOX.eyeHeightM), direction: AIM_EAST },
     [...candidates].filter(([, p]) => p.hp > 0).map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
+    DEFAULT_HITBOX,
+    walls,
+  )
+  return hit?.id
+}
+
+/** `serverHitId`의 일반화 — 사수 자신의 눈높이·조준 방향을 인자로 받는다
+ * (PR #68 blocker, 사수 자세 축). 기존 `serverHitId`는 건드리지 않는다 —
+ * 그 헬퍼를 쓰는 기존 테스트가 전부 선 자세·`AIM_EAST`를 전제한다. 이
+ * 헬퍼는 아래 "사수 자신의 눈높이" describe만 쓴다. */
+function serverHitIdWithEyeHeight(
+  candidates: Map<string, NameplateCandidate>,
+  walls: readonly (typeof PRODUCTION_WALLS)[number][],
+  eyeHeightM: number,
+  direction: Vec3 = AIM_EAST,
+): string | undefined {
+  const hit = findClosestHit(
+    { origin: eyeOrigin(SELF_FOOT, eyeHeightM), direction },
+    [...candidates].filter(([, p]) => canAct(p.hp)).map(([id, p]) => ({ id, pose: { position: { x: p.x, y: p.y, z: p.z } } })),
     DEFAULT_HITBOX,
     walls,
   )
@@ -196,5 +216,102 @@ describe('RQ-56 blocker 회귀 — 앵커는 보간 표시 위치를 따른다',
       return undefined
     })
     expect(asked).toEqual(['near'])
+  })
+})
+
+/**
+ * PR #68 리뷰 blocker(team-lead 실측, 원장 24ax 후속) — **사수 자신의**
+ * 눈높이도 자세(mode)를 따라야 한다. 카메라(`PlayerControls.tsx:288`)와
+ * 서버 레이(`GameRoom.ts:769~771`)는 사수 자신의 `mode`로
+ * `hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode).eyeHeightM`을 쓰는데,
+ * 이름표 레이(`nameplateTarget.ts:139`)는 언제나 `DEFAULT_HITBOX.eyeHeightM`
+ * (선 자세, 1.700)이었다 — 앉아도 이름표 판정만 선 자세 눈높이를 쓴다.
+ * 세 레이 모두 방향 벡터는 `yawPitchToDirection`이 만드는 같은 벡터이므로,
+ * 이름표 레이와 카메라·서버 레이는 원점만 y로 어긋난 **평행선**이고 그
+ * 차이는 거리와 무관하게 항상 `DEFAULT_HITBOX.eyeHeightM -
+ * CROUCH_HITBOX.eyeHeightM`이다 — 앉아서 선 대상의 머리를 정조준하면
+ * 서버는 헤드샷인데 이름표 레이는 대상 위를 지나 이름이 사라지고(쏠 수
+ * 있는데 안 보인다), 대상 상단 바깥을 겨누면 반대로 이름만 뜬다. RQ-56
+ * 동치("쏠 수 있으면 보이고, 보이면 쏠 수 있다")의 정면 위반이다.
+ *
+ * **원장 24ba가 이 축을 덮지 않는 이유**: 24ba는 *대상*의 히트박스
+ * 축이고, 이월 사유는 "클라가 원격 플레이어의 자세를 모른다(서버
+ * `Player` 스키마에 `mode` 필드 0건, 원장 24az)"다. 그 사유는 **사수
+ * 자신**에는 성립하지 않는다 — `modeRef.current`(사수 자신의 최근 자세)가
+ * 이름표 판정과 **같은 30Hz 루프**(`PlayerControls.tsx`, 이름표 호출부
+ * 바로 38줄 위에서 그 값을 갱신한다) 안에 이미 있다. 와이어 프로토콜
+ * 확장 없이 닫을 수 있는 축이다.
+ *
+ * **API 계약(test-writer 결정) — `resolveNameplateTarget`에 6번째 파라미터로
+ * `selfEyeHeightM?: number`를 추가한다**(생략하면 `DEFAULT_HITBOX.eyeHeightM`,
+ * 즉 선 자세 — 기존 호출부 전부가 그대로 유효한 안전한 기본값).
+ *
+ * - **위치를 `anchorPosition` 뒤(6번째)에 두는 이유**: `anchorPosition`은
+ *   이미 5번째 자리에서 실 콜백으로 쓰이는 기존 테스트가 이 파일에
+ *   10건 넘게 있다(보간 describe 3건 포함). 그 앞에 끼워 넣으면 그
+ *   호출들의 5번째 위치 인자가 숫자로 오인돼 **기존 테스트를 고쳐야
+ *   한다**(이 라운드의 "순증만" 규칙 위반). 뒤에 두면 기존 호출 전부가
+ *   손대지 않아도 그대로 유효하다 — 이 describe만 6번째 인자를 명시한다.
+ * - **`mode`가 아니라 `eyeHeightM`(숫자)을 받는 이유**: `eyeOrigin`·
+ *   `effectiveSpreadConeRadius`가 이미 확립한 "값을 함수 내부에서 직접
+ *   import하지 않고 호출자가 넘긴다"(config→sim 의존 방향, `combat
+ *   -tuning.ts` 모듈 코멘트) 관례와 동일하게 맞춘다 — 호출자
+ *   (`PlayerControls.tsx`)는 이미 `hitboxForMode(DEFAULT_HITBOX,
+ *   CROUCH_HITBOX, modeRef.current).eyeHeightM`을 계산해 카메라·서버
+ *   양쪽에 쓰고 있으므로 그 값을 그대로 넘기면 된다 — `nameplateTarget
+ *   .ts`가 `hitboxForMode`/`CROUCH_HITBOX`를 새로 import할 필요가 없고,
+ *   "차폐·조준선" 축만 다룬다는 이 모듈의 기존 경계도 그대로 지켜진다.
+ * - **닫는 범위**: 이 describe는 **사수 자신**의 눈 원점 축만 닫는다.
+ *   대상 후보의 히트박스(`bodyRadiusM` 등)가 자세에 따라 달라지는 축은
+ *   여전히 원장 24ba·24ae의 영역이다(위 모듈 상단 REV 주석 그대로 유효).
+ */
+describe('RQ-56 blocker(PR #68) — 사수 자신의 눈높이도 자세(mode)를 따라야 한다', () => {
+  it('앉은 사수의 이름표 레이 원점은 발+CROUCH_HITBOX.eyeHeightM이다(선 자세 발+DEFAULT_HITBOX.eyeHeightM과 다르다) — 두 눈높이 사이에 걸친 대상으로 직접 관측', () => {
+    // 대상의 발 높이를 두 눈높이의 정중앙에 둔다(ADR-0010 — 리터럴 금지,
+    // 두 eyeHeightM 상수에서 유도) — 선 자세 레이(더 높음)는 대상의 바디
+    // 범위 안(대상 발보다 위)이라 명중하고, 앉은 자세 레이(더 낮음)는
+    // 대상 발 아래라 명중하지 않는다.
+    const midEyeHeightM = (DEFAULT_HITBOX.eyeHeightM + CROUCH_HITBOX.eyeHeightM) / 2
+    const map = others({ target: { nickname: '대상', x: 10, y: midEyeHeightM, z: 0, hp: PLAYER.MAX_HP } })
+
+    const standing = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, DEFAULT_HITBOX.eyeHeightM)
+    expect(standing?.sessionId).toBe('target')
+
+    const crouched = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, CROUCH_HITBOX.eyeHeightM)
+    expect(crouched).toBeUndefined()
+  })
+
+  it('동치 — 앉은 사수가 선 대상의 머리를 정조준하면 이름표 판정이 서버 hitscan 판정(findClosestHit)과 같은 대상을 고른다', () => {
+    // team-lead가 실측한 바로 그 배치(원장 24ax 후속 메시지) — 앉은 사수가
+    // (눈높이 CROUCH_HITBOX.eyeHeightM) 대상(선 자세)의 머리 중심을 향해
+    // 위쪽으로 살짝 올려 겨눈다(실제 조준처럼 낮은 눈높이에서 위를 본다).
+    // AIM_EAST(수평)로는 두 눈높이가 같은 단독 대상에 둘 다 명중해(부위만
+    // 다르고 sessionId는 같아) 이 축의 버그를 드러내지 못한다 — 그래서
+    // 위로 각도를 준다. 리터럴 금지(ADR-0010) — 높이차는 두 상수에서 유도.
+    //
+    // 서버가 앉은 사수에 대해 실제로 쓰는 것과 정확히 같은 조합
+    // (GameRoom.ts:769~771: hitboxForMode(...).eyeHeightM → eyeOrigin)의
+    // 오프라인 오라클. 대상은 선 자세이므로 서버 쪽 히트박스도
+    // DEFAULT_HITBOX다(대상 자세 축은 원장 24ba 이월 — 이 테스트는 사수
+    // 자세 축만 다룬다).
+    const distance = 10
+    const map = others({ target: targetFootAt(distance) })
+    const dy = DEFAULT_HITBOX.headCenterM - CROUCH_HITBOX.eyeHeightM
+    const aimAtHead: Vec3 = { x: distance, y: dy, z: 0 }
+
+    const serverHit = serverHitIdWithEyeHeight(map, [], CROUCH_HITBOX.eyeHeightM, aimAtHead)
+    const nameplate = resolveNameplateTarget(SELF_FOOT, aimAtHead, map, [], undefined, CROUCH_HITBOX.eyeHeightM)
+
+    expect(nameplate?.sessionId).toBe(serverHit)
+    // 공허 방지 — 이 조준은 실제로 명중해야 한다(오프라인 오라클로 확인 —
+    // 정확히 머리 중심을 겨눴으므로 region은 항상 head다).
+    expect(serverHit).toBe('target')
+  })
+
+  it('양성 대조군 — 선 자세(DEFAULT_HITBOX.eyeHeightM을 명시)에서는 결과가 파라미터를 생략했을 때(기존 동작, 기본값)와 완전히 같다', () => {
+    const map = others({ enemy: targetFootAt(10) })
+    const withoutParam = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [])
+    const withStandingExplicit = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, DEFAULT_HITBOX.eyeHeightM)
+    expect(withStandingExplicit).toEqual(withoutParam)
   })
 })

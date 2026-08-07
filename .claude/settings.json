@@ -5,9 +5,7 @@
       "Read(./.env.*)",
       "Read(./secrets/**)"
     ],
-    "ask": [
-      "Edit(./harness/evals/golden/**)"
-    ]
+    "ask": []
   },
   "hooks": {
     "PreToolUse": [

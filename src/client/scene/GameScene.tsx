@@ -36,8 +36,14 @@ export function GameScene({ store, connection, uiStore }: GameSceneProps) {
       gl={{ powerPreference: 'high-performance', antialias: false }}
       // 초기 카메라 높이는 눈높이 상수를 그대로 쓴다(리뷰 minor 1 — 이전엔
       // 리터럴 1.7이었고 `eyeHeightM`이 1.7로 복원되며 우연히 일치했다).
-      // 첫 프레임에 `PlayerControls`가 예측 위치로 덮어쓰므로 과도값이지만,
-      // 리터럴을 남기면 상수가 바뀔 때 조용히 어긋난다(ADR-0010).
+      // **예측 또는 서버 스냅샷이 처음 도착한 프레임부터** `PlayerControls`가
+      // 덮어쓴다 — 그 전까지는 이 값이 그대로 보인다(PR #68 리뷰 D5 — 이전
+      // 주석은 "첫 프레임에 덮어쓴다"고 조건 없이 단정했다). ⚠️ 그 창에서는
+      // 자세가 반영되지 않지만 **결함이 아니다**: `x·z`도 플레이어 위치가
+      // 아닌 자리표시자라 눈높이 0.478m 차이는 이미 수십 m일 수 있는 수평
+      // 오차 안의 잡음이고, 같은 창에서 이름표는 `selfFoot`이 없어 꺼진다
+      // (`PlayerControls.tsx` `setNameplate(null)`). 서버는 이 값을 보지
+      // 않는다(RQ-61). 리터럴을 남기면 상수가 바뀔 때 조용히 어긋난다(ADR-0010).
       camera={{ fov: 75, position: [0, DEFAULT_HITBOX.eyeHeightM, 5], near: 0.1, far: WORLD.SIZE_M * 2 }}
     >
       {/* 원장 24c — 씬 색 5곳이 리터럴이었다. 정본은 `SCENE`이고 여기는 참조만
