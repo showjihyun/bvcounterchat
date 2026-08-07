@@ -49,6 +49,22 @@
  * "같은 차폐 목록"은 **코드가 그렇게 되어 있다**는 서술이지 테스트가 지킨다는
  * 뜻이 아니다.
  *
+ * ✅ **REV4(PR #68 리뷰 F1 blocker, 2026-08-08, 원장 24az 후속) — 앵커
+ * "높이"에도 같은 시간축 문제가 있었다.** REV3이 대상 히트박스 축을 최신
+ * `mode`로 닫았지만, **표시**(앵커 높이) 쪽은 여전히 최신 `mode`를 썼다 —
+ * 몸은 `PlayerMeshes.tsx`가 `remoteMeshHeightM(interpolator.getMode(...))`로
+ * **보간 지연된** 자세로 그리는데, 앵커 높이는 `nameplateAnchorHeightM
+ * (player.mode)`로 **최신** 자세를 썼다. 정지 상태에서는 두 값이 항상
+ * 같아 드러나지 않고, 전환 직후 보간 지연 창(66.67ms) 안에서만 어긋난다
+ * — 실측: 일어서는 순간 그려진 몸은 아직 1.35m인데 앵커는 2.05m(0.7m
+ * 허공, GA-73 `then`이 적은 바로 그 수치이자 PR #66에서 blocker였던
+ * 0.40m보다 크다). 7번째 파라미터 `anchorMode`(아래 함수 docblock)로
+ * 닫았다 — **앵커 위치(§위 "앵커는 다르다")와 앵커 높이가 이제 같은
+ * 시간축(보간 지연)을 본다.** ⚠️ **대상 선택·히트박스 판정(REV3, GA-74)은
+ * 건드리지 않았다** — 서버는 항상 최신 입력으로 판정하므로(RQ-61), 그
+ * 축까지 지연시키면 "쏠 수 있으면 보인다" 동치가 오히려 깨진다. 시간축을
+ * 맞춰야 하는 것은 **표시뿐**이다.
+ *
  * ## 서버와 **일부러** 다른 두 가지
  *
  * 1. **탄퍼짐을 적용하지 않는다.** 서버는 발사 시 시드로 콘 안에서 방향을
@@ -165,9 +181,26 @@ export function nameplateAnchorHeightM(mode: MoveInput['mode'] = 'run'): number 
  * 계약은 **그룹 안에서만** 성립한다 — 그룹 간 최단 거리 비교를 빠뜨리면
  * (예: `standingHit ?? crouchHit`처럼 한쪽을 무조건 우선하면) 실제로는 더
  * 먼 그룹이 뽑힌다(RQ-92 F1 라운드에서 `GameRoom.handleFire` 구현 중 실제로
- * 났던 결함과 같은 계열 — `GameRoom.ts`의 같은 절 주석 참고). 선택된 대상의
- * 이름표 앵커도 **그 대상 자신의** `mode`로 계산한다(`nameplateAnchorHeightM`
- * — 사수가 아니라 대상의 키를 따라야 앵커가 몸 위에 온다).
+ * 났던 결함과 같은 계열 — `GameRoom.ts`의 같은 절 주석 참고). **이 그룹
+ * 판정(대상 선택·히트박스)은 항상 후보의 최신 `mode`를 쓴다 — 아래
+ * `anchorMode`(표시 전용)의 영향을 받지 않는다(REV4).**
+ *
+ * @param anchorMode **REV4(PR #68 F1 blocker, 2026-08-08)** — 선택된
+ *   대상의 이름표 **앵커 높이**를 계산할 때 쓸 자세를 돌려준다.
+ *   `anchorPosition`(5번째)과 완전히 대칭인 위치·원칙 — "최신 스냅샷
+ *   값"(그룹 판정, 위)과 "호출자가 보간기에서 얻어 넘기는 지연 값"(표시)을
+ *   분리한다. 프로덕션 호출부는 `interpolator.getMode(id, now())`를
+ *   넘긴다 — `PlayerMeshes.tsx`가 몸 높이(`remoteMeshHeightM`)에 쓰는 것과
+ *   **같은 호출**이라 몸과 앵커가 항상 같은 시간축을 본다. 생략하거나
+ *   `undefined`를 반환하면(첫 프레임 등 보간 이력이 아직 없음)
+ *   `player.mode`(후보의 최신 자세)로 떨어진다 — `anchorPosition`을
+ *   생략하면 "지연 없는 스냅샷 위치"로 떨어지는 것과 정확히 같은 등급의
+ *   폴백이다(원장 24bd가 경고한 "조용히 틀린 값" 위험을 그대로 인지하고
+ *   받아들인다 — `anchorPosition`이 이미 같은 위험을 안고 코드 리뷰로
+ *   관리돼 왔다). **옵셔널인 것은 선택이 아니라 강제다** — 이미 옵셔널인
+ *   6번째 인자(`selfEyeHeightM`) 뒤에 필수 인자를 두면 함수 선언 자체가
+ *   컴파일 에러다(TS 문법), "순증만" 규칙도 기존 15건 넘는 호출부를
+ *   건드리지 않기를 강제한다.
  */
 export function resolveNameplateTarget(
   selfFoot: Vec3,
@@ -176,6 +209,7 @@ export function resolveNameplateTarget(
   walls: readonly WallAABB[],
   anchorPosition?: (sessionId: string) => Vec3 | undefined,
   selfEyeHeightM: number = DEFAULT_HITBOX.eyeHeightM,
+  anchorMode?: (sessionId: string) => MoveInput['mode'] | undefined,
 ): NameplateTarget | undefined {
   if (others.size === 0) return undefined
 
@@ -191,6 +225,21 @@ export function resolveNameplateTarget(
   // — 새 코드에서 같은 함정을 반복하지 않는다). `hitboxForMode`가 둘 중
   // 하나를 그대로 반환하는 계약이므로(새 객체 생성 없음) 참조 동일성으로
   // 그룹을 가른다.
+  //
+  // ⚠️ **평가 F3 — 이 참조 동일성 위임에는 직접 단언이 없다(test-writer
+  // 영역, 이 라운드는 코드 주석으로만 계약을 명시한다).** 아래 `===
+  // CROUCH_HITBOX` 판정은 **`hitboxForMode`가 인자로 받은 두 객체 중
+  // 하나를 새로 만들지 않고 그대로 반환한다**는 계약에 전적으로
+  // 의존한다 — 그 함수가 훗날 `{ ...crouch }`처럼 복사본을 반환하도록
+  // 바뀌면 이 판정은 (컴파일 에러 없이) 조용히 항상 `standingCandidates`
+  // 쪽으로만 떨어진다.
+  //
+  // ⚠️ **평가 F4 — 서버(`GameRoom.handleFire`)는 아직 `mode === 'crouch'`
+  // 직접 비교 스타일이다(원장 24be, 이 PR 스코프 밖 — 24be가 소유한
+  // 이월).** 이 파일만 참조 동일성 위임으로 리팩터돼 두 판정 술어의
+  // "스타일"이 갈렸다 — 결과(어느 후보가 어느 그룹에 들어가는가)는
+  // 오늘 시점 두 스타일이 동일하므로 동작 차이는 없다. 다음 사람이 두
+  // 스타일을 보고 헷갈리지 않도록 남긴다.
   const standingCandidates: HitCandidate[] = []
   const crouchCandidates: HitCandidate[] = []
   for (const [sessionId, player] of others) {
@@ -228,12 +277,17 @@ export function resolveNameplateTarget(
 
   // 몸이 그려지는 자리(보간)에 이름을 붙인다 — 위 ⚠️ 참고.
   const foot = anchorPosition?.(hit.id) ?? { x: player.x, y: player.y, z: player.z }
+  // RQ-92 v2.4 REV4(F1 blocker) — 앵커 **높이**도 앵커 **위치**와 같은
+  // 시간축(보간 지연)을 봐야 한다. `anchorMode`가 있고 undefined가
+  // 아니면 그 값(호출자가 보간기에서 얻은 지연 자세)을, 없으면 후보의
+  // 최신 `mode`로 떨어진다 — `anchorPosition`의 스냅샷 폴백과 동일한
+  // 원칙(원장 24bd 위험을 인지하고 받아들인다, 위 함수 docblock 참고).
+  const heightMode = anchorMode?.(hit.id) ?? player.mode
   return {
     sessionId: hit.id,
     nickname: player.nickname,
-    // RQ-92 v2.4 — 앵커 높이는 선택된 **대상 자신의** mode를 따른다(사수의
-    // mode가 아니다). `nameplateAnchorHeightM`은 `undefined`를 명시적으로
-    // 받아도 기본값('run')으로 대체한다(JS 파라미터 기본값 의미론).
-    anchor: { x: foot.x, y: foot.y + nameplateAnchorHeightM(player.mode), z: foot.z },
+    // `nameplateAnchorHeightM`은 `undefined`를 명시적으로 받아도 기본값
+    // ('run')으로 대체한다(JS 파라미터 기본값 의미론).
+    anchor: { x: foot.x, y: foot.y + nameplateAnchorHeightM(heightMode), z: foot.z },
   }
 }

@@ -239,6 +239,14 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
         // `hitboxForMode`는 두 인자 중 하나를 그대로 반환할 뿐 새 객체를
         // 만들지 않는다(프레임 예산 ADR-0001, 이 루프는 30Hz라도 같은 규율).
         hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, sent.mode).eyeHeightM,
+        // RQ-92 v2.4 F1 blocker(원장 24az 후속) — 앵커 **높이**도 위
+        // `anchorPosition`과 같은 시간축(보간 지연)을 봐야 한다. 몸 높이를
+        // 정하는 `PlayerMeshes.tsx`가 원격 플레이어에게 쓰는 것과 **같은
+        // 호출**(`interpolator.getMode(id, renderTime)`)이라 몸과 앵커가
+        // 항상 같은 자세를 본다 — 몸은 아직 지연된 자세로 그려지는데
+        // 앵커만 최신 자세로 뜨는 어긋남(평가 F1 실측, 최대 0.7m 허공)을
+        // 막는다.
+        (id) => connection.interpolator.getMode(id, connection.now()),
       )
       if (!target) {
         uiStore.getState().setNameplate(null)
