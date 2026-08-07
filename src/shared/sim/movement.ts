@@ -310,9 +310,7 @@ function clampToWorldBounds(value: number): number {
 /**
  * 벽 목록(`WallAABB[]`)에 대해 이번 틱 후보 위치(nextX/nextZ)를 근접면에서
  * 절단한다 — **축별 독립 절단**(RQ-30 팀리드 지시: "정지 방식을 과도하게
- * 설계하지 마라 — 부등식만 단언한다"). 이 라운드의 커버리지(원장 25a-2)가
- * ±X·±Z 단일축 접근만 다루므로, x축·z축을 순서대로 독립 적용해도 충분하다
- * (대각선 이동 중 모서리 스침 같은 케이스는 이 계약이 시험하지 않는다).
+ * 설계하지 마라 — 부등식만 단언한다"). x축·z축을 순서대로 독립 적용한다.
  *
  * 각 벽에 대해, 이동 축과 **수직**인 축의 좌표가 벽의 범위 안에 있을 때만
  * 절단한다 — 그렇지 않으면 벽 옆을 스쳐 지나가는 경로까지 막아버린다(위
@@ -339,13 +337,29 @@ function clampToWorldBounds(value: number): number {
  * 세계 경계의 `clampToWorldBounds`(상태 비보유 절단)와 달리 이 함수는
  * "다가오는 방향"까지 함께 봐야 하므로 직전 위치가 필요하다.
  *
- * **수직축(스침 여부) 판정은 반경을 반영하지 않는다**(의도적 스코프
- * 제한) — `z > wall.minZ && z < wall.maxZ`(x축 절단의 "이 벽이 실제로
- * 관여하는가" 게이트)는 원래 벽 경계 그대로다. 사용자 결정과 이 라운드의
- * 테스트(`24af-body-radius-walls.test.ts` 등)는 축 정렬 정면 접근만
- * 다루고 모서리 스침의 반경 처리는 규정하지 않는다(위 "축별 독립 절단"
- * 문단과 동일 스코프) — 손대면 테스트가 요구하지 않는 동작을 추가하는
- * 것이 된다. */
+ * **REV(원장 24ao, 사용자 결정 2026-08-06 연장) — 수직축(스침 여부) 게이트도
+ * 같은 반경 목표점을 쓴다.** 24af 최초 구현은 이 게이트(`z > wall.minZ &&
+ * z < wall.maxZ` 등)를 원래 벽 경계 그대로 뒀다 — 그 결과 벽 모서리를
+ * 반경보다 가깝게 스치면(두 축이 동시에, 또는 게이트가 보는 축 하나가
+ * 원래 범위 밖) 게이트가 "이 벽은 관여하지 않는다"고 판정해 절단 자체가
+ * 발동하지 않고 몸이 벽 내부로 그대로 지나갔다(독립 평가 O4 실측,
+ * `24ao-corner-body-radius-*.test.ts` Red). 게이트를 `near*`(반경만큼
+ * 팽창된 AABB, 축별 독립 Minkowski 근사)로 바꾸면 이 스침도 걸린다.
+ *
+ * **AABB를 사각으로(원이 아니라) 팽창시키는 것은 의도적으로 보수적인
+ * 근사다(사용자 승인, 원장 24ao)** — 모서리가 둥글지 않고 각지므로, 정확히
+ * 대각(45°)으로 접근하면 이론적 원형 반경(`R`)보다 **최대 `R(√2−1)≈0.1243m`
+ * 더 일찍** 막힌다(`24ao-corner-body-radius-walls.test.ts` 명제 3, 상한
+ * `R√2`). "더 통과시키는" 방향이 아니라 "더 막는" 방향의 근사 오차라
+ * RQ-61(서버가 더 보수적으로 판정해 몸이 절대 지오메트리에 박히지 않는
+ * 쪽)과 양립한다.
+ *
+ * **한쪽 게이트만 고치면 안 된다(검출력 함정, Red 보고서 §4-2)** — 이
+ * 함수는 x축 절단을 먼저 계산하고 z축 절단이 그 결과를 이어받으므로,
+ * 정확히 45° 대각 접근에서는 먼저 평가되는 축의 게이트 하나만 고쳐도
+ * 그 축의 절단이 사실상 반대 축까지 막아버려 "대각 케이스만" 보면 완전
+ * 수정과 절반 수정이 구분되지 않는다. 두 게이트 모두 `near*`로 바꿔야
+ * 한다(아래 구현, 축별 직선 스침 테스트가 게이트별로 개별 검증한다). */
 function clampAgainstWalls(
   prevX: number,
   prevZ: number,
@@ -359,15 +373,18 @@ function clampAgainstWalls(
   for (const wall of walls) {
     // 반경만큼 바깥으로 민 절단 목표점 — 이 벽(또는 벽으로 합류한
     // 박스·플랫폼)에 대해서만 유효하므로 루프 안에서 매번 계산한다.
+    // 절단 목표점(위)과 아래 두 게이트(모서리 스침 판정, 원장 24ao)가
+    // 같은 네 값을 공유한다 — 사각 Minkowski 팽창 하나로 목표점 계산과
+    // "이 벽이 관여하는가" 판정을 동시에 반영한다.
     const nearMinX = wall.minX - BODY_RADIUS_M
     const nearMaxX = wall.maxX + BODY_RADIUS_M
     const nearMinZ = wall.minZ - BODY_RADIUS_M
     const nearMaxZ = wall.maxZ + BODY_RADIUS_M
 
-    // x축 이동 절단 — z(수직축)가 벽의 z범위 안에 있어야("스쳐 지나감"이
-    // 아니라 실제로 벽면과 마주친다) 충돌로 본다(원래 벽 경계 그대로 —
-    // 위 "수직축 판정" 문단).
-    if (z > wall.minZ && z < wall.maxZ) {
+    // x축 이동 절단 — z(수직축)가 팽창된 벽의 z범위 안에 있어야("스쳐
+    // 지나감"이 아니라 실제로 벽면(반경 포함)과 마주친다) 충돌로 본다
+    // (원장 24ao REV — 원래는 팽창 전 `wall.minZ`/`wall.maxZ`를 썼다).
+    if (z > nearMinZ && z < nearMaxZ) {
       if (prevX <= nearMinX && x > nearMinX) {
         x = nearMinX
       } else if (prevX >= nearMaxX && x < nearMaxX) {
@@ -375,9 +392,10 @@ function clampAgainstWalls(
       }
     }
 
-    // z축 이동 절단 — x(수직축)가 벽의 x범위 안에 있어야 충돌. 위에서 x가
-    // 이미 절단됐을 수 있으므로 절단된 x로 재평가한다(원래 벽 경계 그대로).
-    if (x > wall.minX && x < wall.maxX) {
+    // z축 이동 절단 — x(수직축)가 팽창된 벽의 x범위 안에 있어야 충돌.
+    // 위에서 x가 이미 절단됐을 수 있으므로 절단된 x로 재평가한다(원장
+    // 24ao REV — 게이트도 팽창된 범위를 쓴다).
+    if (x > nearMinX && x < nearMaxX) {
       if (prevZ <= nearMinZ && z > nearMinZ) {
         z = nearMinZ
       } else if (prevZ >= nearMaxZ && z < nearMaxZ) {
@@ -393,11 +411,15 @@ function clampAgainstWalls(
  * 모든 박스의 `topY` 중 최댓값, 어떤 박스에도 포함되지 않으면 맨 지면
  * (0)이다(`tests/unit/sim-movement-boxes.test.ts` docblock "행동 계약"
  * 절). "포함"의 경계 규칙은 `clampAgainstWalls`의 "안에 있는가" 판정(개방
- * 구간, 예: `x > wall.minX && x < wall.maxX`)과 동일하게 **개방 구간**을
- * 쓴다 — 근접면에 막혀 정확히 `minX`에 멈춘 플레이어는 아직 "박스 안"이
- * 아니므로 지지 높이가 오르지 않는다(질문1 회신에서 명시적으로 배제한
- * 대안 (b) "차단 없이 걸어 들어가 y가 솟아오른다"와 결과가 갈리는 지점 —
- * "걸어서 접근" 테스트가 이 경계를 고정한다). */
+ * 구간, 예: `x > box.minX && x < box.maxX`, 원장 24af/24ao 이후에는
+ * 반경만큼 팽창된 `nearMinX`/`nearMaxX`)과 동일하게 **개방 구간**을 쓴다
+ * — 근접면(반경 적용 전이든 후든)에 막혀 정확히 그 경계에 멈춘 플레이어는
+ * 아직 "박스 안"이 아니므로 지지 높이가 오르지 않는다(질문1 회신에서
+ * 명시적으로 배제한 대안 (b) "차단 없이 걸어 들어가 y가 솟아오른다"와
+ * 결과가 갈리는 지점 — "걸어서 접근" 테스트가 이 경계를 고정한다).
+ * **이 함수 자신(`standingHeight`)은 반경을 반영하지 않는다** — 위
+ * `x > box.minX && x < box.maxX`는 이 함수의 실제 판정식(변경 없음)이고,
+ * `clampAgainstWalls`의 개방 구간 관례를 비유로 든 것뿐이다. */
 function standingHeight(x: number, z: number, boxes: readonly BoxAABB[]): number {
   let height = 0
   for (const box of boxes) {
