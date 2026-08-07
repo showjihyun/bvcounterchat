@@ -12,6 +12,10 @@ import { rotateLocalMoveDirection, yawPitchToDirection } from '@client/input/aim
 import { applyLookToCamera } from '@client/input/cameraLook'
 import { createChatGatedActions } from '@client/input/chatInputGate'
 import { crosshairGapPx } from '@client/hud/crosshairSpread'
+import { resolveNameplateTarget, type NameplateCandidate } from '@client/hud/nameplateTarget'
+import { PRODUCTION_WALLS } from '@shared/sim/walls'
+import * as THREE from 'three'
+import type { InterpolationPosition } from '@client/net/interpolation'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { NET } from '@shared/constants'
 
@@ -93,6 +97,9 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     const mouseLook = createMouseLookController(canvas)
     mouseLookRef.current = mouseLook
 
+    // RQ-56 재사용 버퍼 — 매 틱 새로 만들지 않는다(프레임 예산 규율).
+    const projectionScratch = new THREE.Vector3()
+    const anchorScratch: InterpolationPosition = { x: 0, y: 0, z: 0 }
     const movementTracker = createMovementInputTracker()
     const fireCooldown = createLocalFireCooldown()
     // RQ-40 M4 — 게임 레이어 출구 단일 choke point(모듈 코멘트 참고).
@@ -148,12 +155,71 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       // `setCrosshairGapPx`가 값이 바뀔 때만 `set`한다.
       const predicted = store.getState().selfPredictedState
       uiStore.getState().setCrosshairGapPx(crosshairGapPx(sent, predicted?.grounded ?? true))
+
+      // RQ-56 이름표(원장 24ab) — 조준선이 향한 대상을 찾아 화면 좌표로 옮긴다.
+      // 여기서 하는 이유는 크로스헤어와 같다: 30Hz 루프이지 `useFrame`이 아니다.
+      // 판정 자체는 `@client/hud/nameplateTarget`이 서버 hitscan과 **같은 함수**로
+      // 수행한다 — "쏠 수 있으면 보인다"(RQ-56)가 구조적으로 성립해야 한다.
+      const state = store.getState()
+      const selfId = state.selfSessionId
+      const selfFoot = predicted ?? (selfId ? state.players.get(selfId) : undefined)
+      if (!selfFoot || !selfId) {
+        uiStore.getState().setNameplate(null)
+        return
+      }
+      // 자기 자신을 후보에서 뺀다 — 넣으면 자기 이름이 뜬다.
+      // 시신 제외는 `resolveNameplateTarget`이 서버와 같은 술어(`canAct`)로 한다.
+      const candidates: Map<string, NameplateCandidate> = new Map()
+      state.players.forEach((player, id) => {
+        if (id !== selfId) candidates.set(id, player)
+      })
+      const { yaw: aimYaw, pitch: aimPitch } = mouseLook.getAngles()
+      // `AimDirection`(dirX/dirY/dirZ) → `Vec3`(x/y/z). 서버도 같은 자리에서
+      // 같은 변환을 한다(`GameRoom.ts:726` — `{ x: input.dirX, ... }`).
+      // 조준 벡터 자체는 `yawPitchToDirection` 하나가 만들고 양쪽이 그것을 쓴다.
+      const aim = yawPitchToDirection(aimYaw, aimPitch)
+      const target = resolveNameplateTarget(
+        { x: selfFoot.x, y: selfFoot.y, z: selfFoot.z },
+        { x: aim.dirX, y: aim.dirY, z: aim.dirZ },
+        candidates,
+        PRODUCTION_WALLS,
+        // 앵커는 **몸이 그려지는 자리**(보간)여야 한다 — 최신 스냅샷을 쓰면
+        // 보간 지연만큼(6m/s × 66.67ms = 0.40m) 이름이 몸 옆에 뜬다
+        // (PR #66 리뷰 blocker 2). `PlayerMeshes`와 같은 보간기·같은 렌더 시각.
+        (id) =>
+          connection.interpolator.copyPositionInto(id, connection.now(), anchorScratch)
+            ? anchorScratch
+            : undefined,
+      )
+      if (!target) {
+        uiStore.getState().setNameplate(null)
+        return
+      }
+      // 3D 앵커 → 화면 좌표. `project`는 벡터를 제자리에서 바꾸므로 재사용
+      // 벡터 하나만 둔다(프레임 예산 규칙 — 이 루프는 30Hz지만 같은 규율을 쓴다).
+      projectionScratch.set(target.anchor.x, target.anchor.y, target.anchor.z).project(camera)
+      // NDC z가 1을 넘는 조건은 **카메라 뒤**와 **far plane 바깥**을 둘 다 잡는다.
+      // 조준선이 향했으면 앞에 있지만 근평면 경계에서 투영이 뒤집히는 경우를 막는다.
+      // ⚠️ far 바깥은 현재 도달 불가다 — `far`(WORLD.SIZE_M × 2 = 120m)가 맵
+      // 대각(84.9m)보다 커서, RQ-56의 "거리 제한을 두지 않는다"와 양립한다.
+      // `far`를 줄이면 그 전제가 깨져 먼 대상의 이름표가 조용히 사라진다.
+      if (projectionScratch.z > 1) {
+        uiStore.getState().setNameplate(null)
+        return
+      }
+      const canvasRect = gl.domElement.getBoundingClientRect()
+      uiStore.getState().setNameplate({
+        nickname: target.nickname,
+        xPx: ((projectionScratch.x + 1) / 2) * canvasRect.width,
+        yPx: ((1 - projectionScratch.y) / 2) * canvasRect.height,
+      })
     }, NET.TICK_MS)
 
     return () => {
       detachPointerLock()
       document.removeEventListener('pointerlockchange', onLockChange)
       uiStore.getState().setPointerLocked(false)
+      uiStore.getState().setNameplate(null)
       mouseLook.dispose()
       mouseLookRef.current = null
       movementTracker.dispose()

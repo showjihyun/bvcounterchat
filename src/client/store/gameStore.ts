@@ -18,6 +18,12 @@ export interface ClientPlayer {
   x: number
   y: number
   z: number
+  /** 서버 확정 HP(RQ-14). **표시 판정에만 쓴다** — 클라가 이 값으로 무엇을
+   * 확정하지 않는다(RQ-61). RQ-56 이름표가 시신을 거르려면 필요하다:
+   * 서버 `handleFire`가 `canAct(player.hp)`로 시신을 사격 후보에서 빼므로,
+   * 클라가 그 필터를 못 하면 **시신 이름이 뜨는데 총알은 뒤의 산 사람을
+   * 맞히는** 상태가 된다(PR #66 리뷰 blocker 1). 스키마가 이미 동기화한다. */
+  hp: number
 }
 
 export interface ClientSpectator {
@@ -31,13 +37,26 @@ export interface ChatMessage {
   text: string
 }
 
+/** 서버 스냅샷에서 **읽는 필드만** — `ClientPlayer`를 재사용하지 않는다.
+ * 둘은 우연히 모양이 같을 뿐 다른 것이다(하나는 와이어 스키마의 부분집합,
+ * 하나는 클라 뷰 모델). 재사용하면 클라 뷰에 필드를 더할 때 **서버 값 타입까지
+ * 함께 좁아져** 무관한 테스트 픽스처가 깨진다 — RQ-56이 `hp`를 들이면서
+ * 실제로 그렇게 됐다(원장 24ab). */
+export interface ServerPlayerSnapshot {
+  nickname: string
+  x: number
+  y: number
+  z: number
+  hp: number
+}
+
 /**
  * 서버 스냅샷 컬렉션의 최소 구조적 타입 — 표준 `Map.forEach` 시그니처만
  * 요구한다. 순정 `Map`(단위 테스트)과 Colyseus `MapSchema<V>`(실 접속,
  * `implements Map<K, V>`) 양쪽 모두 이 타입을 만족한다.
  */
 export interface ServerStateSnapshot {
-  players: { forEach(cb: (value: ClientPlayer, key: string) => void): void }
+  players: { forEach(cb: (value: ServerPlayerSnapshot, key: string) => void): void }
   spectators: { forEach(cb: (value: ClientSpectator, key: string) => void): void }
   tick: number
 }
@@ -106,7 +125,7 @@ export function createGameStore(): StoreApi<GameStoreState> {
     applyServerState(state) {
       const players = new Map<string, ClientPlayer>()
       state.players.forEach((value, sessionId) => {
-        players.set(sessionId, { nickname: value.nickname, x: value.x, y: value.y, z: value.z })
+        players.set(sessionId, { nickname: value.nickname, x: value.x, y: value.y, z: value.z, hp: value.hp })
       })
 
       const spectators = new Map<string, ClientSpectator>()

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PLAYER } from '@shared/constants'
 import { createGameStore } from '@client/store/gameStore'
 import { UI } from '@shared/constants'
 
@@ -71,13 +72,25 @@ interface FakeServerPlayer {
   x: number
   y: number
   z: number
+  /** RQ-56(원장 24ab)이 시신을 이름표 후보에서 거르려고 들인 필드.
+   * 스키마에는 원래부터 있었고(`GameState.ts` `@type('number') hp`) 이 가짜만
+   * 몰랐다. `PLAYER.MAX_HP`를 쓰는 이유: 기존 케이스는 전부 산 플레이어를
+   * 전제하므로 그 의미가 바뀌지 않는다. */
+  hp: number
 }
 interface FakeServerSpectator {
   nickname: string
 }
 
-function playersMap(entries: Record<string, FakeServerPlayer>): Map<string, FakeServerPlayer> {
-  return new Map(Object.entries(entries))
+/** `hp`를 생략하면 **산 플레이어**(`PLAYER.MAX_HP`)로 채운다 — 기존 케이스는
+ * 전부 산 플레이어를 전제하므로 의미가 바뀌지 않는다. 시신을 시험하는
+ * 케이스만 `hp: 0`을 명시한다(RQ-56, 원장 24ab). */
+function playersMap(
+  entries: Record<string, Omit<FakeServerPlayer, 'hp'> & { hp?: number }>,
+): Map<string, FakeServerPlayer> {
+  return new Map(
+    Object.entries(entries).map(([id, p]) => [id, { ...p, hp: p.hp ?? PLAYER.MAX_HP }] as const),
+  )
 }
 function spectatorsMap(entries: Record<string, FakeServerSpectator>): Map<string, FakeServerSpectator> {
   return new Map(Object.entries(entries))
@@ -98,7 +111,10 @@ describe('20b game state 레이어 — applyServerState 스냅샷 반영 (RQ-61 
     const store = createGameStore()
 
     store.getState().applyServerState({
-      players: playersMap({ 'sess-1': { nickname: 'alpha', x: 1, y: 0, z: 2 } }),
+      // `hp`를 **비기본값**으로 준다 — 기본값이면 "전달됐다"와 "상수로
+      // 채웠다"가 구분되지 않는다(PR #66 2차 리뷰 major 2 — `hp: 100` 고정
+      // 변이가 단위 567건을 전수 통과했다).
+      players: playersMap({ 'sess-1': { nickname: 'alpha', x: 1, y: 0, z: 2, hp: 37 } }),
       spectators: spectatorsMap({}),
       tick: 7,
     })
@@ -108,7 +124,23 @@ describe('20b game state 레이어 — applyServerState 스냅샷 반영 (RQ-61 
     expect(entry?.x).toBe(1)
     expect(entry?.y).toBe(0)
     expect(entry?.z).toBe(2)
+    expect(entry?.hp).toBe(37)
     expect(store.getState().tick).toBe(7)
+  })
+
+  it('20b/RQ-56: 시신 스냅샷(hp 0)이 0으로 들어온다 — 이름표 시신 필터가 이 값에 걸려 있다', () => {
+    // 픽스처 주석이 "시신을 시험하는 케이스만 hp: 0을 명시한다"고 예고해 놓고
+    // 그 케이스가 없었다. `hp`가 상수로 채워지면 `resolveNameplateTarget`의
+    // `canAct` 필터가 무력해져 blocker 1이 되살아난다(PR #66 2차 리뷰 major 2).
+    const store = createGameStore()
+
+    store.getState().applyServerState({
+      players: playersMap({ corpse: { nickname: 'bravo', x: 0, y: 0, z: 0, hp: 0 } }),
+      spectators: spectatorsMap({}),
+      tick: 1,
+    })
+
+    expect(store.getState().players.get('corpse')?.hp).toBe(0)
   })
 
   it('20b/RQ-41: applyServerState가 spectators 스냅샷도 players와 별도로 반영한다', () => {

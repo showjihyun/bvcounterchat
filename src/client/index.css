@@ -92,6 +92,22 @@ body {
   left: var(--crosshair-gap-live, var(--crosshair-gap));
 }
 
+/* RQ-56 이름표(원장 24ab) — 조준선이 향한 대상의 머리 위. 위치는 30Hz 루프가
+   투영한 화면 좌표를 인라인으로 받는다(`Nameplate.tsx` 참고).
+
+   `translate(-50%, -100%)`로 **글자 아래 중앙**을 앵커에 맞춘다 — 그래야 글자
+   상자 크기(닉네임 길이)와 무관하게 정수리 위에 붙는다. `pointer-events`는
+   `.hud`가 이미 none이라 되살리지 않는다 — 조준·사격이 캔버스로 가야 한다. */
+.hud__nameplate {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+  font-size: var(--size-md);
+  font-weight: var(--weight-strong);
+  color: var(--fg-strong);
+  text-shadow: var(--shadow-text);
+}
+
 .hud__placeholder {
   position: absolute;
   bottom: var(--edge-inset);
