@@ -292,14 +292,41 @@ describe('24ao 명제 4 — 기존 계약 유지: 벽에서 반경보다 더 멀
    * 형태로 골랐다. */
   const SAFE_SKIM_OFFSET_M = BODY_RADIUS_M + 0.05
 
-  it('24ao/RQ-30 회귀 가드: WALL_EAST 옆을 반경+0.05m 여유로 직선 스치면 막히지 않고 예상 변위 그대로 이동한다', () => {
-    const start = createGroundedState({ x: 0, z: WALL_EAST.maxZ + SAFE_SKIM_OFFSET_M })
+  /**
+   * **REV(독립 재평가 P1 대응, `_workspace/24af/07_evaluator_delta.md`
+   * §9 P1) — 시작점을 `WALL_EAST.minX − 5`로 옮긴다(박스·플랫폼 형제
+   * 가드와 동일 패턴).** 최초본은 `x: 0`에서 출발해 60틱(0.2m/틱)
+   * 이동해도 `x`가 **12까지만** 갔다 — `WALL_EAST`의 팽창 구간은
+   * `[14.70, 16.30]`(`nearMinX`~`nearMaxX`)이라 궤적이 그 구간에
+   * **진입조차 못 했다**(`enteredExpanded=false`, 평가자 실측 §9 P1).
+   * 주석은 "구간(15~16)을 훌쩍 지난다"고 적었지만 `12 < 15`라 사실이
+   * 아니었다 — 두 번째 독립 확인으로 평가자가 변이 N4(반경을 `1.4×R`로
+   * 부풀리는 과잉수정)를 심었을 때 **박스·플랫폼의 동일 가드는 죽는데
+   * 이 벽 가드만 살아남는 것**으로 공허함을 재확인했다. 지금은
+   * `WALL_EAST.minX − 5`(=10)에서 출발해 60틱 뒤 `x = 22`(=`minX+7`)에
+   * 도달한다 — 팽창 구간 `[14.70, 16.30]`을 실제로 관통한다(§`08
+   * _test-writer_p1.md`의 N4 재검증이 이제 이 가드가 죽는 것으로
+   * 확인한다). 커버리지를 **넓히는** 방향의 수정이다 — 기존에 통과하던
+   * 조건을 좁히지 않는다(시작점이 바뀌었을 뿐 단언 형태·강도는 그대로,
+   * 여전히 "정확한 미차단 기대값"을 정확한 값으로 확인한다). */
+  it('24ao/RQ-30 회귀 가드: WALL_EAST 옆을 반경+0.05m 여유로 직선 스치면(팽창 구간 [14.70,16.30]을 실제로 관통해도) 막히지 않고 예상 변위 그대로 이동한다', () => {
+    const start = createGroundedState({ x: WALL_EAST.minX - 5, z: WALL_EAST.maxZ + SAFE_SKIM_OFFSET_M })
     const input: MoveInput = { dirX: 1, dirZ: 0, mode: 'run', jump: false }
-    const ticks = 60 // x: 0 → 12m(60×0.2m) — WALL_EAST 구간(15~16)을 훌쩍 지난다
+    const ticks = 60 // x: minX-5(=10) → minX+7(=22) — WALL_EAST 구간(15~16)과 팽창 구간(14.70~16.30)을 실제로 지난다
+
+    // 전제 확인 — 이 궤적이 실제로 팽창 구간에 진입한다(공허한 그물
+    // 방지, P1 재발 방지). 진입하지 않으면 아래 본 단언이 아무것도
+    // 시험하지 않는다.
+    const nearMinX = WALL_EAST.minX - BODY_RADIUS_M
+    const nearMaxX = WALL_EAST.maxX + BODY_RADIUS_M
+    const finalXIfUnblocked = start.x + MOVEMENT.SPEED * ticks * TICK_SECONDS
+    expect(finalXIfUnblocked).toBeGreaterThan(nearMaxX) // 팽창 구간을 지나 반대편까지 갔어야 한다
+    expect(start.x).toBeLessThan(nearMinX) // 출발점 자체는 팽창 구간 밖(바깥)이었다
+
     const { finalState } = runCornerTicks(input, ticks, start, WALL_EAST)
 
-    const expectedX = MOVEMENT.SPEED * ticks * TICK_SECONDS
-    expect(finalState.x).toBeCloseTo(expectedX, 6) // 전혀 막히지 않았다
+    const expectedX = start.x + MOVEMENT.SPEED * ticks * TICK_SECONDS
+    expect(finalState.x).toBeCloseTo(expectedX, 6) // 전혀 막히지 않았다 — 팽창 구간을 관통했는데도
     expect(finalState.z).toBeCloseTo(start.z, 6) // dirZ=0이라 표류 없음(전제 확인)
   })
 })
