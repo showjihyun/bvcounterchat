@@ -562,16 +562,15 @@ describe('RQ-92 v2.2/GA-64~68: 앉은 자세 눈높이·히트박스가 실 Game
 })
 
 /**
- * RQ-92 검출력 보강(F1, evaluator FAIL blocker — `_workspace/RQ-92-crouch/
- * 03_evaluator_report.md`) — 위 6개 시나리오는 전부 **대상 1명**이라
+ * RQ-92 검출력 보강(F1, evaluator FAIL blocker) — 위 6개 시나리오는 전부
+ * **대상 1명**이라
  * `GameRoom.handleFire`의 "그룹 간(선 자세·앉은 자세) 최단 거리 비교"
  * 분기(`standingHit && crouchHit`일 때 실제 거리로 비교하는 코드)가 한
  * 번도 양쪽 다 채워진 채로 실행되지 않았다 — 변이 실측(evaluator):
  * 그 비교를 삭제하고 `standingHit ?? crouchHit`로 바꿔도(M1), 승자를
  * 반대로 뒤집어도(M6) 913/913 그대로 초록이었다.
  *
- * **A·B 둘 다 필요한 이유(오프라인 오라클로 직접 검증 — `_workspace/
- * RQ-92-crouch/04_test-writer_detection.md` §1 재현 가능)**: 근접 쪽의
+ * **A·B 둘 다 필요한 이유(오프라인 오라클로 직접 검증)**: 근접 쪽의
  * 자세를 고정한 시나리오 하나만으로는 "그룹을 무조건 한쪽으로 편향해
  * 고르는 구현"이 근접 쪽과 우연히 일치하는 경우를 잡지 못한다 — 시드
  * 값으로 직접 확인한 결과, M1(`standingHit ?? crouchHit`)은 F1-A(근접=

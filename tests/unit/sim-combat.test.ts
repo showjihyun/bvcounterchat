@@ -317,12 +317,20 @@ import type { WallAABB } from '@shared/sim/movement'
  * `hitbox` 인자)에 의존한다 — 이 라운드는 새 순수 함수(`hitboxForMode`)와
  * 새 설정값(`CROUCH_HITBOX`)만 추가하고 기존 함수 시그니처는 그대로 둔다.
  * **실측(test-writer, 이 라운드) — 위 28개 파일 중 실제로 앉은 사수/대상을
- * 시뮬레이션하는 파일은 0건이다**(전수 확인 — `tests/integration/rq-90
- * -spread-degradation.test.ts`를 포함해 전부 `mode`를 `'run'`/`'walk'`로만
- * 설정하거나 `mode` 필드 자체를 건드리지 않는다, `PendingInputSnapshot`
- * 타입 선언에만 `'crouch'`가 유니언 멤버로 등장한다) — 따라서 이 라운드는
- * 기존 테스트 파일을 **한 곳도 수정하지 않는다**(상세 근거는
- * `_workspace/RQ-92-crouch/01_test-writer_red.md` 참고).
+ * 시뮬레이션하는 파일은 0건이다**(전수 확인 — `'crouch'`를 쓰는 9파일 중
+ * hitscan과 겹치는 4파일을 직접 대조했다: (1) `tests/integration/rq-90
+ * -spread-degradation.test.ts` — `'crouch'`는 `PendingInputSnapshot` 타입
+ * 선언에만 등장, 실제 `setShooterState` 호출은 전부 `mode:'run'`/`'walk'`.
+ * (2) `tests/integration/rq-43-afk-kick.test.ts` — `'crouch'`는 코멘트에만
+ * 등장, 실제 `fire`는 `dirY:1`(항상 빗나가는 방향)이라 명중 판정 자체가
+ * 관심사가 아니다. (3) `tests/unit/rq-40-chat-input-gate.test.ts` —
+ * `'crouch'`는 `MoveInput` 리터럴 값이지만 그 파일 자체 docblock이 "mode
+ * 필드 값에 결합하는 것은 과잉 사양"이라 명시해 게이팅 로직이 `mode`
+ * 무관임을 규정했었다(그 문장은 이후 RQ-40 v2.3으로 뒤집혔다 — 그 파일
+ * 참고, 이 라운드 시점에는 아직 유효했다). (4) 이 파일 자신의
+ * `effectiveSpreadConeRadius` `'crouch'` 테스트는 탄퍼짐 콘 tier만
+ * 검사해 히트박스·눈높이와 무관) — 따라서 이 라운드는 기존 테스트
+ * 파일을 **한 곳도 수정하지 않는다**.
  *
  * **GA-66(차폐) 한계 — 명시적 가정**: `WallAABB`(`@shared/sim/movement`)는
  * "무한 높이 기둥"이다(`minY`/`maxY` 없음 — 그 파일 자체 docblock이 "의도"
@@ -885,8 +893,8 @@ describe('RQ-92 v2.2 hitboxForMode — mode에 따라 즉시 전환(전환 보�
   // 없다** — `hitboxForMode`가 아직 존재하지 않아 임포트가 실패하고
   // (TS2305, 위), 실패한 임포트는 TS가 `any`로 취급해 초과 인자를 줘도
   // 컴파일 에러가 나지 않는다(`@ts-expect-error`가 "사용되지 않음"으로
-  // 오히려 tsc를 실패시킨다 — 실측: `_workspace/RQ-92-crouch/
-  // 01_test-writer_red.md` §tsc 출력). `effectiveSpreadConeRadius`의 타입
+  // 오히려 tsc를 실패시킨다 — 실측: `tsc --noEmit`이 "error TS2578: Unused
+  // '@ts-expect-error' directive"를 낸다). `effectiveSpreadConeRadius`의 타입
   // 잠금 테스트가 성립하는 이유는 그 함수가 v1.9 **이전부터 이미 존재**
   // 해서(다른 인자 개수로) 임포트가 항상 성공하기 때문이다 — 신설 함수는
   // 이 기법을 Red 단계에 쓸 수 없다. coder가 Green으로 구현한 뒤 이
@@ -969,8 +977,8 @@ describe('GA-66 — 앉은 자세 + 사수·대상 사이 정적 지오메트리
 })
 
 // -----------------------------------------------------------------------
-// RQ-92 검출력 보강(F2, evaluator FAIL blocker — `_workspace/RQ-92-crouch/
-// 03_evaluator_report.md`) — `DEFAULT_HITBOX`(선 자세)의 GA-68 값 5개 중
+// RQ-92 검출력 보강(F2, evaluator FAIL blocker) — `DEFAULT_HITBOX`(선
+// 자세)의 GA-68 값 5개 중
 // `bodyTopM`(1.500)·`headCenterM`(1.650)·`headRadiusM`(0.15)는 위 GA-68
 // 매핑 테스트("hitboxForMode(...).toEqual(DEFAULT_HITBOX)" 류)가 전부
 // `DEFAULT_HITBOX`를 **심볼로만** 참조해, 그 상수 자체가 훼손돼도 기대값이
