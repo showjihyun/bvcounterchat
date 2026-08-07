@@ -27,6 +27,15 @@ import type { AimDirection } from '@client/input/aimMath'
  * 앉는다(evaluator F7 실증). RQ-40 원문이 "'이동 입력'에는 방향·점프뿐
  * 아니라 자세(`mode`)도 포함된다"로 개정돼(v2.3) 이 gap을 직접 막았다 —
  * `mode`도 `'run'`(중립값)으로 치환한다(GA-69).
+ *
+ * ⚠️ **소비자 주의(RQ-40 v2.3 F8, 2026-08-07)**: 이 반환값(게이트 *이후*
+ * `mode`)을 신뢰해야 하는 소비처는 서버 전송뿐만이 아니다 —
+ * `PlayerControls.tsx`의 1인칭 카메라 눈높이(`modeRef`)도 이 값(정확히는
+ * `createChatGatedActions.sendMoveInput`이 돌려주는 `sent.mode`)을 읽어야
+ * 한다. 게이트 *이전* 원시 `mode`(`movementTracker.getMoveInput()`의 결과)를
+ * 읽으면 채팅 포커스 중에도 원시 자세가 화면에 새어나간다 — 그 파일 모듈
+ * 코멘트의 같은 REV 절 참고. 크로스헤어(`crosshairGapPx`)가 이미 겪은
+ * 문제(PR #61 리뷰 blocker)와 같은 클래스다.
  */
 export function gateMoveInput(chatFocused: boolean, input: MoveInput): MoveInput {
   if (!chatFocused) return input

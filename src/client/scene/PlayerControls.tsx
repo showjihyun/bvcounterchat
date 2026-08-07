@@ -81,13 +81,30 @@ interface PlayerControlsProps {
  * `movementTracker.getMoveInput()`을 부르지 않는다** — 그 함수는 엣지
  * 트리거 `jump`를 호출마다 소비하므로(`movementInput.ts`), 60fps 루프에서
  * 한 번 더 부르면 30Hz 전송 루프가 이미 소비한 점프 입력을 한 번 더
- * "먹어" 버린다(22f 결함과 동일한 클래스). 대신 30Hz 루프가 이미 계산한
- * `local.mode`를 `modeRef`(원시값, 새 객체 아님)에 적어 두고 `useFrame`은
- * 그 값만 읽는다 — `hitboxForMode`는 인자로 받은 두 객체 중 하나를 그대로
- * 반환할 뿐 새로 만들지 않으므로 프레임 예산(ADR-0001)을 깨지 않는다. 이
- * 자세는 **서버가 아직 반영하기 전의 로컬 예측**이다(RQ-62와 동일한 성격) —
- * 서버 판정(HP·명중)은 여전히 서버의 `mode` 해석만 신뢰하고(RQ-61), 이
- * 값은 순수하게 1인칭 카메라의 표현(눈높이 렌더)에만 쓴다.
+ * "먹어" 버린다(22f 결함과 동일한 클래스). 대신 30Hz 루프가 계산한 값을
+ * `modeRef`(원시값, 새 객체 아님)에 적어 두고 `useFrame`은 그 값만 읽는다 —
+ * `hitboxForMode`는 인자로 받은 두 객체 중 하나를 그대로 반환할 뿐 새로
+ * 만들지 않으므로 프레임 예산(ADR-0001)을 깨지 않는다. 이 자세는 **서버가
+ * 아직 반영하기 전의 로컬 예측**이다(RQ-62와 동일한 성격) — 서버 판정
+ * (HP·명중)은 여전히 서버의 `mode` 해석만 신뢰하고(RQ-61), 이 값은 순수하게
+ * 1인칭 카메라의 표현(눈높이 렌더)에만 쓴다.
+ *
+ * ⚠️ **REV(RQ-40 v2.3 F8, 2026-08-07) — `modeRef`는 반드시 게이트 *이후*
+ * 값(`sent.mode`)을 담아야 한다, 게이트 이전 원시 값(`local.mode`)이 아니다.**
+ * 이 루프에서 화면·전송에 쓰는 값은 **전부 `sent` 기준**이다 — 20줄 아래
+ * 크로스헤어(`crosshairGapPx`)가 이미 같은 규칙을 지킨다(그 자리의 "게이트가
+ * 실제로 내보낸 값을 쓴다" 경고 참고, PR #61 리뷰 blocker). `gateMoveInput`
+ * (`@client/input/chatInputGate.ts`)의 반환값 계약이 바로 이 재발을 막으려고
+ * "채팅 포커스 중이면 `mode`도 `'run'`으로 중립화한다"(RQ-40 v2.3, GA-69)로
+ * 명시돼 있다 — `modeRef`가 `sent` 이전의 `local`을 읽으면 그 계약을 무시하고
+ * 채팅 포커스 중에도 원시 `mode`(예: `'crouch'`)를 그대로 카메라에 반영하게
+ * 되어, 채팅창에 Ctrl을 쥔 채 타이핑하면 **내 화면(카메라)만 앉은 눈높이로
+ * 내려가고 서버는 나를 선 자세로 판정하는 괴리**가 생긴다(실측: 카메라
+ * 1.221875 vs 서버 1.7). **다음에 이 루프에 새 값을 추가하는 사람도 지켜야
+ * 하는 규칙**: `movementTracker.getMoveInput()`의 원시 반환값(`local`)은
+ * 방향 회전(`rotateLocalMoveDirection`) 계산에만 쓰고, 그 밖의 모든 소비처
+ * (전송·화면 렌더링·자세 참조)는 `gatedActions.sendMoveInput(...)`이 돌려준
+ * `sent`만 읽는다.
  *
  * RQ-40 입력 차단(리뷰 M4): 게임 레이어로 나가는 두 출구(이동 전송·발사
  * 전송)는 `@client/input/chatInputGate`의 `createChatGatedActions`가 만든
@@ -158,13 +175,15 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 필요해 같은 유효범위 안에 있어야 한다).
     const movementIntervalId = window.setInterval(() => {
       const local = movementTracker.getMoveInput()
-      // RQ-92 v2.2 — 1인칭 카메라 눈높이가 읽을 자세(원시값 대입, 새 객체
-      // 아님 — 모듈 코멘트 참고).
-      modeRef.current = local.mode
       const { yaw } = mouseLook.getAngles()
       const world = rotateLocalMoveDirection(local, yaw)
       // RQ-40 M4: 채팅 게이트는 `gatedActions.sendMoveInput` 안에서 처리한다.
       const sent = gatedActions.sendMoveInput({ ...local, dirX: world.dirX, dirZ: world.dirZ })
+      // RQ-92 v2.2/RQ-40 v2.3 F8 — 1인칭 카메라 눈높이가 읽을 자세(원시값
+      // 대입, 새 객체 아님). **`local.mode`가 아니라 `sent.mode`** — 게이트
+      // *이후* 값이어야 채팅 포커스 중 원시 `mode`가 카메라에 새지 않는다
+      // (모듈 코멘트 "REV(RQ-40 v2.3 F8)" 참고).
+      modeRef.current = sent.mode
 
       // RQ-54 크로스헤어 확산(원장 24e) — **여기서 계산하는 이유**: 이 루프는
       // 30Hz이고 `useFrame`(60fps 렌더 루프)이 아니다. 렌더 루프에서 돌리면
