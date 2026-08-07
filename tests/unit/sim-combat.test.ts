@@ -967,3 +967,37 @@ describe('GA-66 — 앉은 자세 + 사수·대상 사이 정적 지오메트리
     expect(closest?.result.region).toBe('head')
   })
 })
+
+// -----------------------------------------------------------------------
+// RQ-92 검출력 보강(F2, evaluator FAIL blocker — `_workspace/RQ-92-crouch/
+// 03_evaluator_report.md`) — `DEFAULT_HITBOX`(선 자세)의 GA-68 값 5개 중
+// `bodyTopM`(1.500)·`headCenterM`(1.650)·`headRadiusM`(0.15)는 위 GA-68
+// 매핑 테스트("hitboxForMode(...).toEqual(DEFAULT_HITBOX)" 류)가 전부
+// `DEFAULT_HITBOX`를 **심볼로만** 참조해, 그 상수 자체가 훼손돼도 기대값이
+// 함께 움직여 공허해진다(변이 M7: `DEFAULT_HITBOX.bodyTopM` 1.5→1.4가
+// 0건을 죽이고 생존 — evaluator 실측). `eyeHeightM`(M9)·`bodyRadiusM`
+// (`tests/unit/24af-*-body-radius-*.test.ts`)은 이미 다른 곳에서 리터럴로
+// 고정돼 있다고 evaluator가 확인했다 — 이 블록은 나머지 3개만 채운다.
+// **독립 재계산이 아니라 리터럴 직접 대조인 이유**: `DEFAULT_HITBOX`는
+// `CROUCH_HITBOX`처럼 다른 값에서 유도된 파생값이 아니라 이 코드베이스에서
+// 가장 원시적인 값 자체(`combat-tuning.ts`에 리터럴로 적혀 있다, `requirements
+// .md`가 그 원본) — 이보다 더 독립적인 유도 경로가 없으므로 스펙 문서의
+// 숫자를 직접 리터럴로 대조하는 것이 맞는 형태다(ADR-0010은 "구현이 이미
+// 계산한 값을 그대로 복사"를 공허하다고 금지하는 것이지, 스펙 원본 숫자를
+// 그대로 단언하는 것을 금지하지 않는다 — `DEFAULT_SPREAD.coneRadiusRad`를
+// `(0.5*Math.PI)/180`과 대조하는 위 REV2 오라클과 동일한 정신).
+// -----------------------------------------------------------------------
+
+describe('RQ-92 검출력 보강(F2) — GA-68 선 자세 값 리터럴 고정(DEFAULT_HITBOX 상수 자체의 훼손을 잡는다)', () => {
+  it('GA-68 리터럴 고정: DEFAULT_HITBOX.bodyTopM은 1.500이다', () => {
+    expect(DEFAULT_HITBOX.bodyTopM).toBe(1.5)
+  })
+
+  it('GA-68 리터럴 고정: DEFAULT_HITBOX.headCenterM은 1.650이다', () => {
+    expect(DEFAULT_HITBOX.headCenterM).toBe(1.65)
+  })
+
+  it('GA-68 리터럴 고정: DEFAULT_HITBOX.headRadiusM은 0.15다', () => {
+    expect(DEFAULT_HITBOX.headRadiusM).toBe(0.15)
+  })
+})

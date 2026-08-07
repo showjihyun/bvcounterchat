@@ -560,3 +560,135 @@ describe('RQ-92 v2.2/GA-64~68: 앉은 자세 눈높이·히트박스가 실 Game
     20_000,
   )
 })
+
+/**
+ * RQ-92 검출력 보강(F1, evaluator FAIL blocker — `_workspace/RQ-92-crouch/
+ * 03_evaluator_report.md`) — 위 6개 시나리오는 전부 **대상 1명**이라
+ * `GameRoom.handleFire`의 "그룹 간(선 자세·앉은 자세) 최단 거리 비교"
+ * 분기(`standingHit && crouchHit`일 때 실제 거리로 비교하는 코드)가 한
+ * 번도 양쪽 다 채워진 채로 실행되지 않았다 — 변이 실측(evaluator):
+ * 그 비교를 삭제하고 `standingHit ?? crouchHit`로 바꿔도(M1), 승자를
+ * 반대로 뒤집어도(M6) 913/913 그대로 초록이었다.
+ *
+ * **A·B 둘 다 필요한 이유(오프라인 오라클로 직접 검증 — `_workspace/
+ * RQ-92-crouch/04_test-writer_detection.md` §1 재현 가능)**: 근접 쪽의
+ * 자세를 고정한 시나리오 하나만으로는 "그룹을 무조건 한쪽으로 편향해
+ * 고르는 구현"이 근접 쪽과 우연히 일치하는 경우를 잡지 못한다 — 시드
+ * 값으로 직접 확인한 결과, M1(`standingHit ?? crouchHit`)은 F1-A(근접=
+ * 앉음) 단독으로는 죽지만 F1-B(근접=섬) 단독으로는 **살아남는다**(표준
+ * 자세 그룹을 항상 우선하는 M1이 "근접=섬" 배치에서는 정답과 우연히
+ * 같은 답을 내기 때문). 두 배치를 함께 요구해야 어느 방향의 편향에도
+ * 견고하다.
+ *
+ * **좌표·방향**: 사수(0,1.7,0=선 자세 눈높이) → 방향(1,-0.05,0). 두 대상
+ * 모두 이 하나의 사격으로 관통(hit=true)되도록 조준을 살짝 아래로
+ * 기울였다 — 오프라인 오라클(`raycastHitbox`를 그대로 복제한 순수 산술
+ * 스크립트, 커밋 안 함)로 사전 확인: x=10 거리 9.8624921972(region은
+ * 대상의 자세에 따라 head/body로 갈린다), x=12 거리 11.7146158707. 근접이
+ * 항상 더 가까우므로(관통 없음, 가정 F) 명중은 항상 근접 쪽이어야 한다 —
+ * 원거리 쪽 HP가 그대로임을 함께 확인해 "관통 없음"도 같이 고정한다.
+ */
+const F1_NEAR_POS = { x: 10, y: 0, z: 0 }
+const F1_FAR_POS = { x: 12, y: 0, z: 0 }
+const F1_RAW_AIM = { dirX: 1, dirY: -0.05, dirZ: 0 }
+
+describe('RQ-92 검출력 보강(F1) — 대상 2명·자세가 섞이면 그룹 간 최단 거리 비교가 실제로 승자를 가른다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'F1-A(근접=앉음): 근접 대상이 앉고 원거리 대상이 서 있으면, 실제로 더 가까운 근접(앉은) 대상이 명중한다(헤드샷) — 원거리(선 자세)는 그대로다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomNear = await joinGame(newClient(server))
+      const roomFar = await joinGame(newClient(server))
+      const seam = getServerRoom(roomA)
+
+      try {
+        expect(isWithinSafeZone(F1_NEAR_POS)).toBe(false)
+        expect(isWithinSafeZone(F1_FAR_POS)).toBe(false)
+
+        const baselineNear = await waitForServerCondition(seam, roomNear.sessionId, () => true, 'Near 초기 서버 스냅샷', HP_CONDITION_TIMEOUT_MS)
+        const baselineFar = await waitForServerCondition(seam, roomFar.sessionId, () => true, 'Far 초기 서버 스냅샷', HP_CONDITION_TIMEOUT_MS)
+        expect(baselineNear.hp).toBe(PLAYER.MAX_HP)
+        expect(baselineFar.hp).toBe(PLAYER.MAX_HP)
+
+        seam.wallsOverride = []
+        seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 1, airborneMultiplier: 1 }
+        seam.firedSinceSpawn.set(roomNear.sessionId, true)
+        seam.firedSinceSpawn.set(roomFar.sessionId, true)
+        setPosture(seam, roomA.sessionId, SHOOTER_POS, 'run')
+        setPosture(seam, roomNear.sessionId, F1_NEAR_POS, 'crouch') // 근접 = 앉음
+        setPosture(seam, roomFar.sessionId, F1_FAR_POS, 'run') // 원거리 = 선 자세
+        await sleep(TELEPORT_SETTLE_MS)
+
+        roomA.send('fire', F1_RAW_AIM)
+
+        const afterNear = await waitForServerCondition(
+          seam,
+          roomNear.sessionId,
+          (s) => s.hp < PLAYER.MAX_HP,
+          'F1-A 근접(앉은) 대상 명중 대기',
+          HP_CONDITION_TIMEOUT_MS,
+        )
+        expect(afterNear.hp).toBe(PLAYER.MAX_HP - HEADSHOT_DAMAGE) // 오프라인 오라클 — region='head'
+        await sleep(NO_DAMAGE_OBSERVE_MS)
+        const afterFar = readServerPlayer(seam, roomFar.sessionId)
+        expect(afterFar?.hp).toBe(PLAYER.MAX_HP) // 관통 없음(가정 F) — 원거리는 그대로
+      } finally {
+        await Promise.all([leaveRoom(roomA), leaveRoom(roomNear), leaveRoom(roomFar)])
+      }
+    },
+    20_000,
+  )
+
+  it(
+    'F1-B(근접=섬): 근접 대상이 서 있고 원거리 대상이 앉으면, 실제로 더 가까운 근접(선 자세) 대상이 명중한다(바디샷) — 원거리(앉은)는 그대로다. F1-A만으로는 잡히지 않는 편향(항상 선 자세 그룹을 우선)을 이 배치가 잡는다',
+    async () => {
+      const roomA = await joinGame(newClient(server))
+      const roomNear = await joinGame(newClient(server))
+      const roomFar = await joinGame(newClient(server))
+      const seam = getServerRoom(roomA)
+
+      try {
+        const baselineNear = await waitForServerCondition(seam, roomNear.sessionId, () => true, 'Near 초기 서버 스냅샷', HP_CONDITION_TIMEOUT_MS)
+        const baselineFar = await waitForServerCondition(seam, roomFar.sessionId, () => true, 'Far 초기 서버 스냅샷', HP_CONDITION_TIMEOUT_MS)
+        expect(baselineNear.hp).toBe(PLAYER.MAX_HP)
+        expect(baselineFar.hp).toBe(PLAYER.MAX_HP)
+
+        seam.wallsOverride = []
+        seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 1, airborneMultiplier: 1 }
+        seam.firedSinceSpawn.set(roomNear.sessionId, true)
+        seam.firedSinceSpawn.set(roomFar.sessionId, true)
+        setPosture(seam, roomA.sessionId, SHOOTER_POS, 'run')
+        setPosture(seam, roomNear.sessionId, F1_NEAR_POS, 'run') // 근접 = 선 자세
+        setPosture(seam, roomFar.sessionId, F1_FAR_POS, 'crouch') // 원거리 = 앉음
+        await sleep(TELEPORT_SETTLE_MS)
+
+        roomA.send('fire', F1_RAW_AIM)
+
+        const afterNear = await waitForServerCondition(
+          seam,
+          roomNear.sessionId,
+          (s) => s.hp < PLAYER.MAX_HP,
+          'F1-B 근접(선 자세) 대상 명중 대기',
+          HP_CONDITION_TIMEOUT_MS,
+        )
+        expect(afterNear.hp).toBe(PLAYER.MAX_HP - WEAPON.DAMAGE_BODY) // 오프라인 오라클 — region='body'
+        await sleep(NO_DAMAGE_OBSERVE_MS)
+        const afterFar = readServerPlayer(seam, roomFar.sessionId)
+        expect(afterFar?.hp).toBe(PLAYER.MAX_HP)
+      } finally {
+        await Promise.all([leaveRoom(roomA), leaveRoom(roomNear), leaveRoom(roomFar)])
+      }
+    },
+    20_000,
+  )
+})
