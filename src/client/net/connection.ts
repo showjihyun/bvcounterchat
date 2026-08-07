@@ -128,26 +128,36 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
   return undefined
 }
 
+/** `value.mode`가 알려진 3종 리터럴 중 하나면 그대로, 아니면(필드
+ * 부재·패치 미도착·조작된 값) `undefined`를 반환한다 — `sanitizeMoveInput`
+ * (`GameRoom.ts`)의 서버 쪽 방어적 파싱과 동일한 정신, 여기는 신뢰하는
+ * 서버 스키마 값을 읽을 뿐이지만 필드가 아직 없는 과도기(구 서버·첫 패치
+ * 전)를 안전하게 다루기 위해 같은 가드를 쓴다. */
+function readMode(value: { mode?: unknown }): MoveInput['mode'] | undefined {
+  return value.mode === 'run' || value.mode === 'walk' || value.mode === 'crouch' ? value.mode : undefined
+}
+
 /**
- * `room.state.players`를 순회하며 자기 자신을 제외한 원격 플레이어의 위치를
- * 콜백에 넘긴다(RQ-63 보간 배선). `readSelfAuthoritativeState`와 동일하게
- * 구조적 타입으로 최소한만 요구한다 — 순정 객체(단위 테스트)와 Colyseus
- * `MapSchema`(실 접속) 양쪽 모두 만족한다.
+ * `room.state.players`를 순회하며 자기 자신을 제외한 원격 플레이어의 위치·
+ * 자세를 콜백에 넘긴다(RQ-63 보간 배선, RQ-92 v2.4 자세 배선).
+ * `readSelfAuthoritativeState`와 동일하게 구조적 타입으로 최소한만
+ * 요구한다 — 순정 객체(단위 테스트)와 Colyseus `MapSchema`(실 접속) 양쪽
+ * 모두 만족한다.
  */
 function forEachRemotePlayer(
   room: Room,
   selfSessionId: string,
-  cb: (sessionId: string, position: InterpolationPosition) => void,
+  cb: (sessionId: string, position: InterpolationPosition, mode: MoveInput['mode'] | undefined) => void,
 ): void {
   const state = room.state as {
     players?: {
-      forEach?: (cb2: (value: { x?: unknown; y?: unknown; z?: unknown }, key: string) => void) => void
+      forEach?: (cb2: (value: { x?: unknown; y?: unknown; z?: unknown; mode?: unknown }, key: string) => void) => void
     }
   } | null
   state?.players?.forEach?.((value, sessionId) => {
     if (sessionId === selfSessionId) return
     if (typeof value?.x === 'number' && typeof value?.y === 'number' && typeof value?.z === 'number') {
-      cb(sessionId, { x: value.x, y: value.y, z: value.z })
+      cb(sessionId, { x: value.x, y: value.y, z: value.z }, readMode(value))
     }
   })
 }
@@ -378,8 +388,12 @@ export async function connectToGame(
     // 수신 시각으로 보간 버퍼에 먹인다 — 패치 안의 모든 플레이어가 같은
     // 순간의 상태이므로 시각을 한 번만 실측해 공유한다.
     const receivedAt = now()
-    forEachRemotePlayer(room, room.sessionId, (sessionId, position) => {
-      interpolator.addSnapshot(sessionId, { ...position, receivedAt })
+    forEachRemotePlayer(room, room.sessionId, (sessionId, position, mode) => {
+      // `exactOptionalPropertyTypes`(tsconfig) — `mode: undefined`를
+      // 명시적으로 싣지 않는다(gameStore.ts `applyServerState`와 동일한
+      // 근거). 필드 자체가 없으면 `RemoteSnapshot.mode` 계약대로 `'run'`
+      // 폴백이 소비 시점(`computeMode`)에 적용된다.
+      interpolator.addSnapshot(sessionId, { ...position, receivedAt, ...(mode !== undefined ? { mode } : {}) })
     })
   }
 

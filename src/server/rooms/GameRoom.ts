@@ -1256,6 +1256,13 @@ export class GameRoom extends Room<GameState> {
       // `grounded === (y === 0)` 파생이 박스 위 착지에서 틀리기 때문에
       // 클라이언트(`connection.ts`)가 파생 대신 이 필드를 직접 읽는다.
       player.grounded = next.grounded
+      // RQ-92 v2.4(원장 24az) — 공개 스키마에도 자세를 그대로 싣는다.
+      // `grounded`와 같은 관례(서버가 매 틱 권위 값을 실음)이지만, 물리
+      // 시뮬레이션 결과(`next.grounded`)가 아니라 **입력 자체**를 그대로
+      // 반영한다는 점만 다르다 — `input`은 이미 이 지점에서 조달된 값
+      // (`this.pendingInputs.get(sessionId) ?? IDLE_MOVE_INPUT`, 위)이라
+      // 새로 읽을 것이 없다.
+      player.mode = input.mode
 
       // RQ-64: 살아있는(canAct) 플레이어만 이력을 적립한다 — 시신은
       // `moveStates`처럼 위치가 고정되므로(위 `if (!canAct(...))` 분기가

@@ -21,6 +21,8 @@
  * 상단 주석과 `_workspace/RQ-63/01_test-writer_red.md` §2·§3을 참고.
  */
 
+import type { MoveInput } from '@shared/sim/movement'
+
 export interface InterpolationPosition {
   x: number
   y: number
@@ -30,6 +32,10 @@ export interface InterpolationPosition {
 export interface RemoteSnapshot extends InterpolationPosition {
   /** 이 스냅샷을 수신한 시각(ms, 임의의 단조 증가 시각 축) — 값으로 주입. */
   receivedAt: number
+  /** RQ-92 v2.4(원장 24az, GA-75) — 이 스냅샷 시점의 서버 확정 자세.
+   * 옵셔널 — 생략하면 `'run'`(기존 스냅샷 리터럴 전부와의 하위 호환,
+   * 순증 규칙). **위치와 달리 보간하지 않는다** — `getMode`(아래) 참고. */
+  mode?: MoveInput['mode']
 }
 
 export interface RemoteEntityInterpolator {
@@ -63,6 +69,28 @@ export interface RemoteEntityInterpolator {
    * (GA-39, 미지의 세션) `out`을 건드리지 않고 `false`를 반환한다.
    */
   copyPositionInto(sessionId: string, renderTime: number, out: InterpolationPosition): boolean
+
+  /**
+   * RQ-92 v2.4(원장 24az, GA-75) — 주어진 렌더 시각에서의 자세.
+   * **위치(`getPosition`)와 다른 점 — 선형 보간하지 않고 step(계단) 함수로
+   * 조회한다**: 렌더 시각을 감싸는 스냅샷 쌍 `(from, to)`을 찾으면(위치와
+   * 같은 탐색) `from.mode`를 그대로 반환한다(가중 평균하지 않는다 —
+   * targetTime이 `from.receivedAt`과 `to.receivedAt` 사이에 있는 한, "그
+   * 순간까지 알려진 최신 자세"는 아직 `to`가 도착하기 전인 `from`의 값이다).
+   * 경계 정책은 위치와 동일하게 통일한다: 스냅샷 1개뿐이면 그 값, 렌더
+   * 시각이 최신보다 앞서면 최신 값, 가장 오래된 스냅샷보다도 이전이면 그
+   * 값(모두 "고정"). 세션 자체를 모르면(스냅샷을 한 번도 받지 못함)
+   * `undefined` — `getPosition`과 동일한 GA-39 계약.
+   *
+   * **왜 위치용 가중 평균 코드(`computePosition`)를 재사용하지 않고 별도
+   * 경로를 두는가**: 자세를 그 같은 가중 평균 코드에 태우면(예: 문자열을
+   * 숫자 코드로 바꿔 `from + (to-from)*t`류로 확장) 그 순간 중간값이 생겨
+   * "자세는 보간하지 않는다"(RQ-92 v2.4 본문, RQ-63 예외)가 정면으로
+   * 깨진다 — 구조적으로 분리된 함수 자체가 위치용 가중 평균 경로에 자세가
+   * 물리적으로 들어갈 자리를 없앤다(`hitboxForMode` 선례 "값 선택은 순수
+   * 함수, 배선은 면제"의 반대 축 방어).
+   */
+  getMode(sessionId: string, renderTime: number): MoveInput['mode'] | undefined
 }
 
 interface RemoteBuffer {
@@ -168,6 +196,47 @@ function computePosition(buffer: RemoteBuffer, targetTime: number, out: Interpol
   out.z = newest.z
 }
 
+/**
+ * RQ-92 v2.4(원장 24az, GA-75) — `computePosition`과 같은 경계 탐색을
+ * 쓰지만 선형 보간이 아니라 **step(계단) 함수**로 자세를 조회한다(위
+ * `getMode` docblock 참고). 위치·자세가 같은 스냅샷 배열을 공유하되 서로
+ * 다른 순수 함수로 소비되므로, 자세가 위치의 가중 평균 계산에 물리적으로
+ * 섞일 자리가 없다.
+ */
+function computeMode(buffer: RemoteBuffer, targetTime: number): MoveInput['mode'] {
+  const { snapshots } = buffer
+
+  if (snapshots.length === 1) {
+    return snapshots[0]!.mode ?? 'run'
+  }
+
+  const oldest = snapshots[0]!
+  const newest = snapshots[snapshots.length - 1]!
+
+  if (targetTime <= oldest.receivedAt) {
+    return oldest.mode ?? 'run'
+  }
+  if (targetTime >= newest.receivedAt) {
+    return newest.mode ?? 'run'
+  }
+
+  // targetTime이 (oldest, newest) 구간 내부임이 위에서 보장된다 —
+  // `computePosition`과 동일한 최신 끝 역방향 스캔(리뷰 major 대응, 위
+  // 함수 코멘트 참고)으로 그 값을 실제로 감싸는 인접 스냅샷 쌍을 찾는다.
+  for (let i = snapshots.length - 2; i >= 0; i -= 1) {
+    const from = snapshots[i]!
+    if (targetTime < from.receivedAt) continue
+    // step 함수 — from과 to 사이를 가중 평균하지 않고 from을 그대로
+    // 반환한다("그 순간까지 알려진 최신 자세"는 아직 to가 도착하기 전인
+    // from의 값이다, GA-75).
+    return from.mode ?? 'run'
+  }
+
+  // 위 경계 검사로 targetTime이 (oldest, newest) 안임이 보장되므로 도달
+  // 불가 — TS 문맥 안전을 위한 방어적 폴백일 뿐이다.
+  return newest.mode ?? 'run'
+}
+
 export function createRemoteEntityInterpolator(
   selfSessionId: string,
   delayMs: number,
@@ -204,6 +273,14 @@ export function createRemoteEntityInterpolator(
 
       computePosition(buffer, renderTime - delayMs, out)
       return true
+    },
+
+    getMode(sessionId, renderTime) {
+      if (sessionId === selfSessionId) return undefined // GA-39
+      const buffer = buffers.get(sessionId)
+      if (!buffer || buffer.snapshots.length === 0) return undefined
+
+      return computeMode(buffer, renderTime - delayMs)
     },
   }
 }
