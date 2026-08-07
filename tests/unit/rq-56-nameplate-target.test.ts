@@ -4,11 +4,12 @@ import {
   resolveNameplateTarget,
   type NameplateCandidate,
 } from '@client/hud/nameplateTarget'
-import { eyeOrigin, findClosestHit, type Vec3 } from '@shared/sim/combat'
+import { eyeOrigin, findClosestHit, hitboxForMode, type HitCandidate, type Vec3 } from '@shared/sim/combat'
 import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { PRODUCTION_WALLS, WALL_EAST } from '@shared/sim/walls'
 import { PLAYER } from '@shared/constants'
 import { canAct } from '@shared/sim/lifecycle'
+import type { MoveInput } from '@shared/sim/movement'
 
 /**
  * RQ-56 이름표 대상 판정(원장 24ab).
@@ -77,6 +78,42 @@ function serverHitIdWithEyeHeight(
     walls,
   )
   return hit?.id
+}
+
+/** `serverHitIdWithEyeHeight`의 재일반화 — **각 후보 자신의** `mode`로
+ * 히트박스를 개별 선택한다(RQ-92 v2.4, 원장 24az 후속, GA-74). 서버
+ * `GameRoom.handleFire`가 하는 것과 **정확히 같은 알고리즘**을 그대로
+ * 복제한다(ADR-0010 "논리 복제" — 새로 발명하지 않고 이미 검증된 패턴을
+ * 재사용): 후보를 자세별 두 그룹(선 자세·앉은 자세)으로 나눠 그룹마다
+ * `findClosestHit`을 한 번씩 호출한 뒤, 두 결과가 모두 있으면 거리로 더
+ * 가까운 쪽을 취한다(`findClosestHit`의 "관통 없음" 계약은 그룹 안에서만
+ * 성립하므로 그룹 간 비교는 호출자가 직접 해야 한다 — `GameRoom.ts`의
+ * 같은 절 주석과 동일 근거). 기존 `serverHitId`·`serverHitIdWithEyeHeight`는
+ * 건드리지 않는다 — 그 헬퍼들을 쓰는 기존 테스트는 전부 단일 자세(선
+ * 자세)를 전제한다. */
+function serverHitIdMixedPosture(
+  candidates: Map<string, NameplateCandidate>,
+  walls: readonly (typeof PRODUCTION_WALLS)[number][],
+  eyeHeightM: number,
+  direction: Vec3 = AIM_EAST,
+): string | undefined {
+  const standing: HitCandidate[] = []
+  const crouching: HitCandidate[] = []
+  for (const [id, p] of candidates) {
+    if (!canAct(p.hp)) continue
+    const target: HitCandidate = { id, pose: { position: { x: p.x, y: p.y, z: p.z } } }
+    if (p.mode === 'crouch') crouching.push(target)
+    else standing.push(target)
+  }
+
+  const ray = { origin: eyeOrigin(SELF_FOOT, eyeHeightM), direction }
+  const standingHit = findClosestHit(ray, standing, DEFAULT_HITBOX, walls)
+  const crouchHit = findClosestHit(ray, crouching, CROUCH_HITBOX, walls)
+
+  if (standingHit && crouchHit) {
+    return (standingHit.result.distance as number) <= (crouchHit.result.distance as number) ? standingHit.id : crouchHit.id
+  }
+  return (standingHit ?? crouchHit)?.id
 }
 
 describe('RQ-56: 이름표는 조준선이 향한 플레이어를 고른다', () => {
@@ -313,5 +350,141 @@ describe('RQ-56 blocker(PR #68) — 사수 자신의 눈높이도 자세(mode)�
     const withoutParam = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [])
     const withStandingExplicit = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, DEFAULT_HITBOX.eyeHeightM)
     expect(withStandingExplicit).toEqual(withoutParam)
+  })
+})
+
+/**
+ * RQ-92 v2.4 blocker(원장 24az) — **대상 자신의** 자세도 히트박스·이름표
+ * 앵커에 반영돼야 한다(GA-73·GA-74). 위 REV2(PR #68)가 **사수 자신**의
+ * 눈 원점 축을 닫았고, 이 파일 상단 모듈 REV(원장 24ba)가 **대상**의
+ * 히트박스 축은 "서버 `Player` 스키마에 `mode` 필드가 없어 이월"이라고
+ * 적어 뒀다 — 그 스키마 필드가 이번 라운드(RQ-92 v2.4)에서 생긴다
+ * (`tests/integration/rq-92-remote-stance-sync.test.ts`가 서버 쪽을
+ * 담당). 이 describe는 그 필드가 일단 존재한다는 전제로 **클라이언트
+ * 판정 쪽** 계약을 고정한다.
+ *
+ * **API 계약(test-writer 결정)**:
+ * 1. `NameplateCandidate`에 `mode?: MoveInput['mode']` 필드를 추가한다
+ *    (**옵셔널** — 생략하면 `'run'`으로 취급, 기존 `targetFootAt` 등
+ *    `mode`를 안 채우는 호출부 전부가 그대로 유효한 안전한 기본값이다.
+ *    `selfEyeHeightM` 때와 동일한 "순증만" 근거).
+ * 2. `resolveNameplateTarget`은 후보를 **자신의** `mode`로 두 그룹(선
+ *    자세·앉은 자세)으로 나눠 그룹마다 `findClosestHit`을 한 번씩 호출한
+ *    뒤 거리로 더 가까운 쪽을 취한다 — `GameRoom.handleFire`가 이미 하는
+ *    바로 그 알고리즘(`GameRoom.ts` "RQ-92 v2.2: 후보를... 자세별 두
+ *    그룹으로 나눈다" 절)을 그대로 복제한다(위 `serverHitIdMixedPosture`
+ *    가 같은 알고리즘의 오프라인 오라클).
+ * 3. `nameplateAnchorHeightM`에 `mode: MoveInput['mode'] = 'run'` 파라미터를
+ *    추가한다(옵셔널, 기본값 `'run'` — 기존 0-인자 호출 전부 그대로
+ *    유효). `resolveNameplateTarget`은 **선택된 대상 자신의** mode로 이
+ *    함수를 불러 앵커를 계산한다(사수의 자세가 아니다 — 앵커는 대상 머리
+ *    위에 뜨는 것이므로 대상의 키를 따라야 한다).
+ */
+describe('RQ-92 v2.4 blocker(원장 24az) — 대상 자신의 자세가 히트박스·앵커에 반영된다', () => {
+  it('GA-74: 앉은 대상의 실제 머리(CROUCH_HITBOX.headCenterM)를 정조준하면 명중하고, 서버와 같은 대상을 고른다', () => {
+    const distance = 10
+    const map = others({ target: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const dy = CROUCH_HITBOX.headCenterM - DEFAULT_HITBOX.eyeHeightM
+    const aimAtCrouchHead: Vec3 = { x: distance, y: dy, z: 0 }
+
+    const serverHit = serverHitIdMixedPosture(map, [], DEFAULT_HITBOX.eyeHeightM, aimAtCrouchHead)
+    const nameplate = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [])
+
+    expect(nameplate?.sessionId).toBe(serverHit)
+    expect(serverHit).toBe('target') // 공허 방지 — 실제로 명중해야 한다.
+  })
+
+  it('GA-74: 앉은 대상의 머리 위(선 자세였다면 여전히 몸통 범위였을 높이)를 겨누면 명중하지 않는다 — 대상 자신의 mode로 히트박스가 축소된다는 것을 직접 증명', () => {
+    // 크라우치 헤드 상단(1.350)과 선 자세 바디 상단(1.500) 사이의 빈
+    // 공간 — 앉은 대상에게는 아무 볼륨도 없다. 대상의 mode를 무시하고
+    // 항상 DEFAULT_HITBOX로 판정하는 구현(현재 상태)이라면 이 높이는
+    // 여전히 "바디" 범위 안이라 명중해 버린다 — 그 결함을 직접 잡는다.
+    const distance = 10
+    const map = others({ target: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const gapHeightM = (CROUCH_HITBOX.headCenterM + CROUCH_HITBOX.headRadiusM + DEFAULT_HITBOX.bodyTopM) / 2
+    const dy = gapHeightM - DEFAULT_HITBOX.eyeHeightM
+    const aimAtGap: Vec3 = { x: distance, y: dy, z: 0 }
+
+    const serverHit = serverHitIdMixedPosture(map, [], DEFAULT_HITBOX.eyeHeightM, aimAtGap)
+    expect(serverHit).toBeUndefined() // 오프라인 오라클도 미명중 — 이 높이엔 아무 볼륨도 없다.
+
+    const nameplate = resolveNameplateTarget(SELF_FOOT, aimAtGap, map, [])
+    expect(nameplate).toBeUndefined()
+  })
+
+  it('GA-73: 앉은 대상이 선택되면 앵커 높이가 nameplateAnchorHeightM(\'crouch\')다(1.600 — 선 자세 2.05를 쓰면 0.7m 허공에 뜬다)', () => {
+    const distance = 10
+    const map = others({ target: { ...targetFootAt(distance), mode: 'crouch' as MoveInput['mode'] } })
+    const dy = CROUCH_HITBOX.headCenterM - DEFAULT_HITBOX.eyeHeightM
+    const aimAtCrouchHead: Vec3 = { x: distance, y: dy, z: 0 }
+
+    const target = resolveNameplateTarget(SELF_FOOT, aimAtCrouchHead, map, [])
+
+    expect(target?.sessionId).toBe('target')
+    expect(target?.anchor.y).toBeCloseTo(nameplateAnchorHeightM('crouch'), 12)
+    // 선 자세 앵커 값과는 분명히 다르다 — 회귀 시 "우연히 맞음"을 배제.
+    expect(target?.anchor.y).not.toBeCloseTo(nameplateAnchorHeightM('run'), 2)
+  })
+
+  it("GA-72~74 근접·원거리 혼합 자세 — 근접(앉음)·원거리(선 자세)가 하나의 조준으로 동시에 명중 가능할 때, 실제로 더 가까운 근접(앉은) 대상을 고른다(그룹 간 최단 거리 비교)", () => {
+    // RQ-92 F1(원장 24ax) 실측과 동일한 좌표·방향 — 사수(0,1.7,0=선 자세
+    // 기본 눈높이) → 방향(1,-0.05,0). 근접(x=10,앉음) region=head distance
+    // ≈9.8625, 원거리(x=12,선 자세) region=body distance≈11.7146(오프라인
+    // 오라클로 사전 검증된 값 — `_workspace/RQ-92-crouch/04_test-writer
+    // _detection.md` §1 재현 가능).
+    const map = others({
+      near: { nickname: '근접', x: 10, y: 0, z: 0, hp: PLAYER.MAX_HP, mode: 'crouch' as MoveInput['mode'] },
+      far: { nickname: '원거리', x: 12, y: 0, z: 0, hp: PLAYER.MAX_HP, mode: 'run' as MoveInput['mode'] },
+    })
+    const aim: Vec3 = { x: 1, y: -0.05, z: 0 }
+
+    const serverHit = serverHitIdMixedPosture(map, [], DEFAULT_HITBOX.eyeHeightM, aim)
+    const nameplate = resolveNameplateTarget(SELF_FOOT, aim, map, [])
+
+    expect(nameplate?.sessionId).toBe(serverHit)
+    expect(serverHit).toBe('near') // 공허 방지 — 실제로 근접 쪽이 이겨야 한다.
+  })
+
+  it("근접·원거리 자세를 뒤집어도(근접=선 자세, 원거리=앉음) 여전히 실제로 더 가까운 쪽(근접)을 고른다 — 앞 케이스 단독으로는 안 잡히는 편향(RQ-92 F1 교훈)을 방지", () => {
+    const map = others({
+      near: { nickname: '근접', x: 10, y: 0, z: 0, hp: PLAYER.MAX_HP, mode: 'run' as MoveInput['mode'] },
+      far: { nickname: '원거리', x: 12, y: 0, z: 0, hp: PLAYER.MAX_HP, mode: 'crouch' as MoveInput['mode'] },
+    })
+    const aim: Vec3 = { x: 1, y: -0.05, z: 0 }
+
+    const serverHit = serverHitIdMixedPosture(map, [], DEFAULT_HITBOX.eyeHeightM, aim)
+    const nameplate = resolveNameplateTarget(SELF_FOOT, aim, map, [])
+
+    expect(nameplate?.sessionId).toBe(serverHit)
+    expect(serverHit).toBe('near')
+  })
+
+  it("양성 대조군 — mode를 명시하지 않은 후보는 mode:'run'을 명시한 것과 완전히 같게 판정된다(기본값 회귀 가드)", () => {
+    const withoutMode = others({ enemy: targetFootAt(10) })
+    const withRunExplicit = others({ enemy: { ...targetFootAt(10), mode: 'run' as MoveInput['mode'] } })
+
+    expect(resolveNameplateTarget(SELF_FOOT, AIM_EAST, withoutMode, [])).toEqual(
+      resolveNameplateTarget(SELF_FOOT, AIM_EAST, withRunExplicit, []),
+    )
+  })
+})
+
+describe("RQ-92 v2.4(GA-73) — nameplateAnchorHeightM(mode)", () => {
+  it("mode 생략(또는 'run')이면 기존 선 자세 값과 같다(회귀 가드)", () => {
+    expect(nameplateAnchorHeightM('run')).toBeCloseTo(nameplateAnchorHeightM(), 12)
+  })
+
+  it("mode='crouch'면 앉은 머리 볼륨 위(CROUCH_HITBOX 기준)에 놓이고, 선 자세보다 낮다", () => {
+    const crouchHeadTop = CROUCH_HITBOX.headCenterM + CROUCH_HITBOX.headRadiusM
+    expect(nameplateAnchorHeightM('crouch')).toBeGreaterThan(crouchHeadTop)
+    expect(nameplateAnchorHeightM('crouch')).toBeLessThan(nameplateAnchorHeightM('run'))
+  })
+
+  it('GA-73 리터럴 앵커 — 파생 공식으로 유도한 값이 스펙 표기값(1.600)과 일치한다(ADR-0010 — 독립 재계산으로 대조, 구현과 같은 식을 그대로 베끼지 않는다)', () => {
+    const expected = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch').headCenterM +
+      hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch').headRadiusM +
+      (nameplateAnchorHeightM('run') - (DEFAULT_HITBOX.headCenterM + DEFAULT_HITBOX.headRadiusM)) // NAMEPLATE_HEAD_CLEARANCE_M을 독립적으로 역산(리터럴 0.25를 여기 복제하지 않는다)
+    expect(nameplateAnchorHeightM('crouch')).toBeCloseTo(expected, 9)
+    expect(nameplateAnchorHeightM('crouch')).toBeCloseTo(1.6, 3) // 앵커 — v2.4 골든 GA-73 표기값
   })
 })
