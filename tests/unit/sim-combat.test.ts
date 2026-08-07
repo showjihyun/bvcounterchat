@@ -7,6 +7,7 @@ import {
   effectiveSpreadConeRadius,
   eyeOrigin,
   findClosestHit,
+  hitboxForMode,
   raycastHitbox,
   type HitboxConfig,
   type HitCandidate,
@@ -15,8 +16,9 @@ import {
   type Vec3,
 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
-import { DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
+import { CROUCH_HITBOX, DEFAULT_HITBOX, DEFAULT_SPREAD, type SpreadTuning } from '@shared/config/combat-tuning'
 import { PLAYER, WEAPON } from '@shared/constants'
+import type { WallAABB } from '@shared/sim/movement'
 
 /**
  * RQ-12(서버 hitscan)·RQ-13(헤드샷 배율)·RQ-14(HP/사망)·RQ-90(탄퍼짐 구조)·
@@ -239,6 +241,99 @@ import { PLAYER, WEAPON } from '@shared/constants'
  * 추가한 `dirX`·`dirZ`도 **새 payload 필드가 아니다** — `sanitizeMoveInput`이
  * 이미 `MoveInput.dirX`/`dirZ`를 읽고 있었다(RQ-20, 이 라운드 이전부터).
  * 달라진 것은 그 값을 탄퍼짐 판정에도 **재사용**하는 것뿐이다.
+ * ---
+ *
+ * **REV3(RQ-92 v2.2, 2026-08-07) — 앉은 자세 눈높이·히트박스(그린필드
+ * 확장, test-writer 지정, 위 REV·REV2 태그와 동일 권한)**: `requirements.md`
+ * v2.2가 앉기(`mode==='crouch'`) 상태의 눈높이·히트박스 5개 값(눈높이
+ * 1.222 · 바디 상단 1.050 · 헤드 중심 1.200, 헤드 반경 0.15·바디 반경 0.3은
+ * 불변)을 확정했다 — 자세 판정은 서버가 관측하는 `mode`로만 하고(RQ-61,
+ * 클라 자기신고 금지), 전환은 같은 호출 안에서 즉시 반영되며 전환 보간·
+ * 자세 진행도 상태를 두지 않는다. 앉은 채 점프해도 점프 높이는 1.0m
+ * 그대로이고 crouch-jump 특례를 두지 않는다.
+ *
+ * **값 유도(ADR-0010, 리터럴 금지) — CS 관례, 두 비율을 각각 적용(사용자
+ * 결정)**: 눈높이는 `DEFAULT_HITBOX.eyeHeightM × 46/64`, 전신(발~정수리
+ * 높이, `headCenterM+headRadiusM`)은 `× 54/72`에서 유도한다(두 비율이 다른
+ * 것은 CS 자체가 그렇기 때문 — 하나로 뭉뚱그리지 않는다). 헤드 반경은
+ * 스케일하지 않는다 — 그래서 `headCenterM`·`bodyTopM`은 스케일된 전신
+ * 높이에서 **역산**한다(`headCenterM = 전신높이 - headRadiusM`,
+ * `bodyTopM = headCenterM - headRadiusM` — 가정 A "겹침 없이 맞닿는다"를
+ * 자동으로 보존). 아래 테스트들은 이 두 원시 비율(46/64·54/72)에서
+ * **독립적으로 재계산**해 `CROUCH_HITBOX`와 대조한다(`DEFAULT_SPREAD
+ * .coneRadiusRad`를 `(0.5*Math.PI)/180`과 대조하는 위 REV2 오라클과 동일한
+ * 정신 — "리터럴 금지"는 프로덕션 값 복제를 막는 것이지 이 오라클 계산
+ * 자체를 막지 않는다) — 앉은 값 5개(1.222·1.050·1.200·0.15·0.3)를 이
+ * 파일에 매직넘버로 직접 박지 않는다.
+ *
+ * ```ts
+ * // src/shared/config/combat-tuning.ts (확장)
+ * // CROUCH_HITBOX — DEFAULT_HITBOX(선 자세)에서 유도한 앉은 자세 히트박스.
+ * // headRadiusM·bodyRadiusM·bodyBottomM은 DEFAULT_HITBOX와 완전히 동일
+ * // (불변). eyeHeightM·headCenterM·bodyTopM은 위 "값 유도" 절의 두 비율에서
+ * // 계산한다.
+ * export const CROUCH_HITBOX: HitboxConfig & { eyeHeightM: number }
+ *
+ * // src/shared/sim/combat.ts (확장) — 자세(mode)→히트박스 판정. eyeOrigin·
+ * // effectiveSpreadConeRadius와 동일한 정신: standing/crouch 값을 함수
+ * // 내부에서 직접 import하지 않고 호출자가 둘 다 인자로 넘긴다(config→sim
+ * // 의존 방향 유지, combat-tuning.ts가 이미 명시한 방향). grounded는
+ * // 받지 않는다 — RQ-92 원문이 "앉은 채 점프해도 crouch-jump 특례를 두지
+ * // 않는다"고 명시했으므로 공중 여부는 이 판정에 관여하지 않는다(판정
+ * // 근거 제한 — 아래 타입 잠금 테스트가 컴파일 타임에 고정한다).
+ * export function hitboxForMode(
+ *   standing: HitboxConfig & { eyeHeightM: number },
+ *   crouch: HitboxConfig & { eyeHeightM: number },
+ *   mode: 'run' | 'walk' | 'crouch', // @shared/sim/movement의 MoveInput['mode']와 동일 유니언
+ * ): HitboxConfig & { eyeHeightM: number }
+ * // mode==='crouch'면 crouch를, 그 외(run·walk)는 standing을 값 그대로
+ * // 반환한다 — 순수 함수라 이전 호출을 기억하지 않으므로 "즉시 전환·
+ * // 보간 없음"(GA-67)이 계약 자체로 성립한다.
+ * ```
+ *
+ * **레벨 분리(ADR-0008/ADR-0011)**: GA-64~68의 1차 정본 검증은
+ * `tests/integration/rq-92-crouch-stance.test.ts`(실 `GameRoom.handleFire`
+ * 배선 — 사수 자신의 `mode`가 자신의 레이 원점에, 각 대상 자신의 `mode`가
+ * 그 대상의 히트박스에 반영되는지 실 Colyseus 룸 경계에서 관측) — 골든
+ * JSONL의 `verify` 필드가 그 경로를 지정한다. **그 파일이 요구하는 신규
+ * 배선 계약(coder에게)**: `GameRoom`은 지금까지 사수 자신의 `pendingInputs`
+ * (`mode`)만 읽었는데(탄퍼짐 판정), 이제 **각 피격 후보 자신의**
+ * `pendingInputs.get(candidateId)?.mode`(없으면 `IDLE_MOVE_INPUT`, 기존
+ * 폴백과 동일 관례)도 읽어 그 후보의 히트박스를 `hitboxForMode`로 개별
+ * 해석해야 한다 — `findClosestHit`의 3번째 인자(`hitbox`)가 지금은 모든
+ * 후보에 균일하게 적용되므로, 서로 다른 자세가 섞인 후보 집합을 다루려면
+ * 호출부(`GameRoom`)가 자세별로 후보를 묶어 `findClosestHit`을 자세 그룹당
+ * 한 번씩(예: 선 자세 그룹·앉은 자세 그룹) 호출한 뒤 전체에서 가장 가까운
+ * 결과를 취하는 식으로 처리해야 한다(정확한 구현 방식은 coder 재량 —
+ * `raycastHitbox`/`findClosestHit`의 기존 시그니처는 이 라운드가 바꾸지
+ * 않는다, 아래 "블라스트 반경" 절 참고). 이 파일(단위)은 그 통합 시나리오가
+ * 의존하는 순수 산술(`hitboxForMode`·`CROUCH_HITBOX`의 형상·경계)을
+ * 결정론적으로 미리 잠근다.
+ *
+ * **블라스트 반경 결정(coder에게) — `raycastHitbox`/`findClosestHit`
+ * 시그니처는 이 라운드가 바꾸지 않는다**: `DEFAULT_HITBOX.eyeHeightM`을
+ * 참조하는 기존 통합 테스트 28개·`findClosestHit`/`raycastHitbox`를 직접
+ * 호출하는 기존 단위 테스트 전부가 이 두 함수의 현재 시그니처(균일
+ * `hitbox` 인자)에 의존한다 — 이 라운드는 새 순수 함수(`hitboxForMode`)와
+ * 새 설정값(`CROUCH_HITBOX`)만 추가하고 기존 함수 시그니처는 그대로 둔다.
+ * **실측(test-writer, 이 라운드) — 위 28개 파일 중 실제로 앉은 사수/대상을
+ * 시뮬레이션하는 파일은 0건이다**(전수 확인 — `tests/integration/rq-90
+ * -spread-degradation.test.ts`를 포함해 전부 `mode`를 `'run'`/`'walk'`로만
+ * 설정하거나 `mode` 필드 자체를 건드리지 않는다, `PendingInputSnapshot`
+ * 타입 선언에만 `'crouch'`가 유니언 멤버로 등장한다) — 따라서 이 라운드는
+ * 기존 테스트 파일을 **한 곳도 수정하지 않는다**(상세 근거는
+ * `_workspace/RQ-92-crouch/01_test-writer_red.md` 참고).
+ *
+ * **GA-66(차폐) 한계 — 명시적 가정**: `WallAABB`(`@shared/sim/movement`)는
+ * "무한 높이 기둥"이다(`minY`/`maxY` 없음 — 그 파일 자체 docblock이 "의도"
+ * 라고 명시). GA-66의 given("높이 1.5m의 정적 지오메트리")·then("앉은 헤드
+ * 상단 1.350m < 지오메트리 상단 1.5m")이 서술하는 **유한 높이 차폐**는 이
+ * 코드베이스의 벽 모델이 표현할 수 없다 — occlusion 판정(`intersectWallXZ`)
+ * 이 y를 전혀 보지 않는다(XZ 슬랩만, `dir.y`·`o.y` 어디에도 등장하지 않는다
+ * — `combat.ts` 참고). 아래 GA-66 테스트·통합 파일 둘 다 "앉은 자세로
+ * 해석된 대상 위치에도 기존 차폐 규칙이 정상 적용되는가"만 검증한다 —
+ * "서 있었다면 노출됐을 것"이라는 높이 차등 자체는 현재 원시 타입으로
+ * 검증할 수 없다(team-lead 보고 대상).
  * ---
  */
 
@@ -718,5 +813,157 @@ describe('RQ-90 v1.8/v1.9 정확도 저하 3단계(정지·앉기 ×1 · 이동 
     // 초과 인자 거부로 고정한다.
     effectiveSpreadConeRadius(DEFAULT_SPREAD, 0, 0, 'run', true, { viewYaw: 1.2 })
     expect(true).toBe(true) // 도달 자체는 관심사가 아니다 — 위 타입 에러가 이 테스트의 본체다.
+  })
+})
+
+// -----------------------------------------------------------------------
+// RQ-92 v2.2 — 앉은 자세 눈높이·히트박스(CROUCH_HITBOX·hitboxForMode).
+// 파일 상단 REV3 계약 참고. GA-64~68(harness/evals/golden/track-a-product
+// .jsonl) — 1차 정본은 tests/integration/rq-92-crouch-stance.test.ts이고,
+// 이 describe들은 그 통합 시나리오가 의존하는 순수 산술을 미리 잠근다.
+// -----------------------------------------------------------------------
+
+describe('RQ-92 v2.2 CROUCH_HITBOX — DEFAULT_HITBOX(선 자세)에서 유도(ADR-0010, 리터럴 금지)', () => {
+  it('eyeHeightM = DEFAULT_HITBOX.eyeHeightM × 46/64(CS 눈높이 비율, requirements.md v2.2 사용자 결정)', () => {
+    const expected = DEFAULT_HITBOX.eyeHeightM * (46 / 64)
+    expect(CROUCH_HITBOX.eyeHeightM).toBeCloseTo(expected, 9)
+    expect(CROUCH_HITBOX.eyeHeightM).toBeCloseTo(1.222, 3) // 앵커 — v2.2 표기값(1.222)과 일치 확인
+  })
+
+  it('headCenterM·bodyTopM은 전신(발~정수리) 스케일 54/72(requirements.md v2.2)에서 역산된다 — 헤드 반경은 스케일하지 않는다', () => {
+    const totalHeightStanding = DEFAULT_HITBOX.headCenterM + DEFAULT_HITBOX.headRadiusM // 정수리 높이(1.80)
+    const totalHeightCrouch = totalHeightStanding * (54 / 72)
+    const expectedHeadCenterM = totalHeightCrouch - DEFAULT_HITBOX.headRadiusM
+    const expectedBodyTopM = expectedHeadCenterM - DEFAULT_HITBOX.headRadiusM
+
+    expect(CROUCH_HITBOX.headCenterM).toBeCloseTo(expectedHeadCenterM, 9)
+    expect(CROUCH_HITBOX.bodyTopM).toBeCloseTo(expectedBodyTopM, 9)
+    expect(CROUCH_HITBOX.headCenterM).toBeCloseTo(1.2, 3) // 앵커 — v2.2 표기값
+    expect(CROUCH_HITBOX.bodyTopM).toBeCloseTo(1.05, 3) // 앵커 — v2.2 표기값
+  })
+
+  it('헤드 반경·바디 반경·바디 하단은 선 자세와 완전히 동일하다(불변, requirements.md v2.2)', () => {
+    expect(CROUCH_HITBOX.headRadiusM).toBe(DEFAULT_HITBOX.headRadiusM)
+    expect(CROUCH_HITBOX.bodyRadiusM).toBe(DEFAULT_HITBOX.bodyRadiusM)
+    expect(CROUCH_HITBOX.bodyBottomM).toBe(DEFAULT_HITBOX.bodyBottomM)
+  })
+
+  it('GA-65: 앉은 자세에서도 가정 A(머리 볼륨이 몸통 상단과 겹치지 않고 맞닿는다)가 유지된다 — headCenterM - headRadiusM === bodyTopM', () => {
+    expect(CROUCH_HITBOX.headCenterM - CROUCH_HITBOX.headRadiusM).toBeCloseTo(CROUCH_HITBOX.bodyTopM, 9)
+  })
+
+  it('GA-65: 헤드 볼륨은 [1.050, 1.350], 바디 볼륨은 [0, 1.050]이다', () => {
+    expect(CROUCH_HITBOX.headCenterM - CROUCH_HITBOX.headRadiusM).toBeCloseTo(1.05, 3)
+    expect(CROUCH_HITBOX.headCenterM + CROUCH_HITBOX.headRadiusM).toBeCloseTo(1.35, 3)
+    expect(CROUCH_HITBOX.bodyBottomM).toBe(0)
+    expect(CROUCH_HITBOX.bodyTopM).toBeCloseTo(1.05, 3)
+  })
+})
+
+describe('RQ-92 v2.2 hitboxForMode — mode에 따라 즉시 전환(전환 보간·진행도 상태 없음, GA-67)', () => {
+  it("GA-68: mode==='run'이면 선 자세(DEFAULT_HITBOX)를 값 그대로 반환한다 — 자세 도입이 선 자세 값을 건드리지 않는다는 회귀 가드", () => {
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'run')).toEqual(DEFAULT_HITBOX)
+  })
+
+  it("mode==='walk'도 선 자세를 반환한다 — 앉기(crouch)만 자세 전환을 유발한다", () => {
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'walk')).toEqual(DEFAULT_HITBOX)
+  })
+
+  it("mode==='crouch'면 앉은 자세(CROUCH_HITBOX)를 값 그대로 반환한다", () => {
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch')).toEqual(CROUCH_HITBOX)
+  })
+
+  it('GA-67: crouch → run 전환은 다음 호출에서 즉시 반영된다 — 순수 함수라 직전 호출의 결과를 기억하지 않으므로 보간·진행도 상태 자체가 존재할 수 없다는 것을 구조로 고정한다', () => {
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch')).toEqual(CROUCH_HITBOX)
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'run')).toEqual(DEFAULT_HITBOX) // 직전 호출과 완전히 무관 — 즉시 선 자세로
+  })
+
+  // 판정 근거 제한(타입 잠금, `effectiveSpreadConeRadius`의 "@ts-expect-error"
+  // 테스트와 동일 정신 — standing·crouch·mode 세 파라미터만 받고, grounded
+  // 등 4번째 인자를 추가하면 컴파일 타임에 거부되어야 한다: crouch-jump
+  // 특례를 두지 않는다는 RQ-92 원문의 타입 수준 보증)는 **여기서는 쓸 수
+  // 없다** — `hitboxForMode`가 아직 존재하지 않아 임포트가 실패하고
+  // (TS2305, 위), 실패한 임포트는 TS가 `any`로 취급해 초과 인자를 줘도
+  // 컴파일 에러가 나지 않는다(`@ts-expect-error`가 "사용되지 않음"으로
+  // 오히려 tsc를 실패시킨다 — 실측: `_workspace/RQ-92-crouch/
+  // 01_test-writer_red.md` §tsc 출력). `effectiveSpreadConeRadius`의 타입
+  // 잠금 테스트가 성립하는 이유는 그 함수가 v1.9 **이전부터 이미 존재**
+  // 해서(다른 인자 개수로) 임포트가 항상 성공하기 때문이다 — 신설 함수는
+  // 이 기법을 Red 단계에 쓸 수 없다. coder가 Green으로 구현한 뒤 이
+  // 타입 잠금 테스트를 별도로 추가해야 한다(하드닝 후속 작업 — 보고서에
+  // 명시).
+})
+
+describe('GA-64 — eyeOrigin + hitboxForMode(crouch) 합성: 앉은 사수의 레이 원점은 발 + 1.222m다(선 자세 1.700이 아니다)', () => {
+  it('GA-64: 앉은 사수의 eyeOrigin.y는 CROUCH_HITBOX.eyeHeightM이고 선 자세 값과 다르다', () => {
+    const foot: Vec3 = { x: 5, y: 0, z: -3 }
+    const hitbox = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch')
+    const origin = eyeOrigin(foot, hitbox.eyeHeightM)
+
+    expect(origin).toEqual({ x: 5, y: CROUCH_HITBOX.eyeHeightM, z: -3 })
+    expect(origin.y).not.toBeCloseTo(DEFAULT_HITBOX.eyeHeightM, 2)
+  })
+
+  it('GA-64: 발이 원점이 아니어도(예: 스폰 좌표) y만 CROUCH_HITBOX.eyeHeightM만큼 더해진다', () => {
+    const foot: Vec3 = { x: 0, y: 0, z: 10 }
+    const hitbox = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch')
+    expect(eyeOrigin(foot, hitbox.eyeHeightM)).toEqual({ x: 0, y: CROUCH_HITBOX.eyeHeightM, z: 10 })
+  })
+})
+
+describe('GA-65 — 앉은 대상의 raycastHitbox 판정: 헤드 [1.050,1.350]·바디 [0,1.050], 자세가 바뀌면 같은 높이의 판정도 바뀐다', () => {
+  it('GA-65: 앉은 헤드 중심(1.200m) 관통 레이는 헤드에 명중한다', () => {
+    const ray: Ray = { origin: { x: 0, y: CROUCH_HITBOX.headCenterM, z: -10 }, direction: { x: 0, y: 0, z: 1 } }
+    const result = raycastHitbox(ray, ORIGIN_TARGET, CROUCH_HITBOX)
+    expect(result.hit).toBe(true)
+    expect(result.region).toBe('head')
+  })
+
+  it('GA-65: 앉은 바디 중앙(0.525m) 관통 레이는 바디에 명중한다', () => {
+    const bodyMidM = (CROUCH_HITBOX.bodyBottomM + CROUCH_HITBOX.bodyTopM) / 2
+    const ray: Ray = { origin: { x: 0, y: bodyMidM, z: -10 }, direction: { x: 0, y: 0, z: 1 } }
+    const result = raycastHitbox(ray, ORIGIN_TARGET, CROUCH_HITBOX)
+    expect(result.hit).toBe(true)
+    expect(result.region).toBe('body')
+  })
+
+  it('GA-65: 앉은 헤드 볼륨 상단(1.350m)을 넘는 높이는 명중하지 않는다 — 선 자세였다면 여전히 몸통 범위([0,1.5]) 안이었을 높이라는 것을 대조로 직접 확인한다', () => {
+    const aboveCrouchHeadTop = CROUCH_HITBOX.headCenterM + CROUCH_HITBOX.headRadiusM + 0.01 // ≈1.360
+    const ray: Ray = { origin: { x: 0, y: aboveCrouchHeadTop, z: -10 }, direction: { x: 0, y: 0, z: 1 } }
+
+    const crouchResult = raycastHitbox(ray, ORIGIN_TARGET, CROUCH_HITBOX)
+    expect(crouchResult.hit).toBe(false)
+
+    const standingResult = raycastHitbox(ray, ORIGIN_TARGET, DEFAULT_HITBOX)
+    expect(standingResult.hit).toBe(true)
+    expect(standingResult.region).toBe('body') // 자세가 다르면 같은 높이의 판정도 달라진다
+  })
+})
+
+describe('GA-66 — 앉은 자세 + 사수·대상 사이 정적 지오메트리(RQ-12 v1.7 차폐)', () => {
+  /**
+   * **한계(파일 상단 REV3 "GA-66 한계" 절 참고)**: `WallAABB`는 무한 높이
+   * 기둥이라 GA-66이 서술하는 "1.5m 높이 지오메트리" 자체는 표현할 수
+   * 없다 — 아래 두 테스트는 "앉은 자세로 해석된 대상 위치에도 기존 차폐
+   * 규칙이 정상 적용되는가"만 검증한다(높이 차등 자체는 검증 대상 밖).
+   */
+  it('GA-66: 사수·대상 사이를 가로막는 벽이 있으면, 앉은 대상의 실제 머리(1.200m)를 정확히 겨냥해도 명중 후보에서 제외된다(차폐)', () => {
+    const target: TargetPose = { position: { x: 0, y: 0, z: 10 } }
+    const wall: WallAABB = { minX: -1, maxX: 1, minZ: 4, maxZ: 6 } // 사수(z=0)·대상(z=10) 사이를 가로지른다
+    const ray: Ray = { origin: { x: 0, y: CROUCH_HITBOX.headCenterM, z: 0 }, direction: { x: 0, y: 0, z: 1 } }
+    const candidates: HitCandidate[] = [{ id: 'target', pose: target }]
+
+    const closest = findClosestHit(ray, candidates, CROUCH_HITBOX, [wall])
+    expect(closest).toBeUndefined()
+  })
+
+  it('양성 대조군 — 같은 배치에서 벽이 없으면(walls=[]) 정상 명중한다(위 미스가 진짜 차폐 때문임을 확인)', () => {
+    const target: TargetPose = { position: { x: 0, y: 0, z: 10 } }
+    const ray: Ray = { origin: { x: 0, y: CROUCH_HITBOX.headCenterM, z: 0 }, direction: { x: 0, y: 0, z: 1 } }
+    const candidates: HitCandidate[] = [{ id: 'target', pose: target }]
+
+    const closest = findClosestHit(ray, candidates, CROUCH_HITBOX, [])
+    expect(closest?.result.hit).toBe(true)
+    expect(closest?.result.region).toBe('head')
   })
 })
