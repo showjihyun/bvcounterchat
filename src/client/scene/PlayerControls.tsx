@@ -198,8 +198,11 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       // 3D 앵커 → 화면 좌표. `project`는 벡터를 제자리에서 바꾸므로 재사용
       // 벡터 하나만 둔다(프레임 예산 규칙 — 이 루프는 30Hz지만 같은 규율을 쓴다).
       projectionScratch.set(target.anchor.x, target.anchor.y, target.anchor.z).project(camera)
-      // NDC z가 1을 넘으면 카메라 뒤다 — 조준선이 향했으면 앞에 있지만,
-      // 근평면 경계에서 투영이 뒤집히는 경우를 막는다.
+      // NDC z가 1을 넘는 조건은 **카메라 뒤**와 **far plane 바깥**을 둘 다 잡는다.
+      // 조준선이 향했으면 앞에 있지만 근평면 경계에서 투영이 뒤집히는 경우를 막는다.
+      // ⚠️ far 바깥은 현재 도달 불가다 — `far`(WORLD.SIZE_M × 2 = 120m)가 맵
+      // 대각(84.9m)보다 커서, RQ-56의 "거리 제한을 두지 않는다"와 양립한다.
+      // `far`를 줄이면 그 전제가 깨져 먼 대상의 이름표가 조용히 사라진다.
       if (projectionScratch.z > 1) {
         uiStore.getState().setNameplate(null)
         return
