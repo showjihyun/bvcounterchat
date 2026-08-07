@@ -96,10 +96,13 @@ description: ChatStrike의 RQ 구현 파이프라인. RQ·기능 구현, 코딩,
 - **PASS** → 구현 커밋 확인, 원장(`progress.md`) ✅ 갱신, PR 준비
   (스펙 변경이 있으면 같은 PR에 포함).
   **골든 원장 갱신을 사용자에게 요청한다** — 해당 GA 케이스의 `verify`를 실제
-  테스트 경로로, `status`를 `todo`→`done`으로. 에이전트가 직접 쓰지 않는다 —
-  정답은 사람이 쓴다(`harness/evals/README.md`).
-  ⚠️ `.claude/settings.json`에 `harness/evals/golden/**` ask 게이트는 **아직 없다**.
-  지금은 규율로만 지켜진다. 갱신하지 않으면
+  테스트 경로로, `status`를 `todo`→`done`으로. **이 갱신은 에이전트가 묻지 않고 한다**
+  (2026-08-07 사용자 결정, 원장 24ax) — 상태·`verify`·형식은 저자 판단이 아니다.
+  **새 판정 기준을 창작할 때만** given/when/then을 사용자에게 보인 뒤 진행한다
+  (`harness/evals/README.md`).
+  ⚠️ **이전 서술 정정**: 여기 "ask 게이트는 아직 없다"고 적혀 있었으나 **틀렸다** —
+  `Edit(./harness/evals/golden/**)` 규칙이 2026-07-26부터 있었고(원장 17g)
+  2026-08-07 사용자 결정으로 **제거**됐다. 갱신하지 않으면
   원장이 영구히 todo로 남아 다음 RQ의 커버리지 대조가 신뢰할 수 없는 원장 위에서
   이뤄진다.
   **PR 생성 후 CI 통과를 먼저 확인하고**(ADR-0012 — CI 선행), 그 다음
