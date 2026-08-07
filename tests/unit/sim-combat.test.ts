@@ -331,6 +331,14 @@ import type { WallAABB } from '@shared/sim/movement'
  * `effectiveSpreadConeRadius` `'crouch'` 테스트는 탄퍼짐 콘 tier만
  * 검사해 히트박스·눈높이와 무관) — 따라서 이 라운드는 기존 테스트
  * 파일을 **한 곳도 수정하지 않는다**.
+ * **정정(PR #68 리뷰 major, 원장 24ax)**: 위 문장은 이 시점(F1/F2
+ * 검출력 보강) 기준으로는 사실이었으나 그 뒤 **거짓이 됐다** —
+ * `tests/unit/rq-40-chat-input-gate.test.ts`는 RQ-40 v2.3 대응으로
+ * 수정했다(docblock + `it` 2건 순증, **기존 단언 무변경** — 커밋
+ * `d66fe22`·`8acf46a`). 바로 위 (3)이 "그 문장은 이후 RQ-40 v2.3으로
+ * 뒤집혔다"고 이미 적어 두고도 이 결론 문장은 갱신하지 않았던 것이
+ * 리뷰에서 지적됐다 — 원래 문장은 지우지 않고 정정을 붙인다(다음
+ * 사람이 왜 뒤집혔는지 볼 수 있어야 한다).
  *
  * **GA-66(차폐) 한계 — 명시적 가정**: `WallAABB`(`@shared/sim/movement`)는
  * "무한 높이 기둥"이다(`minY`/`maxY` 없음 — 그 파일 자체 docblock이 "의도"
