@@ -49,6 +49,7 @@
  */
 
 import { MOVEMENT, NET, WORLD } from '@shared/constants'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 
 export interface MoveState {
   x: number
@@ -172,6 +173,17 @@ const TICK_SECONDS = NET.TICK_MS / 1000
 /** 월드 경계(RQ-30, GA-50) — `WORLD.SIZE_M`(60)에서 유도, ±30 하드코딩
  * 금지(ADR-0010). */
 const HALF_WORLD_M = WORLD.SIZE_M / 2
+
+/** 몸 반경 이동 판정(원장 24af, 사용자 결정 2026-08-06) — 벽·박스·플랫폼
+ * 옆면 차단 시 플레이어 **중심**을 근접면에서 이 값만큼 떨어뜨린다.
+ * `DEFAULT_HITBOX.bodyRadiusM`(`@shared/config/combat-tuning`)에서
+ * 유도한다(ADR-0010, 값 복제 금지) — 서버 hitscan(`@shared/sim/combat`)이
+ * 쓰는 몸통 원통 반지름과 같은 값이어야 "이동은 통과시키고 hitscan만
+ * 막는" 판정 불일치(사용자 플레이테스트 보고, 24af Red 보고서 §도입부)가
+ * 재발하지 않는다. `clampAgainstWalls`에만 적용한다 —
+ * `standingHeight`/`boxesBlockingAt`(수직 지지·차단 목록 판정)은 이
+ * 라운드의 스코프 밖(사용자 결정은 "수평 차단 판정"만 지정한다). */
+const BODY_RADIUS_M = DEFAULT_HITBOX.bodyRadiusM
 
 /** 점프 궤적에 쓰는 중력(m/s²) — 스펙 미확정 구현 선택값(위 파일 코멘트
  * 참고). 어떤 값을 골라도 해석적 궤적 샘플링은 오차 1% 미만이므로(실측,
@@ -307,12 +319,33 @@ function clampToWorldBounds(value: number): number {
  * "양성 대조군" 요구). 근접면은 **직전 위치(prevX/prevZ)가 벽의 어느 쪽에
  * 있었는가**로 정한다 — 반대쪽에서 접근하면 반대쪽 면에서 멈춘다.
  *
- * **고착 방지가 이 판정 순서에서 자연히 나온다**: 벽에 붙어 멈춘
- * 뒤(`prevX`가 근접면 값과 같아짐) 반대 방향으로 밀면, 후보 위치가 그
- * 근접면을 다시 넘지 않으므로(반대 방향으로 움직였으니까) 두 조건
+ * **몸 반경(원장 24af, 사용자 결정 2026-08-06) — 절단 목표점은 벽면
+ * 자체가 아니라 `BODY_RADIUS_M`만큼 바깥으로 민 지점이다.** 이 함수는
+ * 벽·박스·플랫폼을 구분하지 않는다(호출자 `groundedOutcome`/
+ * `airborneOutcome`이 벽과 "이번 틱 차단 대상 박스"를 합쳐서 넘긴다) —
+ * 같은 절단 목표점 계산이 세 지오메트리 종류 모두에 자동으로 적용된다.
+ * **비교 조건(`prevX <= ...`/`x > ...`)도 반경이 반영된 같은 목표점을
+ * 써야 한다** — 그렇지 않으면(원래 벽면 좌표로 조건을 남겨두면) 후보
+ * 위치가 목표점을 넘어도 조건이 걸리지 않아 매 틱 목표점을 살짝씩 지나
+ * 계속 전진하다가, 원래 벽면 좌표를 넘는 틱에야 뒤늦게 목표점으로
+ * 되튕기는 진동이 될 것이다(설계 단계 분석 — 조건-목표점을 처음부터
+ * 일치시켰으므로 이 저장소 코드에서 실제로 관측된 적은 없다) — 아래
+ * "고착 방지" 분석도 이 조건-목표점 일치를 전제한다.
+ *
+ * **고착 방지가 이 판정 순서에서 자연히 나온다**: 벽에서 반경만큼 떨어져
+ * 멈춘 뒤(`prevX`가 절단 목표점과 같아짐) 반대 방향으로 밀면, 후보 위치가
+ * 그 목표점을 다시 넘지 않으므로(반대 방향으로 움직였으니까) 두 조건
  * (`prev` 비교, `next` 비교) 중 하나가 깨져 절단이 걸리지 않는다 —
  * 세계 경계의 `clampToWorldBounds`(상태 비보유 절단)와 달리 이 함수는
- * "다가오는 방향"까지 함께 봐야 하므로 직전 위치가 필요하다. */
+ * "다가오는 방향"까지 함께 봐야 하므로 직전 위치가 필요하다.
+ *
+ * **수직축(스침 여부) 판정은 반경을 반영하지 않는다**(의도적 스코프
+ * 제한) — `z > wall.minZ && z < wall.maxZ`(x축 절단의 "이 벽이 실제로
+ * 관여하는가" 게이트)는 원래 벽 경계 그대로다. 사용자 결정과 이 라운드의
+ * 테스트(`24af-body-radius-walls.test.ts` 등)는 축 정렬 정면 접근만
+ * 다루고 모서리 스침의 반경 처리는 규정하지 않는다(위 "축별 독립 절단"
+ * 문단과 동일 스코프) — 손대면 테스트가 요구하지 않는 동작을 추가하는
+ * 것이 된다. */
 function clampAgainstWalls(
   prevX: number,
   prevZ: number,
@@ -324,23 +357,31 @@ function clampAgainstWalls(
   let z = nextZ
 
   for (const wall of walls) {
+    // 반경만큼 바깥으로 민 절단 목표점 — 이 벽(또는 벽으로 합류한
+    // 박스·플랫폼)에 대해서만 유효하므로 루프 안에서 매번 계산한다.
+    const nearMinX = wall.minX - BODY_RADIUS_M
+    const nearMaxX = wall.maxX + BODY_RADIUS_M
+    const nearMinZ = wall.minZ - BODY_RADIUS_M
+    const nearMaxZ = wall.maxZ + BODY_RADIUS_M
+
     // x축 이동 절단 — z(수직축)가 벽의 z범위 안에 있어야("스쳐 지나감"이
-    // 아니라 실제로 벽면과 마주친다) 충돌로 본다.
+    // 아니라 실제로 벽면과 마주친다) 충돌로 본다(원래 벽 경계 그대로 —
+    // 위 "수직축 판정" 문단).
     if (z > wall.minZ && z < wall.maxZ) {
-      if (prevX <= wall.minX && x > wall.minX) {
-        x = wall.minX
-      } else if (prevX >= wall.maxX && x < wall.maxX) {
-        x = wall.maxX
+      if (prevX <= nearMinX && x > nearMinX) {
+        x = nearMinX
+      } else if (prevX >= nearMaxX && x < nearMaxX) {
+        x = nearMaxX
       }
     }
 
     // z축 이동 절단 — x(수직축)가 벽의 x범위 안에 있어야 충돌. 위에서 x가
-    // 이미 절단됐을 수 있으므로 절단된 x로 재평가한다.
+    // 이미 절단됐을 수 있으므로 절단된 x로 재평가한다(원래 벽 경계 그대로).
     if (x > wall.minX && x < wall.maxX) {
-      if (prevZ <= wall.minZ && z > wall.minZ) {
-        z = wall.minZ
-      } else if (prevZ >= wall.maxZ && z < wall.maxZ) {
-        z = wall.maxZ
+      if (prevZ <= nearMinZ && z > nearMinZ) {
+        z = nearMinZ
+      } else if (prevZ >= nearMaxZ && z < nearMaxZ) {
+        z = nearMaxZ
       }
     }
   }
