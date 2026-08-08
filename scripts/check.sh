@@ -41,6 +41,11 @@ if [ "$node_major" -ge 24 ]; then
   echo "    harness/infra/worker-crash-rca.md" >&2
   echo "" >&2
   echo "    조치: .nvmrc 버전을 쓰라 — nvm/fnm 사용 시 \`nvm use\` 또는 \`fnm use\`." >&2
+  echo "    ⚠️ 셸 통합이 없는 비대화형 세션(에이전트 등)에서는 \`fnm use\`가 듣지 않고" >&2
+  echo "       \`fnm exec -- npm\`도 Windows에서 npm 스폰에 실패한다. 그때는 PATH를 직접 잡아라:" >&2
+  echo "         eval \"\$(fnm env --shell bash)\" && fnm use 22.23.1   # 같은 호출에 체인" >&2
+  echo "       또는  export PATH=\"\$HOME/AppData/Roaming/fnm/node-versions/v22.23.1/installation:\$PATH\"" >&2
+  echo "       (세 개 이상의 에이전트 세션이 이 벽을 각자 재발견했다 — 원장 28a)" >&2
   echo "" >&2
   exit 1
 fi
