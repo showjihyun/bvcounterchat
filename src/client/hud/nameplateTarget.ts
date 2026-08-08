@@ -238,8 +238,11 @@ export function resolveNameplateTarget(
   // CROUCH_HITBOX` 판정은 **`hitboxForMode`가 인자로 받은 두 객체 중
   // 하나를 새로 만들지 않고 그대로 반환한다**는 계약에 전적으로
   // 의존한다 — 그 함수가 훗날 `{ ...crouch }`처럼 복사본을 반환하도록
-  // 바뀌면 이 판정은 (컴파일 에러 없이) 조용히 항상 `standingCandidates`
-  // 쪽으로만 떨어진다.
+  // 바뀌면 이 판정은 (컴파일 에러 없이) 항상 `standingCandidates` 쪽으로만
+  // 떨어진다. ⚠️ **"조용히"는 과장이었다**(PR #69 1차 리뷰 minor 6) —
+  // 그 변이를 심으면 GA-74 케이스가 죽는다(독립 평가 실측: R-M13에서
+  // 테스트 2건 사망). 즉 **간접적으로는 잡힌다.** 없는 것은 이 계약
+  // 자체에 대한 **직접 단언**이다.
   //
   // ⚠️ **평가 F4 — 서버(`GameRoom.handleFire`)는 아직 `mode === 'crouch'`
   // 직접 비교 스타일이다(원장 24be, 이 PR 스코프 밖 — 24be가 소유한
