@@ -45,6 +45,8 @@ if [ "$node_major" -ge 24 ]; then
   echo "       \`fnm exec -- npm\`도 Windows에서 npm 스폰에 실패한다. 그때는 PATH를 직접 잡아라:" >&2
   echo "         eval \"\$(fnm env --shell bash)\" && fnm use 22.23.1   # 같은 호출에 체인" >&2
   echo "       또는  export PATH=\"\$HOME/AppData/Roaming/fnm/node-versions/v22.23.1/installation:\$PATH\"" >&2
+  echo "       v22가 아예 없으면 먼저: fnm install 22.23.1  (원장 28c)" >&2
+  echo "       ⚠️ 위 PATH 경로는 Windows 기준이다 — 다른 OS는 fnm 설치 위치를 확인하라." >&2
   echo "       (세 개 이상의 에이전트 세션이 이 벽을 각자 재발견했다 — 원장 28a)" >&2
   echo "" >&2
   exit 1
