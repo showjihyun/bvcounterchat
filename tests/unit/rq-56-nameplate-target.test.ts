@@ -560,7 +560,7 @@ describe("RQ-92 v2.4(GA-73) — nameplateAnchorHeightM(mode)", () => {
  * — 아래 "그룹 판정 불변" 테스트가 이 경계를 직접 고정한다.
  */
 describe('RQ-92 v2.4 F1 blocker(원장 24az 후속) — 이름표 앵커 높이가 그려진 몸(보간 지연 자세)과 시간축을 맞춘다', () => {
-  it("전환 직후(앉는 중) — 대상의 최신 mode는 'crouch'지만 그려진 몸은 아직 지연된 'run'이면, 앵커 높이는 그려진 몸(anchorMode)을 따른다 — 최신 mode(crouch)가 아니다", () => {
+  it("GA-76: 전환 직후(앉는 중) — 대상의 최신 mode는 'crouch'지만 그려진 몸은 아직 지연된 'run'이면, 앵커 높이는 그려진 몸(anchorMode)을 따른다 — 최신 mode(crouch)가 아니다", () => {
     // 대상이 앉아 있으므로(그룹 판정은 최신 mode인 crouch를 쓴다, 위 "그룹
     // 판정 불변" 테스트가 그 축을 고정) 실제 히트박스(CROUCH_HITBOX) 머리를
     // 정조준해야 명중한다 — AIM_EAST(수평, 선 자세 눈높이 1.7)는 앉은
@@ -576,7 +576,7 @@ describe('RQ-92 v2.4 F1 blocker(원장 24az 후속) — 이름표 앵커 높이�
     expect(target?.anchor.y).not.toBeCloseTo(nameplateAnchorHeightM('crouch'), 2)
   })
 
-  it("전환 직후(일어서는 중) — 대상의 최신 mode는 'run'이지만 그려진 몸은 아직 지연된 'crouch'면, 앵커 높이는 그려진 몸을 따른다(GA-73 then의 0.7m 허공 수치를 직접 반증)", () => {
+  it("GA-76: 전환 직후(일어서는 중) — 대상의 최신 mode는 'run'이지만 그려진 몸은 아직 지연된 'crouch'면, 앵커 높이는 그려진 몸을 따른다(GA-73 then의 0.7m 허공 수치를 직접 반증)", () => {
     const map = others({ enemy: { ...targetFootAt(10), mode: 'run' as MoveInput['mode'] } })
     const target = resolveNameplateTarget(SELF_FOOT, AIM_EAST, map, [], undefined, undefined, () => 'crouch')
 
