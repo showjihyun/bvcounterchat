@@ -36,6 +36,16 @@ export class Player extends Schema {
    * true`인데 `y !== 0`이라 그 파생이 공중으로 오판한다(원장
    * `_workspace/RQ-22-box-jump/01_test-writer_red.md` §질문2). */
   @type('boolean') grounded = true
+  /** 자세(RQ-92 v2.4, 원장 24az) — `grounded`(바로 위)와 동일한 관례:
+   * 서버가 매 틱 권위 값을 싣는다(RQ-61) — 클라이언트가 원격 플레이어의
+   * 자세를 자기 자신이든 남의 것이든 추정하지 않는다. 원격 플레이어의
+   * 렌더 높이(`remoteMeshHeightM`)·이름표 앵커·이름표 대상 판정(RQ-56,
+   * `resolveNameplateTarget`)이 전부 이 필드를 그대로 읽는다. 기본값
+   * `'run'`은 `IDLE_MOVE_INPUT.mode`와 동일한 안전한 초기값(아직 'move'를
+   * 한 번도 보내지 않은 상태). **`grounded`와 다른 점**: 사망자의 `mode`
+   * 동작은 스펙 어디에도 없어 규정하지 않는다 — 서버는 별도 처리 없이
+   * 마지막 값을 그대로 둔다(스펙 없는 행동을 테스트화하지 않는다). */
+  @type('string') mode: 'run' | 'walk' | 'crouch' = 'run'
   /** 서버가 처리를 반영한 마지막 입력 시퀀스 번호(RQ-62, ADR-0003 입력
    * 커맨드 버퍼). 클라이언트가 'move' 메시지에 `seq`를 싣지 않으면(레거시
    * 호출) 갱신되지 않는다 — 기본값 0이 유지된다. */

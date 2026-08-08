@@ -5,6 +5,7 @@ import {
   type RemoteEntityInterpolator,
   type RemoteSnapshot,
 } from '@client/net/interpolation'
+import { remoteMeshHeightM } from '@client/scene/remoteMeshHeight'
 
 /**
  * RQ-63 다른 플레이어 보간(entity interpolation) — 순수 로직 단위 테스트
@@ -381,5 +382,136 @@ describe('RQ-63 리뷰 major 대응: 세션별 보간 버퍼는 무한 성장하
     const position = interpolator.getPosition(REMOTE, renderTime)
 
     expect(position?.x).toBeCloseTo(295.25, 5)
+  })
+})
+
+/**
+ * RQ-92 v2.4/GA-75(원장 24az) — **자세는 보간하지 않는다**. RQ-92 v2.4
+ * 원문: "자세는 보간하지 않는다(RQ-63 예외). 전환이 같은 틱에 즉시이므로
+ * 중간 높이는 어떤 시점에도 실재하지 않는다 — 위치는 보간하고 자세는
+ * 최신 스냅샷 값을 그대로 쓴다." GA-75: "원격 플레이어의 자세가 run에서
+ * crouch로 바뀌는 서버 스냅샷 두 개가 있다 → 그 사이에서 보간이 도는
+ * 프레임 → 렌더 높이가 1.800 또는 1.350 둘 중 하나이고 중간값이 나오지
+ * 않는다."
+ *
+ * **핵심 방어선(team-lead 지시 ③)**: "보간 함수를 호출했더니 높이가 두
+ * 값 중 하나였다"만으로는 공허하다 — 자세를 아예 안 건드리는 구현도,
+ * 위치와 함께 잘못 블렌딩하다가 우연히 두 값만 관측되는 구현도 그 단언
+ * 하나로는 구분되지 않는다. **중간 프레임을 스윕**(여러 지점을 촘촘히
+ * 샘플링)해 전 구간에서 한 번도 블렌딩이 새지 않는다는 것을 직접 본다.
+ *
+ * **API 계약(test-writer 결정)**:
+ * 1. `RemoteSnapshot`에 `mode?: MoveInput['mode']` 필드를 추가한다
+ *    (**옵셔널** — 생략하면 `'run'`. 기존 스냅샷 리터럴이 이 파일에
+ *    20건 넘게 있고 전부 `mode`를 안 채운다 — 순증만 규칙, `selfEyeHeightM`
+ *    ·`NameplateCandidate.mode`와 동일 근거).
+ * 2. `RemoteEntityInterpolator`에 새 메서드
+ *    `getMode(sessionId: string, renderTime: number): MoveInput['mode'] | undefined`
+ *    를 추가한다. **위치(`computePosition`)와 다른 점** — 선형 보간하지
+ *    않고 **step(계단) 함수**로 조회한다: 렌더 시각을 감싸는 스냅샷 쌍
+ *    `(from, to)`을 찾으면(`computePosition`과 같은 탐색) **`from.mode`
+ *    를 그대로 반환**한다(가중 평균하지 않는다 — targetTime이
+ *    `from.receivedAt`과 `to.receivedAt` 사이에 있는 한, "그 순간까지
+ *    알려진 최신 자세"는 아직 `to`가 도착하기 전인 `from`의 값이다).
+ *    경계 정책은 위치와 동일하게 통일한다: 스냅샷 1개뿐이면 그 값,
+ *    렌더 시각이 최신보다 앞서면 최신 값, 가장 오래된 스냅샷보다도
+ *    이전이면 그 값(모두 "고정"). 세션 자체를 모르면(스냅샷을 한 번도
+ *    받지 못함) `undefined` — `getPosition`과 동일한 GA-39 계약.
+ * 3. **왜 `computePosition`(선형 보간)을 재사용하지 않고 별도 경로를
+ *    두는가**: 자세를 그 **같은 가중 평균 코드**에 태우면(예: `out.mode`를
+ *    `from.mode + (to.mode-from.mode)*t`류로 확장) 문자열은 애초에
+ *    산술이 안 되므로 구현자가 숫자 코드(0|1)로 바꾸려는 유혹이 생기고,
+ *    그 순간 중간값(예: 0.5)이 생겨 GA-75가 정면으로 깨진다 — **구조적으로
+ *    분리된 함수**를 두는 것 자체가 "값 선택은 순수 함수, 배선은 면제"
+ *    (`hitboxForMode` 선례, team-lead 지시 ①)의 반대 축 방어다: 위치용
+ *    가중 평균 코드 경로에 자세가 물리적으로 들어갈 자리가 없다.
+ */
+describe('RQ-92 v2.4/GA-75 — 자세(mode)는 보간하지 않는다(step 함수, RQ-63 예외)', () => {
+  const REMOTE = 'remote-stance'
+  const T1 = 0
+  const T2 = 100
+  const DELAY_MS = 20
+
+  function buildStanceInterpolator(): RemoteEntityInterpolator {
+    const interpolator = createRemoteEntityInterpolator(SELF, DELAY_MS)
+    interpolator.addSnapshot(REMOTE, { x: 0, y: 0, z: 0, receivedAt: T1, mode: 'run' })
+    interpolator.addSnapshot(REMOTE, { x: 10, y: 0, z: 0, receivedAt: T2, mode: 'crouch' })
+    return interpolator
+  }
+
+  it("GA-75: T1~T2 사이 모든 중간 렌더 시각에서 getMode가 정확히 'run'(from 스냅샷 값)이다 — 촘촘히 스윕해도 예외가 없다", () => {
+    const interpolator = buildStanceInterpolator()
+    const stepMs = 3
+
+    // targetTime(=renderTime-delay)이 [T1, T2) 구간 전체를 촘촘히 지나도록
+    // renderTime을 스윕한다 — "중간 프레임에서도" 요구(team-lead 지시 ③)를
+    // 여러 표본점으로 직접 확인한다(단일 지점 호출이 아니다).
+    for (let targetTime = T1; targetTime < T2; targetTime += stepMs) {
+      const renderTime = targetTime + DELAY_MS
+      expect(interpolator.getMode(REMOTE, renderTime)).toBe('run')
+    }
+  })
+
+  it("GA-75: renderTime이 T2(=crouch 스냅샷의 receivedAt)에 도달하는 순간 즉시 'crouch'로 바뀐다 — 그 이후로도 계속 'crouch'다", () => {
+    const interpolator = buildStanceInterpolator()
+    const atT2 = interpolator.getMode(REMOTE, T2 + DELAY_MS)
+    const afterT2 = interpolator.getMode(REMOTE, T2 + DELAY_MS + 500)
+
+    expect(atT2).toBe('crouch')
+    expect(afterT2).toBe('crouch')
+  })
+
+  it('GA-75 핵심 방어선: 중간 프레임을 촘촘히 스윕해도 렌더 높이가 항상 1.800 또는 1.350 둘 중 하나이고, 그 사이 어떤 값도 나오지 않는다', () => {
+    const interpolator = buildStanceInterpolator()
+    const stepMs = 2
+    const standingHeight = remoteMeshHeightM('run')
+    const crouchHeight = remoteMeshHeightM('crouch')
+    const observedHeights = new Set<number>()
+
+    // 최고참보다 한참 이전(고정 구간)부터 최신보다 한참 이후(고정 구간)까지
+    // 전 구간을 스윕한다 — 경계 밖에서도 블렌딩이 새지 않는지 함께 본다.
+    const startTargetTime = T1 - 50
+    const endTargetTime = T2 + 50
+    for (let targetTime = startTargetTime; targetTime <= endTargetTime; targetTime += stepMs) {
+      const renderTime = targetTime + DELAY_MS
+      const mode = interpolator.getMode(REMOTE, renderTime)
+      expect(mode).toBeDefined()
+      const height = remoteMeshHeightM(mode!)
+      observedHeights.add(height)
+      // 두 값 중 하나가 아니면(예: 1.575 같은 블렌딩) 여기서 즉시 실패한다.
+      expect([standingHeight, crouchHeight]).toContain(height)
+    }
+
+    // 공허 방지 — 이 스윕이 실제로 두 값 다 관측했어야 "전환이 일어났다"는
+    // 증거가 된다(전부 한 값이면 T2 경계를 못 넘었다는 뜻일 수 있다).
+    expect(observedHeights.size).toBe(2)
+  })
+
+  it('자세가 스냅샷마다 달라도 위치 보간(GA-37)은 그대로 선형으로 동작한다 — 자세 축 추가가 위치 축을 건드리지 않는다', () => {
+    const interpolator = buildStanceInterpolator()
+    // targetTime=50(정확히 중간) → renderTime=50+20=70.
+    const position = interpolator.getPosition(REMOTE, T2 / 2 + DELAY_MS)
+    expect(position?.x).toBeCloseTo(5, 5)
+  })
+
+  it('경계: 스냅샷이 1개뿐이면 그 mode로 고정된다(위치의 "고정" 정책과 동일)', () => {
+    const interpolator = createRemoteEntityInterpolator(SELF, 30)
+    interpolator.addSnapshot('solo', { x: 0, y: 0, z: 0, receivedAt: 100, mode: 'crouch' })
+
+    expect(interpolator.getMode('solo', 100)).toBe('crouch')
+    expect(interpolator.getMode('solo', 1000)).toBe('crouch')
+    expect(interpolator.getMode('solo', 0)).toBe('crouch')
+  })
+
+  it('경계: mode를 생략한 스냅샷은 기본값 run으로 취급된다(기존 스냅샷 리터럴 전부와의 하위 호환 — 순증 규칙 근거)', () => {
+    const interpolator = createRemoteEntityInterpolator(SELF, 10)
+    interpolator.addSnapshot('legacy', { x: 0, y: 0, z: 0, receivedAt: 0 }) // mode 생략
+
+    expect(interpolator.getMode('legacy', 10)).toBe('run')
+  })
+
+  it('GA-39와 동일한 미지 세션 계약 — 스냅샷을 한 번도 받지 못한 sessionId는 getMode도 undefined다', () => {
+    const interpolator = createRemoteEntityInterpolator(SELF, 40)
+    expect(interpolator.getMode('never-seen', 1000)).toBeUndefined()
   })
 })

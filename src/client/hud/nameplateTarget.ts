@@ -30,25 +30,40 @@
  * `hitboxForMode(...).eyeHeightM`을 계산해 넘긴다, §아래 함수 docblock)으로
  * 닫았다 — **사수 자신의 눈 원점 축은 이제 서버·카메라와 일치한다.**
  *
- * **동치가 앉은 대상에서는 아직 깨져 있다 — 남은 갈라짐은 대상 히트박스
- * 축뿐이다(원장 24ba).** 이 파일이 판정하는 대상 볼륨은 클라
- * `[0,1.5]`(바디)+`[1.5,1.8]`(머리)로 여전히 고정인데, 서버가 실제로
- * 판정하는 볼륨은 앉은 대상의 경우 `[0,1.05]`+`[1.05,1.35]`다 — **이름표는
- * 뜨는데 그 높이를 쏘면 맞지 않는** 구간이 남는다(RQ-56의 "쏠 수 있으면
- * 보인다" 위반, 24ab 리뷰 blocker 1과 같은 계열의 재발 — 그때는 시신,
- * 이번엔 자세).
- *
- * **대상 히트박스 축의 동치 복구는 이번 PR 범위가 아니다 — 원장 24ba로
- * 이월한다.** 복구하려면 이 파일이 각 후보의 `mode`를 알아야 하는데, 서버
- * `Player` 스키마는 자세를 다른 클라이언트에 동기화하지 않는다(원장
- * **24az** — 스키마 필드 0건). 즉 와이어 프로토콜 확장(스키마에 `mode`
- * 필드 추가)이 선행이고, 이 파일의 대상 히트박스 선택 로직 변경은 그
- * 뒤에 온다.
+ * ✅ **REV3(RQ-92 v2.4, 2026-08-08, 원장 24az) — 대상 히트박스 축도 이
+ * PR에서 닫았다. 원장 24ba가 완전히 해소됐다.** REV2 이후 남아 있던 문제 —
+ * 이 파일이 판정하는 대상 볼륨이 클라 `[0,1.5]`(바디)+`[1.5,1.8]`(머리)로
+ * 고정이라 서버가 실제로 판정하는 앉은 대상 볼륨(`[0,1.05]`+`[1.05,1.35]`)과
+ * 갈라졌던 것 — 은 `Player` 스키마에 `mode` 필드가 실려(RQ-92 v2.4 와이어
+ * 확장, `GameRoom.ts` "grounded"와 동일한 관례) 클라가 각 후보 자신의 자세를
+ * 알게 되면서 근거 자체가 사라졌다. `NameplateCandidate.mode`(아래 인터페이스)
+ * 를 후보가 지니고, `resolveNameplateTarget`이 `GameRoom.handleFire`와
+ * **정확히 같은 알고리즘**(자세별 두 그룹으로 나눠 그룹마다
+ * `findClosestHit`을 부른 뒤 거리로 병합, `GameRoom.ts` "RQ-92 v2.2: 후보를
+ * ... 자세별 두 그룹으로 나눈다" 절과 동일 — ADR-0010 "논리 복제")을
+ * 재사용한다. **이제 이름표는 앉은 대상에서도 서버와 완전히 같은 대상·같은
+ * 히트박스로 판정된다.**
  *
  * ⚠️ **테스트가 그 동치를 고정하는 범위는 차폐 목록·조준 벡터 두 축까지다** —
  * 히트박스·눈 원점 축은 아직 변이가 살아남는다(원장 24ae). 즉 이 주석의
  * "같은 차폐 목록"은 **코드가 그렇게 되어 있다**는 서술이지 테스트가 지킨다는
  * 뜻이 아니다.
+ *
+ * ✅ **REV4(PR #68 리뷰 F1 blocker, 2026-08-08, 원장 24az 후속) — 앵커
+ * "높이"에도 같은 시간축 문제가 있었다.** REV3이 대상 히트박스 축을 최신
+ * `mode`로 닫았지만, **표시**(앵커 높이) 쪽은 여전히 최신 `mode`를 썼다 —
+ * 몸은 `PlayerMeshes.tsx`가 `remoteMeshHeightM(interpolator.getMode(...))`로
+ * **보간 지연된** 자세로 그리는데, 앵커 높이는 `nameplateAnchorHeightM
+ * (player.mode)`로 **최신** 자세를 썼다. 정지 상태에서는 두 값이 항상
+ * 같아 드러나지 않고, 전환 직후 보간 지연 창(66.67ms) 안에서만 어긋난다
+ * — 실측: 일어서는 순간 그려진 몸은 아직 1.35m인데 앵커는 2.05m(0.7m
+ * 허공, GA-73 `then`이 적은 바로 그 수치이자 PR #66에서 blocker였던
+ * 0.40m보다 크다). 7번째 파라미터 `anchorMode`(아래 함수 docblock)로
+ * 닫았다 — **앵커 위치(§위 "앵커는 다르다")와 앵커 높이가 이제 같은
+ * 시간축(보간 지연)을 본다.** ⚠️ **대상 선택·히트박스 판정(REV3, GA-74)은
+ * 건드리지 않았다** — 서버는 항상 최신 입력으로 판정하므로(RQ-61), 그
+ * 축까지 지연시키면 "쏠 수 있으면 보인다" 동치가 오히려 깨진다. 시간축을
+ * 맞춰야 하는 것은 **표시뿐**이다.
  *
  * ## 서버와 **일부러** 다른 두 가지
  *
@@ -80,10 +95,10 @@
  * 이 파일은 순수 함수이고 `tests/unit/rq-56-nameplate-target.test.ts`가 시험한다.
  */
 
-import { eyeOrigin, findClosestHit, type HitCandidate, type Vec3 } from '@shared/sim/combat'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { eyeOrigin, findClosestHit, hitboxForMode, type ClosestHit, type HitCandidate, type Vec3 } from '@shared/sim/combat'
+import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { canAct } from '@shared/sim/lifecycle'
-import type { WallAABB } from '@shared/sim/movement'
+import type { MoveInput, WallAABB } from '@shared/sim/movement'
 
 /** 이름표가 필요한 최소 플레이어 정보 — 클라 스토어(`PlayerView`)의 부분집합.
  * 스토어 타입을 그대로 요구하지 않는 이유는 이 함수를 스토어 없이 시험하기
@@ -99,6 +114,12 @@ export interface NameplateCandidate {
    * 이름표는 시신을 가리키고 총알은 뒤의 산 사람을 맞힌다(PR #66 리뷰
    * blocker 1) — 이 라운드가 세운 동치가 그 자리에서 깨진다. */
   hp: number
+  /** RQ-92 v2.4(원장 24az, GA-74) — 서버가 확정한 자세(`Player.mode`,
+   * `grounded`와 동일한 관례로 서버가 매 틱 권위 값을 싣는다, RQ-61).
+   * 옵셔널 — 생략하면 선 자세(`'run'`)로 취급한다(기존 호출부 순증 규칙,
+   * `hp`가 PR #66에서 그랬던 것과 동일 근거). `resolveNameplateTarget`이
+   * 후보 **자신의** 이 값으로 히트박스(GA-74)·이름표 앵커(GA-73)를 고른다. */
+  mode?: MoveInput['mode']
 }
 
 /** 조준선이 향한 대상. 없으면 `undefined`. */
@@ -118,8 +139,18 @@ export interface NameplateTarget {
  */
 const NAMEPLATE_HEAD_CLEARANCE_M = 0.25
 
-export function nameplateAnchorHeightM(): number {
-  return DEFAULT_HITBOX.headCenterM + DEFAULT_HITBOX.headRadiusM + NAMEPLATE_HEAD_CLEARANCE_M
+/**
+ * **REV(RQ-92 v2.4, 2026-08-08, 원장 24az, GA-73)** — `mode` 파라미터
+ * 추가(옵셔널, 기본값 `'run'` — 기존 0-인자 호출 전부 그대로 유효). 지금까지
+ * 이 값은 선 자세 히트박스(2.05m)로 고정이었다 — 메시 높이(`remoteMeshHeightM`,
+ * GA-72)만 앉은 자세로 줄이고 이 값을 그대로 두면 **앉은 대상의 이름표가
+ * 줄어든 몸(1.35m) 위 0.7m 허공에 남는다**(PR #66에서 0.40m 오프셋이
+ * blocker였던 것과 같은 축, 이번엔 더 크다). `hitboxForMode`(RQ-92 정본
+ * 히트박스 선택 로직)를 그대로 재사용해 앉은 자세는 1.6m로 낮아진다.
+ */
+export function nameplateAnchorHeightM(mode: MoveInput['mode'] = 'run'): number {
+  const hitbox = hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode)
+  return hitbox.headCenterM + hitbox.headRadiusM + NAMEPLATE_HEAD_CLEARANCE_M
 }
 
 /**
@@ -140,9 +171,43 @@ export function nameplateAnchorHeightM(): number {
  *   `hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode).eyeHeightM`을 계산해
  *   카메라·서버 레이 양쪽에 쓰고 있으므로 그 값을 그대로 넘기면 된다 — 이
  *   파일이 `hitboxForMode`/`CROUCH_HITBOX`를 새로 import할 필요가 없다.
- *   ⚠️ **닫는 범위는 사수 자신의 눈 원점 축뿐**이다 — 대상 후보의 히트박스
- *   (`bodyRadiusM` 등)가 자세에 따라 달라지는 축은 여전히 원장 24ba의
- *   영역이다(위 모듈 상단 REV2 절 참고).
+ *
+ * **REV3(RQ-92 v2.4, 2026-08-08, 원장 24az, GA-74)** — 대상 후보도 자세를
+ * 가질 수 있다(`NameplateCandidate.mode`). 후보를 **자신의** `mode`로 두
+ * 그룹(선 자세·앉은 자세)으로 나눠 그룹마다 `findClosestHit`을 한 번씩
+ * 부른 뒤, 두 결과가 모두 있으면 **거리로** 더 가까운 쪽을 취한다 —
+ * `GameRoom.handleFire`가 이미 하는 바로 그 알고리즘을 그대로 복제한다
+ * (ADR-0010 "논리 복제"). ⚠️ `findClosestHit`의 "가장 가까운 것 하나"
+ * 계약은 **그룹 안에서만** 성립한다 — 그룹 간 최단 거리 비교를 빠뜨리면
+ * (예: `standingHit ?? crouchHit`처럼 한쪽을 무조건 우선하면) 실제로는 더
+ * 먼 그룹이 뽑힌다(RQ-92 F1 라운드에서 `GameRoom.handleFire` 구현 중 실제로
+ * 났던 결함과 같은 계열 — `GameRoom.ts`의 같은 절 주석 참고). **이 그룹
+ * 판정(대상 선택·히트박스)은 항상 후보의 최신 `mode`를 쓴다 — 아래
+ * `anchorMode`(표시 전용)의 영향을 받지 않는다(REV4).**
+ *
+ * @param anchorMode **REV4(PR #68 F1 blocker, 2026-08-08)** — 선택된
+ *   대상의 이름표 **앵커 높이**를 계산할 때 쓸 자세를 돌려준다.
+ *   `anchorPosition`(5번째)과 완전히 대칭인 위치·원칙 — "최신 스냅샷
+ *   값"(그룹 판정, 위)과 "호출자가 보간기에서 얻어 넘기는 지연 값"(표시)을
+ *   분리한다. 프로덕션 호출부는 `interpolator.getMode(id, now())`를
+ *   넘긴다 — `PlayerMeshes.tsx`가 몸 높이(`remoteMeshHeightM`)에 쓰는 것과
+ *   **같은 호출**이라 몸과 앵커가 항상 같은 시간축을 본다. 생략하거나
+ *   `undefined`를 반환하면(첫 프레임 등 보간 이력이 아직 없음)
+ *   `player.mode`(후보의 최신 자세)로 떨어진다 — `anchorPosition`을
+ *   생략하면 "지연 없는 스냅샷 위치"로 떨어지는 것과 정확히 같은 등급의
+ *   폴백이다(원장 24bd가 경고한 "조용히 틀린 값" 위험을 그대로 인지하고
+ *   받아들인다 — `anchorPosition`이 이미 같은 위험을 안고 코드 리뷰로
+ *   관리돼 왔다). **옵셔널인 것은 선택이 아니라 강제다** — 다만 ⚠️ **근거를
+ *   정정한다**(독립 평가 D1, tsc 6.0.3 실측): 원인은 6번째
+ *   `selfEyeHeightM`이 아니라 **5번째 `anchorPosition?`** 다.
+ *   `selfEyeHeightM`은 `?` 옵셔널이 아니라 **기본값 파라미터**이고,
+ *   기본값 뒤에 필수 인자를 두는 것 자체는 **컴파일된다**(실측). TS1016을
+ *   내는 것은 `?` 옵셔널 뒤의 필수뿐이다. 결론은 그대로다 —
+ *   `anchorPosition?`가 5번째에 있는 한 **그 뒤 어떤 인자도 필수가 될 수
+ *   없다**. "순증만" 규칙도 같은 결론을 강제한다.
+ *   ⚠️ **함의**: 원장 24bd에 적힌 수정안("`selfEyeHeightM` 기본값을 제거해
+ *   필수로 승격")은 **그대로는 구현 불가**다. 실행 가능한 형태는 꼬리 3개를
+ *   **하나의 필수 옵션 객체**로 묶는 것이다(원장 24bd 참고).
  */
 export function resolveNameplateTarget(
   selfFoot: Vec3,
@@ -151,23 +216,67 @@ export function resolveNameplateTarget(
   walls: readonly WallAABB[],
   anchorPosition?: (sessionId: string) => Vec3 | undefined,
   selfEyeHeightM: number = DEFAULT_HITBOX.eyeHeightM,
+  anchorMode?: (sessionId: string) => MoveInput['mode'] | undefined,
 ): NameplateTarget | undefined {
   if (others.size === 0) return undefined
 
-  const candidates: HitCandidate[] = []
+  // RQ-92 v2.4(GA-74) — 후보를 **자신의** mode로 자세별 두 그룹으로 나눈다.
+  // findClosestHit의 hitbox 인자가 후보 전체에 균일하게 적용되므로, 서로
+  // 다른 자세가 섞인 후보 집합은 한 번의 호출로 정확히 판정할 수 없다
+  // (`GameRoom.handleFire`의 같은 절과 동일 근거).
+  //
+  // ⚠️ **`mode === 'crouch'`를 여기서 직접 재판정하지 않는다** —
+  // `hitboxForMode`를 매핑 정본으로 그대로 쓴다(원장 24be: `GameRoom
+  // .handleFire`가 이 판정을 `hitboxForMode` 안과 그룹핑 코드 두 곳에
+  // 복제해 "자세가 3종 이상이 되면 한쪽만 고쳐 갈라진다"는 결함을 남겼다
+  // — 새 코드에서 같은 함정을 반복하지 않는다). `hitboxForMode`가 둘 중
+  // 하나를 그대로 반환하는 계약이므로(새 객체 생성 없음) 참조 동일성으로
+  // 그룹을 가른다.
+  //
+  // ⚠️ **평가 F3 — 이 참조 동일성 위임에는 직접 단언이 없다(test-writer
+  // 영역, 이 라운드는 코드 주석으로만 계약을 명시한다).** 아래 `===
+  // CROUCH_HITBOX` 판정은 **`hitboxForMode`가 인자로 받은 두 객체 중
+  // 하나를 새로 만들지 않고 그대로 반환한다**는 계약에 전적으로
+  // 의존한다 — 그 함수가 훗날 `{ ...crouch }`처럼 복사본을 반환하도록
+  // 바뀌면 이 판정은 (컴파일 에러 없이) 항상 `standingCandidates` 쪽으로만
+  // 떨어진다. ⚠️ **"조용히"는 과장이었다**(PR #69 1차 리뷰 minor 6) —
+  // 그 변이를 심으면 GA-74 케이스가 죽는다(독립 평가 실측: R-M13에서
+  // 테스트 2건 사망). 즉 **간접적으로는 잡힌다.** 없는 것은 이 계약
+  // 자체에 대한 **직접 단언**이다.
+  //
+  // ⚠️ **평가 F4 — 서버(`GameRoom.handleFire`)는 아직 `mode === 'crouch'`
+  // 직접 비교 스타일이다(원장 24be, 이 PR 스코프 밖 — 24be가 소유한
+  // 이월).** 이 파일만 참조 동일성 위임으로 리팩터돼 두 판정 술어의
+  // "스타일"이 갈렸다 — 결과(어느 후보가 어느 그룹에 들어가는가)는
+  // 오늘 시점 두 스타일이 동일하므로 동작 차이는 없다. 다음 사람이 두
+  // 스타일을 보고 헷갈리지 않도록 남긴다.
+  const standingCandidates: HitCandidate[] = []
+  const crouchCandidates: HitCandidate[] = []
   for (const [sessionId, player] of others) {
     // 시신 제외 — 서버 `handleFire`(`GameRoom.ts`)가 쓰는 것과 **같은 술어**다.
     if (!canAct(player.hp)) continue
-    candidates.push({ id: sessionId, pose: { position: { x: player.x, y: player.y, z: player.z } } })
+    const candidate: HitCandidate = { id: sessionId, pose: { position: { x: player.x, y: player.y, z: player.z } } }
+    if (hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, player.mode ?? 'run') === CROUCH_HITBOX) {
+      crouchCandidates.push(candidate)
+    } else {
+      standingCandidates.push(candidate)
+    }
   }
-  if (candidates.length === 0) return undefined
+  if (standingCandidates.length === 0 && crouchCandidates.length === 0) return undefined
 
-  const hit = findClosestHit(
-    { origin: eyeOrigin(selfFoot, selfEyeHeightM), direction: aimDirection },
-    candidates,
-    DEFAULT_HITBOX,
-    walls,
-  )
+  const ray = { origin: eyeOrigin(selfFoot, selfEyeHeightM), direction: aimDirection }
+  const standingHit = findClosestHit(ray, standingCandidates, DEFAULT_HITBOX, walls)
+  const crouchHit = findClosestHit(ray, crouchCandidates, CROUCH_HITBOX, walls)
+
+  // RQ-92 v2.4 — "가장 가까운 것 하나" 계약은 그룹 안에서만 성립한다.
+  // 두 그룹을 합친 전체에서 가장 가까운 하나를 얻으려면 이 함수가 직접
+  // 거리로 비교해야 한다(그룹 간 최단 거리 비교, GA-74).
+  let hit: ClosestHit | undefined
+  if (standingHit && crouchHit) {
+    hit = (standingHit.result.distance as number) <= (crouchHit.result.distance as number) ? standingHit : crouchHit
+  } else {
+    hit = standingHit ?? crouchHit
+  }
   if (!hit) return undefined
 
   const player = others.get(hit.id)
@@ -178,9 +287,17 @@ export function resolveNameplateTarget(
 
   // 몸이 그려지는 자리(보간)에 이름을 붙인다 — 위 ⚠️ 참고.
   const foot = anchorPosition?.(hit.id) ?? { x: player.x, y: player.y, z: player.z }
+  // RQ-92 v2.4 REV4(F1 blocker) — 앵커 **높이**도 앵커 **위치**와 같은
+  // 시간축(보간 지연)을 봐야 한다. `anchorMode`가 있고 undefined가
+  // 아니면 그 값(호출자가 보간기에서 얻은 지연 자세)을, 없으면 후보의
+  // 최신 `mode`로 떨어진다 — `anchorPosition`의 스냅샷 폴백과 동일한
+  // 원칙(원장 24bd 위험을 인지하고 받아들인다, 위 함수 docblock 참고).
+  const heightMode = anchorMode?.(hit.id) ?? player.mode
   return {
     sessionId: hit.id,
     nickname: player.nickname,
-    anchor: { x: foot.x, y: foot.y + nameplateAnchorHeightM(), z: foot.z },
+    // `nameplateAnchorHeightM`은 `undefined`를 명시적으로 받아도 기본값
+    // ('run')으로 대체한다(JS 파라미터 기본값 의미론).
+    anchor: { x: foot.x, y: foot.y + nameplateAnchorHeightM(heightMode), z: foot.z },
   }
 }

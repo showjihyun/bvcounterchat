@@ -908,6 +908,19 @@ describe('RQ-92 v2.2 hitboxForMode — mode에 따라 즉시 전환(전환 보�
   // 이 기법을 Red 단계에 쓸 수 없다. coder가 Green으로 구현한 뒤 이
   // 타입 잠금 테스트를 별도로 추가해야 한다(하드닝 후속 작업 — 보고서에
   // 명시).
+
+  it('참조 동일성 — hitboxForMode는 입력으로 받은 두 객체 중 하나를 그대로(새로 만들지 않고) 반환한다(원장 24az PR #69 리뷰 minor 6(b))', () => {
+    // `nameplateTarget.ts`의 자세 그룹 판정이
+    // `hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, mode) === CROUCH_HITBOX`
+    // 형태로 **참조 동일성**에 의존한다. 이 함수가 훗날 `{ ...crouch }`처럼
+    // 복사본을 반환하도록 바뀌면 그 판정은 항상 선 자세 쪽으로만 떨어진다
+    // (간접적으로는 GA-74 케이스가 죽어 잡히지만, 그 계약 자체에 대한
+    // 직접 단언은 이 파일에 없었다).
+    // ⚠️ 반드시 `toBe`(참조 동일성)여야 한다 — `toEqual`(값 동일성)은
+    // 복사본도 통과시켜 이 계약을 전혀 지키지 않는다.
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'crouch')).toBe(CROUCH_HITBOX)
+    expect(hitboxForMode(DEFAULT_HITBOX, CROUCH_HITBOX, 'run')).toBe(DEFAULT_HITBOX)
+  })
 })
 
 describe('GA-64 — eyeOrigin + hitboxForMode(crouch) 합성: 앉은 사수의 레이 원점은 발 + 1.222m다(선 자세 1.700이 아니다)', () => {

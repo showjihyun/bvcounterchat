@@ -1,6 +1,6 @@
 import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
-import type { MoveState } from '@shared/sim/movement'
+import type { MoveInput, MoveState } from '@shared/sim/movement'
 import { UI } from '@shared/constants'
 
 /**
@@ -24,6 +24,12 @@ export interface ClientPlayer {
    * 클라가 그 필터를 못 하면 **시신 이름이 뜨는데 총알은 뒤의 산 사람을
    * 맞히는** 상태가 된다(PR #66 리뷰 blocker 1). 스키마가 이미 동기화한다. */
   hp: number
+  /** RQ-92 v2.4(원장 24az) — 서버 확정 자세(`Player.mode`, `grounded`와
+   * 동일한 관례). 옵셔널 — 스키마 패치가 아직 이 필드를 채우기 전(구
+   * 버전 서버·과거 스냅샷 픽스처와의 하위 호환, 순증 규칙)에는 없을 수
+   * 있다. 소비처(`resolveNameplateTarget`·`PlayerMeshes.tsx`)가 생략 시
+   * 선 자세('run')로 취급한다. */
+  mode?: MoveInput['mode']
 }
 
 export interface ClientSpectator {
@@ -48,6 +54,8 @@ export interface ServerPlayerSnapshot {
   y: number
   z: number
   hp: number
+  /** RQ-92 v2.4(원장 24az) — 옵셔널, `ClientPlayer.mode`와 동일 근거. */
+  mode?: MoveInput['mode']
 }
 
 /**
@@ -125,7 +133,18 @@ export function createGameStore(): StoreApi<GameStoreState> {
     applyServerState(state) {
       const players = new Map<string, ClientPlayer>()
       state.players.forEach((value, sessionId) => {
-        players.set(sessionId, { nickname: value.nickname, x: value.x, y: value.y, z: value.z, hp: value.hp })
+        // `exactOptionalPropertyTypes`(tsconfig) — `mode: undefined`를
+        // 명시적으로 쓰면 "옵셔널(부재 허용)"과 "값이 undefined"를
+        // 구분하는 이 설정에 위배된다. 조건부 스프레드로 값이 있을 때만
+        // 필드를 싣는다(부재와 undefined 값을 같게 다루지 않는다).
+        players.set(sessionId, {
+          nickname: value.nickname,
+          x: value.x,
+          y: value.y,
+          z: value.z,
+          hp: value.hp,
+          ...(value.mode !== undefined ? { mode: value.mode } : {}),
+        })
       })
 
       const spectators = new Map<string, ClientSpectator>()

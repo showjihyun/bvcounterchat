@@ -6,6 +6,7 @@ import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
 import type { InterpolationPosition } from '@client/net/interpolation'
 import { SCENE } from '@client/config/design-tokens'
+import { remoteMeshHeightM } from '@client/scene/remoteMeshHeight'
 
 const BOX_WIDTH = 0.8
 const BOX_HEIGHT = 1.8
@@ -82,12 +83,20 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
       // 1.8보다 0.1m **아래** — 정반대다. 즉 서술이 가리키던 "RQ-31 이후
       // 현실값으로 복원되면 박스 내부가 된다"는 미래형 경고가 아니라 **이미
       // 일어난 현재 상태**다(RQ-31 스폰 로테이션 도입으로 1.9→1.7 복원 완료,
-      // `combat-tuning.ts` "복원 완료" 주석, 22a 후속 이월 ①). **RQ-92
-      // v2.2로 더 벌어진다**: 앉으면(`mode==='crouch'`) 눈높이가
-      // `CROUCH_HITBOX.eyeHeightM`(≈1.222)로 더 낮아지지만, `BOX_HEIGHT`는
-      // 자세와 무관하게 1.8 고정이다(원격 플레이어 렌더에 자세 필드가 아예
-      // 없다 — 원장 **24az**) — 카메라는 앉을수록 박스 안쪽으로 더 깊이
-      // 들어간다. 자기 것만 숨긴다 — 위치 갱신
+      // `combat-tuning.ts` "복원 완료" 주석, 22a 후속 이월 ①). 앉으면
+      // (`mode==='crouch'`) 눈높이가 `CROUCH_HITBOX.eyeHeightM`(≈1.222)로
+      // 더 낮아져 박스 안쪽으로 더 깊이 들어간다 — **하지만 자기 박스는
+      // 어차피 숨긴다**(바로 아래)이라 실제로 보이는 문제는 아니다.
+      // ✅ **REV2(RQ-92 v2.4, 2026-08-08, 원장 24az)** — 원격 플레이어
+      // 렌더에는 이제 자세 필드가 있다(`Player.mode`, `useFrame` 아래
+      // `remoteMeshHeightM` 배선 참고): 원격 박스 높이가 자세를 따라간다.
+      // **자기 박스만은 여전히 `BOX_HEIGHT` 고정이다** — RQ-92 v2.4 원문이
+      // "원격 플레이어의 렌더 높이"로 한정하고(자기 박스는 애초에 숨겨서
+      // 안 보인다), 자기 자신의 현재 자세를 `store`가 노출하지 않는다
+      // (`selfPredictedState`는 `MoveState`뿐 — `mode` 필드가 없다,
+      // `@shared/sim/movement` 참고). 3인칭 관전(RQ-91)에서 자기 박스를
+      // 다시 켤 때 이 축을 함께 볼 필요가 있다(다음 라운드 판단). 자기
+      // 것만 숨긴다 — 위치 갱신
       // (`useFrame`)은 계속 돌려 둔다(3인칭 관전 RQ-91 등에서 다시 켜기만
       // 하면 되도록). 여기서 매번 갱신하는 이유: `selfSessionId`가 첫
       // 스냅샷보다 늦게 정해지는 경우에도 자기 메시가 계속 보이지 않도록
@@ -131,13 +140,25 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
       // RQ-63: 다른 플레이어는 지연 버퍼를 반영한 보간 위치로 렌더한다
       // (GA-37/38, ADR-0003) — 아직 스냅샷을 한 번도 받지 못했으면(막
       // 참가해 다음 패치를 기다리는 중) 서버 스냅샷으로 폴백한다.
+      // RQ-92 v2.4(원장 24az, GA-72) — 자세는 보간하지 않는다(RQ-63 예외,
+      // `interpolator.getMode` 참고) — 위치와 별도로 조회한다. 높이는
+      // `remoteMeshHeightM`이 인자로 받은 두 히트박스 상수 중 하나에서
+      // 유도한 숫자를 그대로 반환할 뿐 새 객체를 만들지 않는다(프레임
+      // 예산 ADR-0001). `mesh.scale.y`로 기존 지오메트리(`BOX_HEIGHT`
+      // 기준)를 비율 조정할 뿐 지오메트리 자체를 재생성하지 않는다 —
+      // 폭(`BOX_WIDTH`)은 자세와 무관하게 그대로다(GA-72가 규정하는 것은
+      // 높이뿐이다).
       if (connection.interpolator.copyPositionInto(sessionId, renderTime, interpolated)) {
-        mesh.position.set(interpolated.x, interpolated.y + BOX_HEIGHT / 2, interpolated.z)
+        const heightM = remoteMeshHeightM(connection.interpolator.getMode(sessionId, renderTime) ?? 'run')
+        mesh.scale.y = heightM / BOX_HEIGHT
+        mesh.position.set(interpolated.x, interpolated.y + heightM / 2, interpolated.z)
         continue
       }
       const player = state.players.get(sessionId)
       if (!player) continue
-      mesh.position.set(player.x, player.y + BOX_HEIGHT / 2, player.z)
+      const heightM = remoteMeshHeightM(player.mode ?? 'run')
+      mesh.scale.y = heightM / BOX_HEIGHT
+      mesh.position.set(player.x, player.y + heightM / 2, player.z)
     }
   })
 
