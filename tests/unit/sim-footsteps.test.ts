@@ -157,15 +157,22 @@ import {
  * export function isFootstepAudible(horizontalDistanceM: number, isSelf: boolean, audibleRangeM: number): boolean
  * ```
  *
- * **호출자(GameRoom·prediction.ts) 배선 가정(이 파일의 범위 밖, 2/2 라운드
- * 참고용)**: 세션별 `footstepAccumM`(초기 0)을 서버가 전유 상태로 관리한다.
- * 매 틱 `stepMovement` 호출 전후로 `wasGrounded = previous.grounded`,
- * `isGrounded = next.grounded`를 뽑고, `discontinuous`는 `respawnPlayer`가
- * 실행된 바로 그 틱(`positionHistory.delete`와 같은 지점, GameRoom.ts:1409
- * 인근)에서만 true로 세팅한다 — 최초 스폰(`onJoin`)·재접속도 같은 신호를
- * 세운다. 착지음은 기존 `fallPeakY`(RQ-18 트래킹, `trackFallDamage`)가
- * 공중→접지 전이 시점에 이미 낙하 높이를 들고 있으므로 그 값을
- * `shouldPlayLandingSound`에 그대로 넘기면 된다(새 트래킹 불필요).
+ * **호출자 배선 가정(이 파일의 범위 밖, 2/2 라운드 참고용)** — ⚠️ **REV(PR #74
+ * 리뷰 blocker, 2026-08-09)**: 초안은 「세션별 `footstepAccumM`을 **서버가
+ * 전유 상태로 관리**한다」고 적고 `discontinuous`를 `GameRoom.ts:1409` 인근에서
+ * 세운다고 했으나, **ADR-0014 결정 1과 정면으로 모순된다** — 「서버는 발소리
+ * 이벤트를 보내지 않는다. **클라이언트가** 발소리 발생과 가청 여부를 직접
+ * 계산한다」이다. 서버가 누적을 전유하면 죽은 계산이거나 브로드캐스트가 필요해
+ * 결정 1을 깬다.
+ *
+ * 정정된 가정: 누적 상태는 **클라이언트가 소유**한다(자기: `prediction.ts` /
+ * 원격: `interpolation.ts`). 매 틱 `wasGrounded`·`isGrounded`를 각각 직전·이번
+ * `MoveState.grounded`에서 뽑는다. ⚠️ **`discontinuous`를 클라가 무엇으로
+ * 검출하는가는 미결이고 원장 24bl이 소유한다** — 여기서 결론내지 않는다.
+ * ⚠️ 착지음의 낙하 높이도 마찬가지다: 초안이 근거로 든 `fallPeakY`·
+ * `trackFallDamage`는 **`GameRoom`의 private 필드·메서드**라(`GameRoom.ts:254`·
+ * `:1000`) 클라 경로에는 없다. 「새 트래킹 불필요」는 **클라에서는 거짓**이고
+ * 2/2가 클라 측 낙하 높이 추적을 새로 만들어야 한다.
  */
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,12 @@
 import { FALL_DAMAGE } from '@shared/constants'
 
 /**
- * 이번 틱의 상태 — 호출자(`GameRoom`/`prediction.ts`)가 매 틱 채워 넘긴다.
+ * 이번 틱의 상태 — 호출자가 매 틱 채워 넘긴다. ⚠️ **호출자는 클라이언트다**
+ * (자기: `prediction.ts` / 원격: `interpolation.ts`) — ADR-0014 결정 1이
+ * 「서버는 발소리 이벤트를 보내지 않는다. 클라이언트가 발소리 발생과 가청
+ * 여부를 직접 계산한다」로 못박았다. 초안이 `GameRoom`을 호출자로 적었으나
+ * 서버가 누적 상태를 전유하면 그 값은 **아무도 안 쓰는 죽은 계산**이거나
+ * **브로드캐스트해야 하는데 그것이 결정 1을 깬다**(PR #74 리뷰 blocker).
  */
 export interface FootstepTickInput {
   /** 이번 틱이 **시작된** 시점(직전 틱이 끝난 시점)의 `MoveState.grounded`. */
@@ -23,7 +28,13 @@ export interface FootstepTickInput {
   isGrounded: boolean
   mode: 'run' | 'walk' | 'crouch'
   /** 이번 틱의 수평 이동 거리(m). 유한하지 않거나(NaN·Infinity) 음수면
-   * 0으로 취급한다(방어적, RQ-61 원칙). */
+   * 0으로 취급한다(방어적, RQ-61 원칙).
+   *
+   * ⚠️ **산출 방식이 골든 결과를 가른다**(실측): 직전 틱 끝 위치와 이번 틱 끝
+   * 위치의 차 — `Math.hypot(Δx, Δz)` — 로 매 틱 산출한다. 속도×틱을 상수로
+   * 미리 계산해 반복 가산하면 FP 누적 양상이 달라져 **GA-77이 2회가 아니라
+   * 1회**가 된다(10틱째 1.9999999999999998로 미발화). 자기·원격의 **위치 소스**
+   * 선택 자체는 원장 **24bl**이 소유한다 — 여기서 결론내지 않는다. */
   horizontalDeltaM: number
   /** 이번 틱이 위치를 불연속으로 재설정한 사건(리스폰·최초 스폰·재접속)의
    * 결과 틱이면 true. true면 다른 필드는 전부 무시되고 누적이 0으로
