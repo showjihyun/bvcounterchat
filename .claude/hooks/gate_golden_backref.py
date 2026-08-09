@@ -193,7 +193,11 @@ def check_entry(entry: dict, root: Path = ROOT) -> tuple[list[str], list[str]]:
     적용한다. `status == "todo"`면 경로 실재만 확인해 깨져 있으면 **경고**(하드
     실패 아님, 원장 28i — 사용자 결정 2026-08-09)한다 — 역참조(A-②)는 확인하지
     않는다(작성 중 골든의 `verify`가 아직 자기 ID를 담지 않은 것은 정상이다).
-    그 외 `status` 값은 스킵한다(미정의 상태를 보수적으로 다룬다).
+    그 외 `status` 값은 스킵한다. ⚠️ **`blocked_on_spec`은 "미정의"가 아니라
+    `harness/evals/README.md`가 정의한 상태다**(PR #72 리뷰 major 3 — 초안이
+    미정의로 적었다). 오늘 0건이라 동작 영향은 없으나, 그 상태가 생기면
+    **깨진 경로를 조용히 통과시킨다** — `todo`와 같은 축이라 승격 여부를
+    함께 판단해야 한다(원장 28m).
     """
     if "verify" not in entry:
         return [], []
@@ -302,8 +306,9 @@ def run_check() -> int:
 
     if warn_total:
         print(
-            "[골든 역참조 게이트] 경고 %d건(exit 0 유지, 관례 위반이지 하드 규칙 "
-            "위반이 아니다):\n%s" % (len(warn_total), "\n".join(warn_total))
+            "[골든 역참조 게이트] 경고 %d건(exit 0 유지 — 두 종류가 섞인다: `done` "
+            "골든의 역참조 관례 위반, 그리고 `todo` 골든의 깨진 경로. 각 줄 "
+            "끝의 표지를 보라):\n%s" % (len(warn_total), "\n".join(warn_total))
         )
 
     if hard_total:
