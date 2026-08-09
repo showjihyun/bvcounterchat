@@ -254,7 +254,7 @@ describe('GA-53 — 박스 상단 높이 상한 (RQ-32, MOVEMENT.JUMP_HEIGHT)', 
 })
 
 describe('RQ-32 — 배치 카운트(사다리 2개, 박스 12~18개 = 클러스터 3곳 × 4~6개)', () => {
-  it('사다리는 정확히 2개다', () => {
+  it('GA-52: 사다리는 정확히 2개다', () => {
     expect(PRODUCTION_LADDERS.length).toBe(2)
   })
 
@@ -265,7 +265,7 @@ describe('RQ-32 — 배치 카운트(사다리 2개, 박스 12~18개 = 클러스
 })
 
 describe('RQ-32 — 박스 클러스터는 정확히 3곳이고, 클러스터당 4~6개다', () => {
-  it('간격 기반 그룹핑 결과가 정확히 3개 그룹이고, 각 그룹의 박스 수가 4~6개다', () => {
+  it('GA-52: 간격 기반 그룹핑 결과가 정확히 3개 그룹이고, 각 그룹의 박스 수가 4~6개다', () => {
     const clusters = groupIntoClusters(PRODUCTION_BOXES, CLUSTER_GAP_THRESHOLD_M)
 
     expect(clusters.length).toBe(3)

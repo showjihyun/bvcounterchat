@@ -7,7 +7,11 @@
 
   - **경로 부재 0건** — `verify`가 가리키는 파일은 전부 실재한다.
   - **역참조(자기 GA-ID를 본문에 포함) 부재 6건** — GA-40·GA-47·GA-48·GA-52·
-    GA-70·GA-71. 나머지 70/76(92%)은 이미 관례를 지킨다.
+    GA-70·GA-71. 나머지 70/76(92%)은 이미 관례를 지킨다. ⚠️ **원장 28i로
+    정리됨** — 이 절은 28g 착수 시점(2026-08-08)의 실측을 그대로 남긴
+    역사적 기록이다(append-only 원칙, `gate_spec_mirror.py`의 changelog
+    제외 규칙과 같은 정신). **현재 상태는 6건 전부 정리돼 0건**이다 —
+    `test_real_track_a_zero_hard_fails_and_zero_warnings` 참고.
 
 실제 사례(GA-52) — ⚠️ **정정(원장 28g, PR #71 리뷰 blocker 1)**: 이 문단이
 한때 "`status`가 `done`이라 '검증됨'으로 잘못 읽혔다"고 적었으나 **거짓**이다
@@ -177,14 +181,31 @@ def test_done_path_exists_no_id_is_warning_only(tmp_path: Path) -> None:
 
 # ── 검사 대상 경계 (todo·트랙 B) ────────────────────────────────────────
 
-def test_todo_status_not_checked_even_if_path_missing(tmp_path: Path) -> None:
+def test_todo_status_with_missing_path_warns_but_does_not_hard_fail(tmp_path: Path) -> None:
+    """A-③(원장 28i, 사용자 결정 2026-08-09) — 방향 전환이지 약화가 아니다.
+
+    이 테스트가 한때 `test_todo_status_not_checked_even_if_path_missing`이라는
+    이름으로 "todo는 경로가 없어도 완전히 스킵된다"를 단언했다. GA-52가
+    존재한 적 없는 파일을 가리킨 채 `status: todo`로 약 10일 체류한 사고
+    (원장 28e·28g "왜 만드는가" 참고)가 정확히 이 축이었는데, 그 옛 계약은
+    그 상태를 못 잡았다(독립 평가 blocker 2) — 사용자 결정으로 이 축을
+    닫았다. `done`처럼 하드 실패로 승격하지는 않는다(작성 중 골든이 정당하게
+    임시·미래 경로를 적을 수 있어, 하드 실패면 정상 작업 흐름을 막는 소음
+    게이트가 된다) — **경고**로 승격했다. "검사를 안 한다"에서 "검사하되
+    경고로 그친다"로 바뀐 것이라 검증력은 늘었지 줄지 않았다.
+    """
     hard_fails, warnings = gbg.check_entry(
         _entry(id="GA-93", status="todo",
                verify="tests/unit/does-not-exist.test.ts"),
         root=tmp_path)
 
+    # 하드 실패로는 승격되지 않는다 — done과는 다른 축(위 docblock 참고).
     assert hard_fails == []
-    assert warnings == []
+    assert len(warnings) == 1
+    assert "GA-93" in warnings[0]
+    # done의 경고와 구분되는 표지 — team-lead 지시("읽는 사람이 이건 아직
+    # 작성 중임을 알아야 한다").
+    assert "todo" in warnings[0]
 
 
 def test_entry_without_verify_field_is_skipped_not_crashed(tmp_path: Path) -> None:
@@ -270,7 +291,17 @@ def test_verify_paths_are_trimmed_of_whitespace(tmp_path: Path) -> None:
 
 # ── 실제 저장소 골든 회귀 고정 (리뷰어 전수 조사 실측을 그대로 잠근다) ──
 
-def test_real_track_a_zero_hard_fails_and_exactly_known_six_warnings() -> None:
+def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
+    """원장 28i — 6건(GA-40·47·48·52·70·71) 정리 이후의 새 회귀 고정.
+
+    이 테스트가 한때 `test_real_track_a_zero_hard_fails_and_exactly_known_
+    six_warnings`라는 이름으로 "경고 정확히 6건"을 단언했다. 그 6건은
+    `it()` 이름에 `GA-NN:` 접두를 붙여 역참조를 채웠다(각 골든의 `then`을
+    실제로 판별하는 테스트를 골라 붙였다 — 근거는 `_workspace/28i-cleanup/
+    02_test-writer_backref.md`). **경고 0건은 의도된 신호다** — 1차 라운드
+    문서에 이미 "경고 건수는 골든이 늘어난다고 저절로 바뀌지 않는다,
+    바뀐다면 그게 진짜 신호"라고 적었고, 지금이 바로 그 신호다.
+    """
     ids_with_warnings: list[str] = []
     total_hard_fails: list[str] = []
     for line in (GOLDEN_DIR / "track-a-product.jsonl").read_text(encoding="utf-8").splitlines():
@@ -283,10 +314,11 @@ def test_real_track_a_zero_hard_fails_and_exactly_known_six_warnings() -> None:
         if warnings:
             ids_with_warnings.append(rec["id"])
 
-    # 리뷰어 전수 조사(원장 28g 착수 근거) — 76건 중 경로 부재 0건.
+    # 리뷰어 전수 조사(원장 28g 착수 근거) — 76건 중 경로 부재 0건. 정리
+    # 이후에도 그대로 유지된다(하드 실패 축은 이번 라운드가 건드리지 않았다).
     assert total_hard_fails == [], total_hard_fails
-    # 역참조 부재 정확히 6건 — GA-40·47·48·52·70·71(실측, 위 docblock 참고).
-    assert set(ids_with_warnings) == {"GA-40", "GA-47", "GA-48", "GA-52", "GA-70", "GA-71"}
+    # 역참조 부재 0건 — 6건 전부 GA-NN: 접두로 정리됐다(원장 28i).
+    assert ids_with_warnings == [], ids_with_warnings
 
 
 def test_real_track_b_entries_all_skipped_no_crash() -> None:
@@ -356,10 +388,14 @@ def test_cli_selftest_exits_zero_and_reports_block_allow_counts() -> None:
 # 형태로 나타나 **어느 쪽이 사라졌는지까지 진단**된다(팀장 예시 "트랙 A가
 # 최소 N건 스캔되는지"와 동일한 판단).
 #
-# 경고 건수(6건)는 반대로 **정확히 고정한다** — 이 수치는 골든이 늘어난다고
+# 경고 건수는 반대로 **정확히 고정한다** — 이 수치는 골든이 늘어난다고
 # 저절로 바뀌지 않는다(새 done 골든이 역참조를 빠뜨리면 그때 바뀌지만, 그건
 # "이 테스트를 갱신해야 하는 진짜 신호"이지 소음이 아니다 — GA-52 사건 자체가
-# "달라졌는데 아무도 안 봤다"였다).
+# "달라졌는데 아무도 안 봤다"였다). ⚠️ **원장 28i 갱신** — 이 값이 한때
+# 6건(GA-40·47·48·52·70·71)이었으나, 그 6건을 `it()` 이름에 `GA-NN:` 접두를
+# 붙여 정리해 **0건**이 됐다(§`test_real_track_a_zero_hard_fails_and_zero_
+# warnings` docstring 참고). 값이 바뀐 것 자체가 "정확히 고정"이 의도대로
+# 작동한 증거다 — 바뀌지 않았다면 정리가 반영 안 된 것이다.
 
 def test_iter_golden_entries_scans_both_tracks_with_realistic_floor() -> None:
     """스캔 표면(GOLDEN_DIR + glob) 직접 호출 — P5(글롭 축소) 축을 트랙별
@@ -398,5 +434,6 @@ def test_cli_check_reports_scan_count_floor_and_known_warning_count() -> None:
     # 83에 한참 못 미쳐 잡힌다.
     assert scanned >= 83, result.stdout
 
-    # 경고 건수는 정확히 고정한다(위 섹션 코멘트) — GA-40·47·48·52·70·71.
-    assert "경고 6건" in result.stdout, result.stdout
+    # 경고 건수는 정확히 고정한다(위 섹션 코멘트) — 원장 28i 정리 이후 0건
+    # (GA-40·47·48·52·70·71이 GA-NN: 접두로 채워졌다).
+    assert "경고 0건" in result.stdout, result.stdout

@@ -390,7 +390,7 @@ describe('RQ-41 슬롯 승격(사유 무관) — 정상 퇴장 경로', () => {
   })
 
   it(
-    'RQ-41: 대기 중인 관전자가 있을 때, 플레이어가 정상 퇴장(consented leave)하면 그 슬롯으로 관전자 한 명이 승격된다',
+    'GA-47: RQ-41: 대기 중인 관전자가 있을 때, 플레이어가 정상 퇴장(consented leave)하면 그 슬롯으로 관전자 한 명이 승격된다',
     async () => {
       const players = await fillPlayers(server, 'filler')
       const departing = players[0]
@@ -485,7 +485,7 @@ describe('RQ-41 슬롯 승격(사유 무관) — 정상 퇴장 경로', () => {
   )
 
   it(
-    'RQ-41 FIFO(원장 22h 회수): 관전자가 2명 이상 대기 중이면 먼저 접속한 관전자가 승격되고, 나중에 접속한 관전자는 계속 대기한다',
+    'GA-48: RQ-41 FIFO(원장 22h 회수): 관전자가 2명 이상 대기 중이면 먼저 접속한 관전자가 승격되고, 나중에 접속한 관전자는 계속 대기한다',
     async () => {
       const players = await fillPlayers(server, 'fifo-filler')
       const departing = players[0]

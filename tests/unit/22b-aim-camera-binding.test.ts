@@ -39,7 +39,7 @@ function deviationFrom(forward: THREE.Vector3, yaw: number, pitch: number): numb
 }
 
 describe('22b 조준-카메라 결합 — 발사 방향은 화면 정면과 같다', () => {
-  it('yaw·pitch 격자 전역에서 applyLookToCamera 결과가 yawPitchToDirection과 일치한다', () => {
+  it('GA-40: yaw·pitch 격자 전역에서 applyLookToCamera 결과가 yawPitchToDirection과 일치한다', () => {
     for (let yawStep = -8; yawStep <= 8; yawStep += 1) {
       for (let pitchStep = -4; pitchStep <= 4; pitchStep += 1) {
         const yaw = (yawStep / 8) * Math.PI
