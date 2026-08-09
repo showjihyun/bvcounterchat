@@ -603,7 +603,7 @@ describe('RQ-92 검출력 보강(F1) — 대상 2명·자세가 섞이면 그룹
   })
 
   it(
-    'F1-A(근접=앉음): 근접 대상이 앉고 원거리 대상이 서 있으면, 실제로 더 가까운 근접(앉은) 대상이 명중한다(헤드샷) — 원거리(선 자세)는 그대로다',
+    'GA-70: F1-A(근접=앉음): 근접 대상이 앉고 원거리 대상이 서 있으면, 실제로 더 가까운 근접(앉은) 대상이 명중한다(헤드샷) — 원거리(선 자세)는 그대로다',
     async () => {
       const roomA = await joinGame(newClient(server))
       const roomNear = await joinGame(newClient(server))
@@ -649,7 +649,7 @@ describe('RQ-92 검출력 보강(F1) — 대상 2명·자세가 섞이면 그룹
   )
 
   it(
-    'F1-B(근접=섬): 근접 대상이 서 있고 원거리 대상이 앉으면, 실제로 더 가까운 근접(선 자세) 대상이 명중한다(바디샷) — 원거리(앉은)는 그대로다. F1-A만으로는 잡히지 않는 편향(항상 선 자세 그룹을 우선)을 이 배치가 잡는다',
+    'GA-71: F1-B(근접=섬): 근접 대상이 서 있고 원거리 대상이 앉으면, 실제로 더 가까운 근접(선 자세) 대상이 명중한다(바디샷) — 원거리(앉은)는 그대로다. F1-A만으로는 잡히지 않는 편향(항상 선 자세 그룹을 우선)을 이 배치가 잡는다',
     async () => {
       const roomA = await joinGame(newClient(server))
       const roomNear = await joinGame(newClient(server))
