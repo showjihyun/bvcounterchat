@@ -288,7 +288,12 @@ def test_real_track_b_entries_all_skipped_no_crash() -> None:
 def test_cli_check_exits_zero_on_real_golden_dir() -> None:
     result = subprocess.run(
         [sys.executable, str(GATE_PATH), "--check"],
-        cwd=ROOT, capture_output=True, timeout=30, text=True,
+        # `text=True`만 쓰면 Windows 한국어 로케일(cp949)로 디코딩해 게이트가
+        # UTF-8로 강제 출력하는 한글·em-dash를 읽다가 UnicodeDecodeError로
+        # 죽는다(실측 — `_force_utf8()`가 게이트 쪽 stdout은 고치지만
+        # subprocess의 디코딩 코덱까지는 못 바꾼다). 인코딩을 명시한다 —
+        # 단언은 바뀌지 않는다.
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
 
@@ -296,10 +301,85 @@ def test_cli_check_exits_zero_on_real_golden_dir() -> None:
 def test_cli_selftest_exits_zero_and_reports_block_allow_counts() -> None:
     result = subprocess.run(
         [sys.executable, str(GATE_PATH), "--selftest"],
-        cwd=ROOT, capture_output=True, timeout=30, text=True,
+        # `text=True`만 쓰면 Windows 한국어 로케일(cp949)로 디코딩해 게이트가
+        # UTF-8로 강제 출력하는 한글·em-dash를 읽다가 UnicodeDecodeError로
+        # 죽는다(실측 — `_force_utf8()`가 게이트 쪽 stdout은 고치지만
+        # subprocess의 디코딩 코덱까지는 못 바꾼다). 인코딩을 명시한다 —
+        # 단언은 바뀌지 않는다.
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
     combined = result.stdout + result.stderr
     # 기존 5개 게이트가 전부 쓰는 "차단 N건·허용 M건"(`건` 생략 가능) 표기 —
     # gate_spec_mirror.py의 SELFTEST_COUNTS 정규식과 동일 형태를 기대한다.
     assert re.search(r"차단\s*\d+건?\s*[·,]\s*허용\s*\d+건?", combined), combined
+
+
+# ── 스캔 표면 회귀 (원장 28g 독립 평가 FAIL 대응) ───────────────────────
+#
+# 위 `test_real_track_a_*`·`test_real_track_b_*`는 JSONL을 이 테스트 파일이
+# 직접 파싱해 `check_entry(rec, root=ROOT)`를 부른다 — `check_entry`의 판정
+# 계약은 검증하지만 **`_iter_golden_entries()`(GOLDEN_DIR·glob)는 지나지
+# 않는다.** 평가자가 격리 실측으로 확인했다: `GOLDEN_DIR`을 없는 디렉터리로
+# 바꾸거나 `_iter_golden_entries()`가 `return []`을 하거나 글롭을
+# `track-b*`로 좁혀도(트랙 A 76건이 사라지고 트랙 B 7건만 남아 "0건"이 아니게
+# 되는 형태) 위 두 테스트는 전부 그대로 통과한다 — 스캔 표면이 고장 나도
+# 잡지 못한다. 아래 두 테스트가 그 표면을 직접 지난다.
+#
+# **스캔 건수를 얼마로 고정할지(team-lead 위임)**: "0보다 크다"는 세 변이
+# 전부를 못 잡는다 — 특히 글롭 축소(트랙 B만 7건)는 0이 아니므로 그 기준을
+# 통과해 버린다(팀장이 지적한 바로 그 형태). 그렇다고 "정확히 83건"으로
+# 고정하면 골든이 늘어나는 정상적인 성장(이 저장소는 라운드마다 골든을
+# 추가한다)마다 이 테스트가 깨진다 — 실패가 회귀 신호가 아니라 소음이 된다.
+# **바닥값(`>=`)으로 고정한다**: 오늘 실측(트랙 A 76건 전부 done·트랙 B 7건
+# 전부 todo)을 하한으로 두면 ① 정상 성장(골든 추가)에는 안 깨지고 ② 위 세
+# 변이(경로 파괴·빈 리스트·글롭 축소) 전부에서 실제 수치가 바닥 밑으로
+# 떨어져 죽는다 — 특히 트랙별로 바닥을 따로 두면(전체 합산 83이 아니라
+# 트랙 A ≥76·트랙 B ≥7 각각) 글롭 축소가 "트랙 A는 0인데 트랙 B는 7"이라는
+# 형태로 나타나 **어느 쪽이 사라졌는지까지 진단**된다(팀장 예시 "트랙 A가
+# 최소 N건 스캔되는지"와 동일한 판단).
+#
+# 경고 건수(6건)는 반대로 **정확히 고정한다** — 이 수치는 골든이 늘어난다고
+# 저절로 바뀌지 않는다(새 done 골든이 역참조를 빠뜨리면 그때 바뀌지만, 그건
+# "이 테스트를 갱신해야 하는 진짜 신호"이지 소음이 아니다 — GA-52 사건 자체가
+# "달라졌는데 아무도 안 봤다"였다).
+
+def test_iter_golden_entries_scans_both_tracks_with_realistic_floor() -> None:
+    """스캔 표면(GOLDEN_DIR + glob) 직접 호출 — P5(글롭 축소) 축을 트랙별
+    바닥값으로 잡는다. 실측: 오늘 트랙 A 76건(전부 done)·트랙 B 7건(전부
+    todo). `>=`인 이유는 위 섹션 코멘트 참고."""
+    entries = gbg._iter_golden_entries()
+    counts: dict[str, int] = {}
+    for fname, _lineno, _rec in entries:
+        counts[fname] = counts.get(fname, 0) + 1
+
+    # 글롭이 `track-b*`로 좁혀지면 이 줄이 `counts.get(..., 0) == 0`이 되어
+    # 바로 죽는다(팀장이 지적한 P5 형태 그대로).
+    assert counts.get("track-a-product.jsonl", 0) >= 76, counts
+    assert counts.get("track-b-harness.jsonl", 0) >= 7, counts
+
+
+def test_cli_check_reports_scan_count_floor_and_known_warning_count() -> None:
+    """`--check`의 stdout 내용을 직접 본다(`returncode == 0`만 보면 스캔이
+    0건이어도, 또는 글롭이 트랙 B로 좁혀져도 통과한다 — 평가자 격리 실측)."""
+    result = subprocess.run(
+        [sys.executable, str(GATE_PATH), "--check"],
+        # `text=True`만 쓰면 Windows 한국어 로케일(cp949)로 디코딩해 게이트가
+        # UTF-8로 강제 출력하는 한글·em-dash를 읽다가 UnicodeDecodeError로
+        # 죽는다(실측 — `_force_utf8()`가 게이트 쪽 stdout은 고치지만
+        # subprocess의 디코딩 코덱까지는 못 바꾼다). 인코딩을 명시한다 —
+        # 단언은 바뀌지 않는다.
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    m = re.search(r"골든\s*(\d+)건\s*검사", result.stdout)
+    assert m, result.stdout
+    scanned = int(m.group(1))
+    # 트랙 A(76) + 트랙 B(7) = 83이 오늘의 실측 최솟값. `>=`로 두는 이유는
+    # 위 섹션 코멘트 참고 — 정상 성장에 안 깨지면서 글롭 축소(트랙 B만 7건)는
+    # 83에 한참 못 미쳐 잡힌다.
+    assert scanned >= 83, result.stdout
+
+    # 경고 건수는 정확히 고정한다(위 섹션 코멘트) — GA-40·47·48·52·70·71.
+    assert "경고 6건" in result.stdout, result.stdout
