@@ -13,21 +13,31 @@ import { computeRadialEscape } from '../support/safe-zone'
  * 정적 지오메트리, 환경 중립 — 서버 기동 없이 프로덕션 배열 자체를
  * 읽는다).
  *
- * 매핑된 골든 케이스 **GA-53**(`harness/evals/golden/track-a-product
- * .jsonl:53`, `verify` 필드가 이 파일 경로를 정확히 지정):
- * - given: 맵에 박스 클러스터가 배치되어 있고 점프 높이가 1.0m(RQ-92)
- * - when: 등록된 모든 박스의 콜라이더 상단 높이를 검사
- * - then: 모든 박스의 상단 높이가 1.0m 이하다
+ * 매핑된 골든 케이스 **GA-52 · GA-53**(`harness/evals/golden/track-a-product
+ * .jsonl:52`·`:53`, 둘 다 `verify` 필드가 이 파일 경로를 정확히 지정 —
+ * ⚠️ **정정(원장 28i, PR #72 리뷰 major 1)**: 이 문단이 GA-53만 적어
+ * GA-52의 `verify`가 가리키는데도 매핑 표기가 없었다. 이 파일이 이제 둘을
+ * 담당한다는 것을 명시한다):
+ * - **GA-52** given: 맵 지오메트리가 등록된 볼륨 컬렉션(사다리·박스)으로
+ *   로드된 상태 / when: 등록된 사다리·박스 볼륨을 검사 / then: 사다리
+ *   볼륨이 정확히 2개, 박스 클러스터가 정확히 3곳 등록되고 각 클러스터의
+ *   박스 수가 4~6개다
+ * - **GA-53** given: 맵에 박스 클러스터가 배치되어 있고 점프 높이가
+ *   1.0m(RQ-92) / when: 등록된 모든 박스의 콜라이더 상단 높이를 검사 /
+ *   then: 모든 박스의 상단 높이가 1.0m 이하다
  *
  * RQ-32 전문(`harness/specs/requirements.md:148-150`): "맵에는 사다리
  * 2개와 박스 클러스터 3곳(클러스터당 4~6개 박스)이 배치되어야 한다.
  * 박스 높이는 점프 높이 1.0m(RQ-92)로 등반 가능한 치수여야 한다."
  *
- * **현재 상태(팀리드 확인)**: `@shared/sim/boxes`의 `PRODUCTION_BOXES`는
- * 박스 1개(`BOX_ALPHA`), `@shared/sim/ladders`의 `PRODUCTION_LADDERS`는
- * 사다리 1개(`LADDER_ALPHA`)뿐이다 — 이 파일의 카운트·클러스터링 단언은
- * 오늘 코드베이스에서 **실패한다**(Red, 그린필드가 아니라 기존 잠정
- * 배치의 확장).
+ * **현재 상태** — ⚠️ **정정(원장 28i, PR #72 리뷰 major 1)**: 이 문단이
+ * 한때 "`PRODUCTION_BOXES`는 박스 1개(`BOX_ALPHA`), `PRODUCTION_LADDERS`는
+ * 사다리 1개(`LADDER_ALPHA`)뿐이라 이 파일의 단언이 오늘 코드베이스에서
+ * 실패한다(Red)"라고 적었다 — **거짓**이다(리뷰어 직접 실측, 이 라운드
+ * 재확인: `PRODUCTION_BOXES.length === 15`·`PRODUCTION_LADDERS.length
+ * === 2`, `npx vitest run` 결과 **11건 전부 통과**). 아래 "제안 좌표"가
+ * 실제로 이미 적용됐다는 뜻이다 — 이 파일은 이미 **Green**이고 그린필드
+ * 확장 제안이 아니라 구현이 반영된 회귀 가드다.
  *
  * ---
  *

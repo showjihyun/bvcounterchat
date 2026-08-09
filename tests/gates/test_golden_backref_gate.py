@@ -18,11 +18,16 @@
 (git 이력 전수 확인 — GA-52는 최초 등재부터 정정까지 **줄곧 `todo`**였고,
 `done`+깨진 경로였던 적은 없다). **정확한 사실**: GA-52는 `verify`가
 **존재한 적 없는 파일**을 가리킨 채 `status: todo`로 약 10일 남아 있었고
-"미구현"으로 읽혔다 — 실제로는 다른 파일이 이미 검증하고 있었다. ⚠️ **이
-게이트는 그 `todo` 체류 상태를 못 잡는다**(`todo`는 스캔 대상이 아니다) —
-잡는 것은 **`done`으로 전환하는 순간**의 깨진 경로다. 원장 28e는 "처리했다는
-보고가 검증 없이 나간다"는 같은 형태의 드리프트를 **다섯 번째(5회차)** 사례로
-기록한다. 이 게이트는 그 전환 시점의 드리프트를 자동으로 잡는다.
+"미구현"으로 읽혔다 — 실제로는 다른 파일이 이미 검증하고 있었다. 원장 28e는
+"처리했다는 보고가 검증 없이 나간다"는 같은 형태의 드리프트를
+**다섯 번째(5회차)** 사례로 기록한다. ⚠️ **REV2(원장 28i, 사용자 결정
+2026-08-09, PR #72 리뷰 blocker 2)**: 이 문단이 한때 "이 게이트는 그 `todo`
+체류 상태를 못 잡는다(`todo`는 스캔 대상이 아니다) — 잡는 것은 `done`으로
+전환하는 순간의 깨진 경로다"라고 적었는데, **그 축이 정확히 GA-52가 겪은
+사고 형태(`todo`로 약 10일 체류)라 닫았다** — A-③(아래 "게이트가 할 일")이
+`todo`도 `verify`가 깨져 있으면 경고를 낸다(하드 실패는 아니다). 이 게이트는
+이제 `todo` 체류 중의 드리프트도 경고로, `done` 전환 시점의 드리프트는
+하드 실패로 잡는다.
 
 ## 게이트가 할 일 (원장 28g, team-lead 지시)
 
@@ -35,6 +40,12 @@
     확인 — 다만 로컬 통과→CI 최종 차단 방향이라 안전하다). 오늘 76건은 전수
     확인 결과 전부 정확한 대소문자라 위험 0건이다(게이트 docblock 참고).
   - **A-②** 그 파일이 자기 GA-ID를 본문에 포함하는가 → **경고**(exit 0 유지).
+  - **A-③(원장 28i, 사용자 결정 2026-08-09)** `status: todo`인 골든도 `verify`
+    경로가 깨져 있으면 → **경고**(exit 0 유지, `done`의 하드 실패와는 별개
+    축 — 하드 실패로는 승격하지 않는다, 작성 중 골든이 정당하게 임시·미래
+    경로를 적을 수 있어서다). `todo`에서는 역참조(A-②)를 검사하지 않는다.
+    경고 문면에 `(status: todo — 아직 작성 중, 하드 실패 아님)` 표지를
+    붙여 `done`의 경고와 구분한다.
 
 ## API 계약(test-writer 결정) — `gate_golden_backref.py`가 없어 새로 정한다
 
@@ -47,8 +58,17 @@
         반환: (hard_fails, warnings) — 각각 사람이 읽는 사유 문자열 리스트.
         hard_fails가 비어있지 않으면 `--check`가 exit 1을 낸다.
         warnings만 있으면 exit 0(경고만).
-        entry에 `verify` 키가 없거나(트랙 B 스키마) status != "done"이면
-        둘 다 빈 리스트 — 검사 대상이 아니다.'''
+        entry에 `verify` 키가 없거나 값이 빈 문자열이면 status와 무관하게
+        둘 다 빈 리스트(검사 대상이 아니다). status == "done"이면 A-①(하드
+        실패)·A-②(경고) 둘 다, status == "todo"면 A-③(경고만, 원장 28i)만
+        적용한다. 그 외 status는 스킵한다.'''
+
+⚠️ **정정(원장 28i, PR #72 리뷰 blocker 2)**: 위 계약문이 한때 "entry에
+`verify` 키가 없거나(트랙 B 스키마) status != "done"이면 둘 다 빈 리스트"
+라고 적었다 — A-③ 도입 이후 이건 **거짓**이다(`status == "todo"`도 이제
+경고를 낼 수 있다). 계약 자체가 바뀐 것이지 이 절이 낡은 채 방치된 게
+아니다 — 아래 `test_todo_status_with_missing_path_warns_but_does_not_
+hard_fail`이 새 계약을 직접 반증하는 회귀 테스트다.
 
 `root`가 기본값을 갖는 이유는 `read_constants`의 선례와 같다 — 실사용은 저장소
 루트를, 테스트는 `tmp_path`를 격리해서 넘긴다.
@@ -92,8 +112,13 @@ expected_behavior, rubric, judge, status}`라 **`verify` 필드가 아예 없다
 ## "무엇을 보지 않는가" 초안(`gate_spec_mirror.py`의 동명 절 선례를 따른다 —
 코더가 실제 구현 docblock에 옮길 것을 전제로 test-writer가 먼저 적는다)
 
-  - **`status: todo` 골든** — 애초에 미검증이라 대조 대상이 아니다(스펙 미러
-    게이트의 동일 원칙, `gate_spec_mirror.py` "무엇을 보지 않는가" 참고).
+  - **`status: todo` 골든** — ⚠️ **정정(원장 28i, PR #72 리뷰 blocker 2)**:
+    이 항목이 한때 "애초에 미검증이라 대조 대상이 아니다(스펙 미러 게이트의
+    동일 원칙)"라고 적었다 — A-③ 도입 이후 **더 이상 완전히 스킵되지
+    않는다.** `todo`는 **하드 실패 대상은 아니지만 경고 대상이다** —
+    `verify` 경로가 깨져 있으면 경고를 낸다. `todo`에서 **여전히 보지
+    않는 것**은 역참조(A-②)뿐이다 — 작성 중 골든의 `verify`가 아직 자기
+    ID를 담지 않은 것은 정상이라 검사하지 않는다.
   - **`track-b-harness.jsonl`** — 위 판단대로 `verify` 필드 자체가 없어
     자동 제외(실측: 오늘 존재하는 골든에서 `_workspace/`를 가리키는 `verify`는
     0건이었다 — 그런 사례가 생기면 일반 경로와 동일하게 취급한다는 것이 지금
@@ -206,6 +231,27 @@ def test_todo_status_with_missing_path_warns_but_does_not_hard_fail(tmp_path: Pa
     # done의 경고와 구분되는 표지 — team-lead 지시("읽는 사람이 이건 아직
     # 작성 중임을 알아야 한다").
     assert "todo" in warnings[0]
+
+
+def test_todo_status_with_empty_verify_is_still_fully_skipped(tmp_path: Path) -> None:
+    """minor 3(PR #72 리뷰) — `todo` + 빈 문자열 `verify` 조합을 고정한다.
+
+    `verify` 키 부재·빈 문자열 검사가 status 검사보다 **먼저** 와야(코드
+    순서) 트랙 B(`todo`뿐이고 `verify` 필드 자체가 없다)가 A-③(경고)에
+    잘못 걸리지 않는다 — 리뷰어가 실측으로 그 순서를 확인했지만, `todo` +
+    **빈 문자열**(필드는 있는데 값이 "") 조합을 고정하는 테스트는 어느
+    층에도 없었다. `verify: ""`인 `done` 골든은 이미
+    `test_done_entry_without_verify_field_is_also_skipped_defensively`류가
+    다루지만, 그 방어가 `todo`에도 그대로 적용되는지는 별도로 확인해야
+    한다 — A-③가 "verify가 있는데 깨졌다"만 다루고 "verify 자체가 없다/
+    비었다"는 여전히 완전 스킵이어야 하기 때문이다(게이트 docblock "무엇을
+    보지 않는가" 참고).
+    """
+    hard_fails, warnings = gbg.check_entry(
+        _entry(id="GA-98", status="todo", verify=""), root=tmp_path)
+
+    assert hard_fails == []
+    assert warnings == []
 
 
 def test_entry_without_verify_field_is_skipped_not_crashed(tmp_path: Path) -> None:
