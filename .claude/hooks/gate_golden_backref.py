@@ -8,37 +8,64 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
 암묵적으로 주장한다 — ① 그 경로가 실재한다 ② 그 파일이 실제로 이 GA를 검증한다.
 둘 다 **아무 게이트도 확인하지 않았다.**
 
-실제로 일어난 일: GA-52의 `verify`가 **존재하지 않는 파일**을 가리켰는데
-`status: done`이라 "검증됨"으로 읽혔다 — CI는 계속 초록이었다. 다음 라운드
-후보를 조사하던 중 **우연히** 발견됐다(의도적 감사가 아니었다). 원장 28e는
-"처리했다는 보고가 검증 없이 나간다"는 같은 형태의 드리프트가 **다섯 번째**
-반복된 사례로 이 건을 기록한다 — 사람 주의력이 이 계열에서 계속 진다.
+실제로 일어난 일(⚠️ **REV — 최초 서술이 실측과 달랐다, 독립 평가 blocker 2
+정정**): GA-52는 `status: todo` 상태로 **존재하지 않는 파일**
+(`tests/integration/rq-32-map-volumes.test.ts` — 어느 커밋에도 존재한 적이
+없다)을 `verify`로 가리킨 채 2026-07-29부터 2026-08-08까지(약 10일)
+남아 있었다. `todo`였으므로 "검증됨"으로 **읽힌 적은 없다** — 최초 버전의
+"`status: done`이라 검증됨으로 읽혔다"는 서술은 **거짓**이었다(git 이력
+전수 역추적으로 확인, `todo`+깨진 경로였던 적은 있어도 `done`+깨진 경로였던
+적은 한 번도 없다). 사실은: `done`으로 전환하는 순간 아무 검사 없이 거짓
+검증 주장이 성립할 수 있는 상태였고, 그 발견은 감사가 아니라 **우연**이었다
+(다음 라운드 후보를 조사하던 중 발견). 원장 28e는 "처리했다는 보고가 검증
+없이 나간다"는 같은 형태의 드리프트가 **다섯 번째** 반복된 사례로 이 건을
+기록한다 — 사람 주의력이 이 계열에서 계속 진다. **이 게이트는 그 전환
+시점을 하드 실패로 막는다** — ⚠️ **`todo` 체류 중에는 잡지 않는다**(GA-52가
+실제로 `todo`로 머문 약 10일 동안은 이 게이트가 있었어도 발견을 앞당기지
+못했을 것이다, `todo`는 검사 대상이 아니다 — 아래 "무엇을 보지 않는가").
 `gate_spec_mirror.py`(원장 26af)가 "문서가 인용한 **수치**가 정본과 어긋난다"를
-자동화했듯, 이 게이트는 "골든이 **자기 자신의 검증 존재**를 정확히 주장하는가"를
-자동화한다.
+자동화했듯, 이 게이트는 "**`done`으로 확정된** 골든이 자기 자신의 검증 존재를
+정확히 주장하는가"를 자동화한다.
 
 ## 이 게이트가 하는 일 (원장 28g, team-lead 지시)
 
-  - **A-①** `status: done`인 골든의 `verify` 경로가 실재하는가 → **하드 실패**
-    (`--check`가 exit 1). 오탐이 원리적으로 없다 — 파일은 있거나 없거나 둘 중
-    하나다.
+  - **A-①** `status: done`인 골든의 `verify` 경로가 **파일로서** 실재하는가 →
+    **하드 실패**(`--check`가 exit 1). ⚠️ **REV(독립 평가 major 1 정정)** —
+    최초 서술은 "오탐이 원리적으로 없다 — 파일은 있거나 없거나 둘 중 하나다"
+    였는데 과장이었다: **같은 플랫폼에서는** 오탐이 없지만, 판정에 쓰는
+    `Path.is_file()`은 플랫폼 불변이 아니다. Windows·macOS 기본 파일시스템은
+    대소문자를 구분하지 않는다 — 대소문자가 틀린 `verify`는 그 두 플랫폼(이
+    저장소의 로컬 개발 환경)에서는 통과하고 **Linux CI에서는 하드 실패**한다
+    (로컬↔CI 판정 불일치, 실측 확인). 오늘 76건은 전수 확인 결과 전부 정확한
+    대소문자의 추적 파일이라 위험이 없다(실측 0건) — 그리고 이 불일치는
+    **안전한 방향**이다(로컬 통과 → CI가 최종 차단, 그 반대가 아니다). 실제
+    대소문자 비교(파일시스템을 순회해 각 경로 성분의 실제 표기와 대조)까지
+    구현할지는 **coder 판단으로 보류한다** — 오늘 위험 0건 대비 구현 복잡도가
+    크고, Linux CI가 어차피 최종 방어선이라 로컬에서 이를 못 잡아도 머지
+    전에 걸린다(비용 대비 이득 낮음). `.exists()`가 아니라 `.is_file()`을
+    쓴다 — `verify`가 디렉터리를 가리키는 경우까지 하드 실패로 잡는다(오늘
+    데이터에는 이 형태가 없어 동작 변화 없음, 잠재 오탐 축 하나를 사전에
+    닫는 무비용 수정).
   - **A-②** 그 파일(들)이 자기 GA-ID를 본문에 포함하는가(역참조) → **경고만**
     (exit 0 유지). "관례"이지 절대 규칙이 아니다 — 실측 92%(70/76)만 지킨다.
 
 ## 실측으로 확정한 세부 규칙 (골든 전수 조사, 코드를 안 읽고는 알 수 없던 것들)
 
-  - **`verify`는 콤마로 여러 경로를 나열할 수 있다**(실측 7건: GA-11·17·41·
-    42·43·57·58). 콤마 뒤 공백 유무가 섞여 있다(`"a,b"`·`"a, b"` 둘 다 있다) —
-    트리밍한다.
+  - **`verify`는 콤마로 여러 경로를 나열할 수 있다**(⚠️ **REV — 최초 서술이
+    "실측 7건"이라 적었으나 실측은 4건이다, 독립 평가 major 2 정정**: 다중
+    경로는 **GA-11·17·57·58 4건**뿐이다. GA-41·42·43은 콤마가 없는 **단일**
+    경로라 이 축의 실측에 포함되지 않는다 — 별개 발견인 "`verify`가 테스트
+    파일만 가리키지 않는다"와 뒤섞여 잘못 합산됐었다, 바로 아래 항목 참고).
+    콤마 뒤 공백 유무가 섞여 있다(`"a,b"`·`"a, b"` 둘 다 있다) — 트리밍한다.
   - **A-①(경로 실재)은 나열된 경로 전부가 실재해야 통과한다** — 하나라도
     없으면 하드 실패.
   - **A-②(역참조)는 ANY 의미론이다(ALL이 아니다)** — GA-17·GA-57은 나열된 두
     경로 중 정확히 하나에만 자기 ID가 있는데, 리뷰어가 이미 "관례를 지키는
     70건"에 이 둘을 포함해 셌다. ALL을 요구하면 이미 준수 중인 두 건에 새
     오탐이 생겨 리뷰어 실측과 이 게이트의 판정이 어긋난다.
-  - **`verify`가 테스트 파일만 가리키지 않는다** — GA-41·42·43은
-    `scripts/smoke-deploy.sh`(스모크 스크립트)를 가리킨다. 두 검사 모두
-    확장자·디렉터리로 대상을 좁히지 않는다.
+  - **`verify`가 테스트 파일만 가리키지 않는다**(별개 발견, 다중 경로 축과
+    무관) — GA-41·42·43은 `scripts/smoke-deploy.sh`(스모크 스크립트)를
+    가리킨다. 두 검사 모두 확장자·디렉터리로 대상을 좁히지 않는다.
   - **하드 실패가 경고보다 우선한다** — 경로 중 하나라도 없으면 그 항목의
     역참조 검사 자체를 시도하지 않는다(열 수 없는 파일의 "내용"을 판정하는
     것은 무의미하다).
@@ -147,7 +174,9 @@ def check_entry(entry: dict, root: Path = ROOT) -> tuple[list[str], list[str]]:
 
     hard_fails: list[str] = []
     for rel in paths:
-        if not (root / rel).exists():
+        # `.is_file()`(`.exists()`가 아니다, 독립 평가 major 1) — 디렉터리를
+        # 가리키는 verify까지 하드 실패로 잡는다.
+        if not (root / rel).is_file():
             hard_fails.append("%s: verify 경로가 존재하지 않는다 — %s" % (entry_id, rel))
     if hard_fails:
         # 경로 중 하나라도 없으면 역참조 검사 자체를 시도하지 않는다 — 열 수
@@ -194,9 +223,21 @@ def _iter_golden_entries() -> list[tuple[str, int, dict]]:
 
 
 def run_check() -> int:
+    entries = _iter_golden_entries()
+    if not entries:
+        # 독립 평가 blocker 1 — 스캔 표면(GOLDEN_DIR·glob·이터레이터)이 고장
+        # 나면 판정할 대상이 0건이 되어 "하드 실패 0건"으로 조용히 초록을
+        # 낸다. 고장 난 센서는 없는 센서보다 나쁘다(check.sh·ci.yml이 이미
+        # 명시한 원칙) — 골든을 한 건도 못 읽으면 그 자체를 하드 실패로 낸다.
+        _stderr(
+            "[골든 역참조 게이트] 골든을 한 건도 읽지 못했다 — 스캔 표면이 고장 났다"
+            "(GOLDEN_DIR 경로나 *.jsonl 글롭을 확인하라): %s" % GOLDEN_DIR
+        )
+        return 1
+
     hard_total: list[str] = []
     warn_total: list[str] = []
-    for fname, lineno, rec in _iter_golden_entries():
+    for fname, lineno, rec in entries:
         hard, warn = check_entry(rec)
         hard_total += ["  %s:%d %s" % (fname, lineno, m) for m in hard]
         warn_total += ["  %s:%d %s" % (fname, lineno, m) for m in warn]
@@ -211,12 +252,16 @@ def run_check() -> int:
         _stderr(
             "[골든 역참조 게이트] 하드 실패 %d건 — status: done인 골든의 verify 경로가 "
             "존재하지 않는다:\n%s\n"
-            "verify는 실재하는 파일을 가리켜야 한다(원장 28e·28g — GA-52가 이 형태로 "
-            "조용히 검증 없이 done 처리됐던 사례)." % (len(hard_total), "\n".join(hard_total))
+            "verify는 실재하는 파일을 가리켜야 한다 — done으로 전환하는 순간 아무 검사 "
+            "없이 거짓 검증 주장이 성립하는 것을 막는다(원장 28e·28g)."
+            % (len(hard_total), "\n".join(hard_total))
         )
         return 1
 
-    print("[골든 역참조 게이트] 하드 실패 0건 (경고 %d건)." % len(warn_total))
+    print(
+        "[골든 역참조 게이트] 하드 실패 0건 (골든 %d건 검사, 경고 %d건)."
+        % (len(entries), len(warn_total))
+    )
     return 0
 
 
@@ -238,11 +283,24 @@ def run_selftest() -> int:
                 "done + verify 경로 부재 -> 하드 실패",
                 {"id": "GA-S2", "status": "done", "verify": "tests/unit/missing.test.ts"},
             ),
+            (
+                "다중 경로: 하나라도 없으면 하드 실패(전부 실재해야 통과)",
+                {"id": "GA-S7", "status": "done",
+                 "verify": "tests/unit/clean.test.ts,tests/unit/missing2.test.ts"},
+            ),
+            (
+                "verify가 디렉터리를 가리키면 하드 실패(.is_file(), 독립 평가 major 1)",
+                {"id": "GA-S8", "status": "done", "verify": "tests/unit"},
+            ),
         ]
         for name, entry in must_block:
-            hard, _warn = check_entry(entry, root=root)
+            hard, warn = check_entry(entry, root=root)
             if not hard:
                 failed.append("차단 실패 — %s" % name)
+            if warn:
+                # 하드 실패가 있으면 경고를 더하지 않는다는 계약(§docblock
+                # "하드 실패가 경고보다 우선한다")도 여기서 함께 지킨다.
+                failed.append("차단 케이스에서 경고가 함께 나왔다(우선순위 위반) — %s" % name)
 
         must_pass = [
             (
@@ -292,14 +350,20 @@ def run_selftest() -> int:
                     % (name, len(hard), want_hard, len(warn), want_warn)
                 )
 
-        # 다중 경로: 하나라도 없으면 하드 실패(전부 실재해야 통과).
-        multi_missing = {
-            "id": "GA-S7", "status": "done",
-            "verify": "tests/unit/clean.test.ts,tests/unit/missing2.test.ts",
-        }
-        hard, warn = check_entry(multi_missing, root=root)
-        if not hard or warn:
-            failed.append("다중 경로 부분 부재 — 하나라도 없으면 하드 실패여야 한다(경고는 없어야 한다)")
+    # 독립 평가 blocker 1 — 스캔 표면(`GOLDEN_DIR` 상수 + `_iter_golden_entries()`
+    # 자신) 자체가 고장 나면 `check_entry`가 아무리 정확해도 판정 대상이 0건이
+    # 되어 조용히 초록이 난다. `check_entry`와 달리 `_iter_golden_entries()`는
+    # `root` 인자가 없어(모듈 상수 `GOLDEN_DIR`를 직접 읽는다) 임시 디렉터리로
+    # 격리할 수 없다 — 그래서 이 검사만 예외적으로 **실 저장소 골든**을
+    # 대상으로 한다(`gate_spec_mirror.read_constants()`가 정본 파일을 직접
+    # 파싱해 검증하는 것과 같은 정신 — 그 함수도 `root` 격리 대상이 아니다).
+    real_entries = _iter_golden_entries()
+    if not real_entries:
+        failed.append(
+            "스캔 표면 — _iter_golden_entries()가 골든을 한 건도 읽지 못했다"
+            "(GOLDEN_DIR=%s) — run_check()의 blocker 1 방어가 실제로 발화하는지 "
+            "확인하라" % GOLDEN_DIR
+        )
 
     if failed:
         _stderr(
@@ -309,7 +373,7 @@ def run_selftest() -> int:
         return 1
     print(
         "[골든 역참조 게이트 selftest] 통과 — 차단 %d건·허용 %d건 확인."
-        % (len(must_block), len(must_pass) + 1)
+        % (len(must_block), len(must_pass))
     )
     return 0
 

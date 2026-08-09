@@ -85,10 +85,15 @@ python .claude/hooks/gate_spec_mirror.py --check
 
 # 골든 역참조 게이트 — status: done인 골든의 verify가 실재하고(A-①, 하드
 # 실패) 자기 GA-ID를 본문에 포함하는지(A-②, 경고만) 확인한다(원장 28e·28g).
-# GA-52의 verify가 존재하지 않는 파일을 가리켰는데도 CI가 계속 초록이었던
-# 사례가 있다 — 의도적 감사가 아니라 다음 라운드 후보를 조사하다 우연히
-# 발견됐다. "처리했다는 보고가 검증 없이 나간다"는 같은 계열의 드리프트에
-# 사람 주의력이 다섯 번째로 졌다(원장 28e).
+# ⚠️ 이 코멘트는 이전에 "GA-52가 done인데도 CI가 초록이었다"고 적었으나
+# 거짓이었다(독립 평가 blocker 2, git 이력 전수 역추적으로 정정) — GA-52는
+# 실제로는 status: todo인 채로 존재하지 않는 파일을 verify로 가리킨 상태로
+# 약 10일 남아 있었다. todo였으므로 "검증됨"으로 읽힌 적은 없다 — 이 게이트가
+# 막는 것은 done으로 전환하는 시점의 검증 부재이지, todo 체류 중인 깨진
+# verify가 아니다(todo는 이 게이트의 검사 대상이 아니다). "처리했다는 보고가
+# 검증 없이 나간다"는 같은 계열의 드리프트에 사람 주의력이 다섯 번째로 졌다는
+# 원장 28e의 취지는 여전히 유효하다 — 이 게이트가 막는 지점(전환 시점)만
+# GA-52의 실제 이력과 다를 뿐이다(상세: gate_golden_backref.py 상단 docblock).
 python .claude/hooks/gate_golden_backref.py --selftest
 python .claude/hooks/gate_golden_backref.py --check
 
