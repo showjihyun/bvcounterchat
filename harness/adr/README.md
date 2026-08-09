@@ -20,6 +20,7 @@
 | [ADR-0010](0010-project-layout.md) | 프로젝트 레이아웃 | 단일 package.json + `src/{client,server,shared}`, `@shared/*` 별칭 | 승인 |
 | [ADR-0011](0011-selective-red.md) | Red-first 적용 범위 | `src/shared`·서버 판정 로직·결함 재현만 Red-first, 그 외는 test-after(coder 테스트는 순증만) | 승인 |
 | [ADR-0012](0012-review-tail-slim.md) | 검증 꼬리 길이 | CI 선행 · minor 기본 이월(분류 주체 = reviewer) · 델타 재검증은 blocker·major·계약위반·CI대응에만 | 승인 |
+| [ADR-0014](0014-audio-authority.md) | 오디오 스택과 발소리의 권위 | **절차적 합성**(에셋 파일 0개) · 발소리 판정·합성은 **클라 로컬**(서버 권위 RQ-61의 명시적 예외 — 근거는 `@filter` 0건이라 정보 누출이 새로 안 생긴다는 것 하나이며, 위치 필터링을 도입하면 **무효**) · 발생은 **이동 거리** 기준(ADR-0008 결정론) | 승인 |
 | [ADR-0013](0013-movement-authority-layering.md) | 이동 정본과 충돌 계층의 분리 | **순수 틱 함수가 이동 정본**, Rapier는 충돌 **질의** 계층 — ADR-0004 **결정 1·3** 대체 | 승인 |
 
 > ADR-0001·0002·0003·0006·0009는 `docs/req/03_Technical_Architecture.md`가
