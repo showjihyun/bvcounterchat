@@ -20,9 +20,12 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
 (다음 라운드 후보를 조사하던 중 발견). 원장 28e는 "처리했다는 보고가 검증
 없이 나간다"는 같은 형태의 드리프트가 **다섯 번째** 반복된 사례로 이 건을
 기록한다 — 사람 주의력이 이 계열에서 계속 진다. **이 게이트는 그 전환
-시점을 하드 실패로 막는다** — ⚠️ **`todo` 체류 중에는 잡지 않는다**(GA-52가
-실제로 `todo`로 머문 약 10일 동안은 이 게이트가 있었어도 발견을 앞당기지
-못했을 것이다, `todo`는 검사 대상이 아니다 — 아래 "무엇을 보지 않는가").
+시점을 하드 실패로 막는다.** ✅ **REV2(원장 28i, 사용자 결정
+2026-08-09)** — 최초 버전은 여기서 "`todo` 체류 중에는 잡지 않는다"고
+적었는데, 그 축이 정확히 GA-52가 겪은 실제 사고 형태(`todo`로 약 10일
+체류)였다 — **닫았다**: `todo`도 `verify`가 깨져 있으면 이제 경고를
+낸다(하드 실패는 아니다, A-③ 참고 — 작성 중 골든이 정당하게 임시 경로를
+적을 수 있어 하드 실패로 만들면 소음 게이트가 된다).
 `gate_spec_mirror.py`(원장 26af)가 "문서가 인용한 **수치**가 정본과 어긋난다"를
 자동화했듯, 이 게이트는 "**`done`으로 확정된** 골든이 자기 자신의 검증 존재를
 정확히 주장하는가"를 자동화한다.
@@ -48,6 +51,19 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
     닫는 무비용 수정).
   - **A-②** 그 파일(들)이 자기 GA-ID를 본문에 포함하는가(역참조) → **경고만**
     (exit 0 유지). "관례"이지 절대 규칙이 아니다 — 실측 92%(70/76)만 지킨다.
+  - **A-③(원장 28i, 사용자 결정 2026-08-09)** `status: todo`인 골든도 `verify`
+    경로가 깨져 있으면 → **경고**(exit 0 유지, `done`의 하드 실패와는 별개
+    축). GA-52가 존재한 적 없는 파일을 가리킨 채 `status: todo`로 약 10일
+    체류했던 것이 이 게이트의 원래 동기였는데, 최초 버전(A-①이 `done`
+    한정)은 그 상태를 못 잡았다(독립 평가 blocker 2, §"왜 만드는가" 참고) —
+    이 축을 닫는다. ⚠️ **하드 실패로는 승격하지 않는다** — 작성 중 골든이
+    정당하게 임시·미래 경로를 적을 수 있어, 하드 실패로 만들면 정상 작업
+    흐름을 막는 소음 게이트가 된다(`gate_trigger_due.py`가 이미 못박은
+    "실패하는 소음 게이트는 꺼진다"와 같은 이유). `todo`에서는 역참조(A-②)를
+    검사하지 않는다 — 작성 중 골든의 `verify`가 아직 자기 ID를 담지 않은
+    것은 정상이다. 경고 문면에 `(status: todo — 아직 작성 중, 하드 실패
+    아님)` 표지를 붙여 `done`의 경고와 구분한다. **오늘 실제 영향은 0이다**
+    (`status: todo` 골든이 현재 0건, 실측) — 정하는 것은 앞으로의 관행이다.
 
 ## 실측으로 확정한 세부 규칙 (골든 전수 조사, 코드를 안 읽고는 알 수 없던 것들)
 
@@ -72,23 +88,32 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
 
 ## 무엇을 보지 않는가 (`gate_spec_mirror.py`의 동명 절과 같은 원칙)
 
-  - **`status: todo` 골든** — 애초에 미검증이라 대조 대상이 아니다(스펙 미러
-    게이트와 동일 원칙 — "todo는 아직 확정되지 않은 초안이라 정합성을 요구할
-    대상이 아니다").
+  - **`status: todo` 골든** — ⚠️ **REV(원장 28i, 사용자 결정 2026-08-09) —
+    더 이상 완전히 스킵되지 않는다.** 최초 버전은 이 절에서 "애초에
+    미검증이라 대조 대상이 아니다"라고 적었는데, GA-52가 존재한 적 없는
+    파일을 가리킨 채 `todo`로 약 10일 체류한 사고(§"왜 만드는가")가 정확히
+    이 축이었다 — `todo`는 **하드 실패 대상은 아니지만 경고 대상이다**(A-③).
+    `verify` 경로가 깨져 있으면 경고를 낸다. **`todo`에서 여전히 보지 않는
+    것**: 역참조(A-②) — 작성 중 골든의 `verify`가 아직 자기 ID를 담지 않은
+    것은 정상이라 검사하지 않는다.
   - **`track-b-harness.jsonl`(프로세스 골든)** — 스키마 자체가 `{id, type,
     task, expected_behavior, rubric, judge, status}`라 `verify` 필드가 없다.
-    별도 예외 분기를 두지 않는다 — "entry에 `verify` 키가 없으면 스킵"이라는
-    계약 하나가 트랙 B 전체를 자동으로 포함한다. 오늘 존재하는 골든에서
-    `_workspace/`(gitignore 대상)를 가리키는 `verify`는 0건이다 — 그런 사례가
-    생기면 일반 경로와 동일하게 취급하는 것이 지금 시점의 판단이다(별도 제외
-    규칙을 만들 근거가 아직 없다).
-  - **`verify`가 빈 문자열("")인 경우** — 실 데이터에 0건이라 필드 부재와
-    동일하게(스킵) 취급한다. 하드 실패로 볼지는 실제 사례가 생기면 재논의한다
-    (스코프 크리프 방지).
-  - **A-②(경고)는 절대 exit 1을 내지 않는다** — "관례일 뿐"이라는 근거(실측
-    92% 준수)를 하드 규칙으로 승격하지 않는다. 경고가 실패로 바뀌면 소음
-    게이트가 되어 꺼진다(`gate_spec_mirror.py`가 문서 인용 오탐을 exit 1로
-    만들지 않은 것과 같은 정신).
+    별도 예외 분기를 두지 않는다 — "entry에 `verify` 키가 없으면 (status와
+    무관하게) 스킵"이라는 계약 하나가 트랙 B 전체를 자동으로 포함한다(A-③
+    승격 이후에도 이 규칙은 그대로다 — `todo` 승격은 "`verify`가 있는데
+    깨졌다"는 축만 다루고, "`verify` 자체가 없다"는 여전히 완전 스킵이다).
+    오늘 존재하는 골든에서 `_workspace/`(gitignore 대상)를 가리키는
+    `verify`는 0건이다 — 그런 사례가 생기면 일반 경로와 동일하게 취급하는
+    것이 지금 시점의 판단이다(별도 제외 규칙을 만들 근거가 아직 없다).
+  - **`verify`가 빈 문자열("")인 경우** — status와 무관하게 실 데이터에
+    0건이라 필드 부재와 동일하게(스킵) 취급한다(A-③ 승격 이후에도 그대로).
+    하드 실패로 볼지는 실제 사례가 생기면 재논의한다(스코프 크리프 방지).
+  - **A-②·A-③(경고)는 절대 exit 1을 내지 않는다** — A-②는 "관례일 뿐"이라는
+    근거(실측 92% 준수)를, A-③은 "작성 중 골든의 정상 상태"라는 근거를 하드
+    규칙으로 승격하지 않는다. 경고가 실패로 바뀌면 소음 게이트가 되어
+    꺼진다(`gate_spec_mirror.py`가 문서 인용 오탐을 exit 1로 만들지 않은
+    것과 같은 정신, `gate_trigger_due.py`가 "실패하는 소음 게이트는
+    꺼진다"로 명시한 것과도 같은 원칙).
   - **JSONL 파싱 오류 처리** — `gate_spec_mirror.py`의 `check_constant_mirrors`가
     이미 그 형태를 다루므로 이 게이트는 조용히 건너뛴다(스코프 밖).
 
@@ -96,8 +121,10 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
 
     def check_entry(entry: dict, root: Path = ROOT) -> tuple[list[str], list[str]]:
         '''entry: JSONL 한 줄을 파싱한 dict. 반환: (hard_fails, warnings) —
-        사람이 읽는 사유 문자열 리스트. entry에 `verify` 키가 없거나
-        status != "done"이면 둘 다 빈 리스트(검사 대상이 아니다).'''
+        사람이 읽는 사유 문자열 리스트. entry에 `verify` 키가 없거나 값이 빈
+        문자열이면 status와 무관하게 둘 다 빈 리스트(검사 대상이 아니다).
+        status == "done"이면 A-①(하드 실패)·A-②(경고) 둘 다, status == "todo"면
+        A-③(경고만, 원장 28i)만 적용한다. 그 외 status는 스킵한다.'''
 
 `root`가 기본값을 갖는 이유는 `gate_spec_mirror.read_constants(path=CONSTANTS)`와
 같다 — 실사용은 저장소 루트를, `--selftest`는 임시 디렉터리를 격리해 넘긴다.
@@ -157,21 +184,52 @@ def check_entry(entry: dict, root: Path = ROOT) -> tuple[list[str], list[str]]:
     """`entry` 하나(JSONL 한 줄)를 판정한다.
 
     반환: (hard_fails, warnings) — 각각 사람이 읽는 사유 문자열 리스트.
-    `entry`에 `verify` 키가 없거나(트랙 B 스키마) `status != "done"`이면 둘 다
-    빈 리스트다(검사 대상이 아니다, 위 "무엇을 보지 않는가" 참고).
+
+    `entry`에 `verify` 키가 없거나(트랙 B 스키마) 값이 빈 문자열이면 `status`와
+    **무관하게** 둘 다 빈 리스트다(검사 대상이 아니다 — 위 docblock "무엇을
+    보지 않는가" 참고, 작성 중 골든의 정상 상태다).
+
+    `status == "done"`이면 A-①(경로 실재, 하드 실패)·A-②(역참조, 경고) 둘 다
+    적용한다. `status == "todo"`면 경로 실재만 확인해 깨져 있으면 **경고**(하드
+    실패 아님, 원장 28i — 사용자 결정 2026-08-09)한다 — 역참조(A-②)는 확인하지
+    않는다(작성 중 골든의 `verify`가 아직 자기 ID를 담지 않은 것은 정상이다).
+    그 외 `status` 값은 스킵한다(미정의 상태를 보수적으로 다룬다).
     """
-    if entry.get("status") != "done" or "verify" not in entry:
+    if "verify" not in entry:
         return [], []
 
     verify = entry.get("verify")
     entry_id = str(entry.get("id", ""))
     if not isinstance(verify, str) or not verify.strip():
-        # 빈 verify(실 데이터 0건) — 필드 부재와 동일하게 스킵한다(위 docblock
-        # "무엇을 보지 않는가" 참고, coder 판단으로 남긴 결정).
+        # 빈 verify(실 데이터 0건) — status와 무관하게 필드 부재와 동일하게
+        # 스킵한다(위 docblock "무엇을 보지 않는가" 참고, coder 판단으로 남긴
+        # 결정 — 작성 중 골든의 정상 상태다).
+        return [], []
+
+    status = entry.get("status")
+    if status not in ("done", "todo"):
         return [], []
 
     paths = [p.strip() for p in verify.split(",") if p.strip()]
 
+    if status == "todo":
+        # 원장 28i(사용자 결정) — `todo` + 깨진 `verify`는 경고로 승격한다.
+        # GA-52가 존재한 적 없는 파일을 가리킨 채 `todo`로 약 10일 체류했던
+        # 것이 이 게이트의 원래 동기였는데(원장 28e·28g), 최초 버전은 `done`
+        # 전환 시점만 막아 그 체류 자체는 못 잡았다(독립 평가 blocker 2).
+        # ⚠️ 하드 실패로는 승격하지 않는다 — 작성 중 골든이 정당하게 임시·
+        # 미래 경로를 적을 수 있다(관례 위반이 아니라 정상 작업 흐름,
+        # `gate_trigger_due.py`가 이미 못박은 "실패하는 소음 게이트는
+        # 꺼진다"와 같은 이유). 역참조(A-②)는 `todo`에서 검사하지 않는다.
+        missing = [rel for rel in paths if not (root / rel).is_file()]
+        if not missing:
+            return [], []
+        return [], [
+            "%s (status: todo — 아직 작성 중, 하드 실패 아님): verify 경로가 "
+            "존재하지 않는다 — %s" % (entry_id, ", ".join(missing))
+        ]
+
+    # status == "done" — A-①(경로 실재, 하드 실패) + A-②(역참조, 경고).
     hard_fails: list[str] = []
     for rel in paths:
         # `.is_file()`(`.exists()`가 아니다, 독립 평가 major 1) — 디렉터리를
@@ -316,13 +374,13 @@ def run_selftest() -> int:
                 1,
             ),
             (
-                "status: todo -> 경로가 없어도 검사 대상이 아니다",
-                {"id": "GA-S4", "status": "todo", "verify": "tests/unit/missing.test.ts"},
+                "status: todo + verify 경로 실재 -> 완전 통과(조용함, 역참조는 검사 안 함)",
+                {"id": "GA-S4", "status": "todo", "verify": "tests/unit/clean.test.ts"},
                 0,
                 0,
             ),
             (
-                "verify 필드 없음(트랙 B 실제 스키마) -> 스킵",
+                "verify 필드 없음(트랙 B 실제 스키마) -> status와 무관하게 스킵",
                 {"id": "GB-S1", "type": "process", "status": "todo"},
                 0,
                 0,
@@ -341,6 +399,12 @@ def run_selftest() -> int:
                 0,
                 0,
             ),
+            (
+                "원장 28i A-③ — status: todo + verify 경로 부재 -> 경고(하드 실패 아님, 승격된 축)",
+                {"id": "GA-S9", "status": "todo", "verify": "tests/unit/missing.test.ts"},
+                0,
+                1,
+            ),
         ]
         for name, entry, want_hard, want_warn in must_pass:
             hard, warn = check_entry(entry, root=root)
@@ -349,6 +413,17 @@ def run_selftest() -> int:
                     "오탐/미탐 — %s: hard=%d(기대 %d) warn=%d(기대 %d)"
                     % (name, len(hard), want_hard, len(warn), want_warn)
                 )
+
+        # 원장 28i — 경고 문면에 done과 구분되는 표지가 있는지(team-lead 지시,
+        # "읽는 사람이 이건 아직 작성 중임을 알아야 한다"). 위 GA-S9 케이스를
+        # 재사용해 메시지 내용까지 확인한다(개수만으로는 문면 내용을 못 잡는다).
+        _todo_hard, todo_warn = check_entry(
+            {"id": "GA-S9", "status": "todo", "verify": "tests/unit/missing.test.ts"}, root=root
+        )
+        if not todo_warn or "todo" not in todo_warn[0]:
+            failed.append(
+                "원장 28i 표지 — todo 승격 경고 문면에 'todo' 표지가 없다: %r" % todo_warn
+            )
 
     # 독립 평가 blocker 1 — 스캔 표면(`GOLDEN_DIR` 상수 + `_iter_golden_entries()`
     # 자신) 자체가 고장 나면 `check_entry`가 아무리 정확해도 판정 대상이 0건이
