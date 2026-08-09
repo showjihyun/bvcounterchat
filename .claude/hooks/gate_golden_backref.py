@@ -307,8 +307,9 @@ def run_check() -> int:
     if warn_total:
         print(
             "[골든 역참조 게이트] 경고 %d건(exit 0 유지 — 두 종류가 섞인다: `done` "
-            "골든의 역참조 관례 위반, 그리고 `todo` 골든의 깨진 경로. 각 줄 "
-            "끝의 표지를 보라):\n%s" % (len(warn_total), "\n".join(warn_total))
+            "골든의 역참조 관례 위반, 그리고 `todo` 골든의 깨진 경로. GA-ID 바로 "
+            "뒤에 `(status: …)`가 붙은 줄이 후자다):\n%s"
+            % (len(warn_total), "\n".join(warn_total))
         )
 
     if hard_total:
