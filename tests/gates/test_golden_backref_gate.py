@@ -271,7 +271,7 @@ def test_verify_paths_are_trimmed_of_whitespace(tmp_path: Path) -> None:
 # ── 실제 저장소 골든 회귀 고정 (리뷰어 전수 조사 실측을 그대로 잠근다) ──
 
 def test_real_track_a_zero_hard_fails_and_exactly_known_six_warnings() -> None:
-    ids_with_warnings: set[str] = []
+    ids_with_warnings: list[str] = []
     total_hard_fails: list[str] = []
     for line in (GOLDEN_DIR / "track-a-product.jsonl").read_text(encoding="utf-8").splitlines():
         line = line.strip()
