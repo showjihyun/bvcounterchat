@@ -167,7 +167,11 @@ import {
  *
  * 정정된 가정: 누적 상태는 **클라이언트가 소유**한다(자기: `prediction.ts` /
  * 원격: `interpolation.ts`). 매 틱 `wasGrounded`·`isGrounded`를 각각 직전·이번
- * `MoveState.grounded`에서 뽑는다. ⚠️ **`discontinuous`를 클라가 무엇으로
+ * `MoveState.grounded`에서 뽑는다. ⚠️ **두 경로가 오늘 대칭이 아니다**:
+ * `prediction.ts`는 `grounded`를 갖지만 **`interpolation.ts`에는 0건**이다
+ * (`InterpolationPosition`·`RemoteSnapshot` 어디에도 없다 — 스키마
+ * `GameState.ts:38`에는 있다). 원격 경로는 2/2가 **보간 출력을 먼저 확장**해야
+ * 이 가정이 성립한다. ⚠️ **`discontinuous`를 클라가 무엇으로
  * 검출하는가는 미결이고 원장 24bl이 소유한다** — 여기서 결론내지 않는다.
  * ⚠️ 착지음의 낙하 높이도 마찬가지다: 초안이 근거로 든 `fallPeakY`·
  * `trackFallDamage`는 **`GameRoom`의 private 필드·메서드**라(`GameRoom.ts:254`·
