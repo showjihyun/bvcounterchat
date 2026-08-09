@@ -83,6 +83,46 @@ python .claude/hooks/gate_ledger_table.py --check
 python .claude/hooks/gate_spec_mirror.py --selftest
 python .claude/hooks/gate_spec_mirror.py --check
 
+# 골든 역참조 게이트 — status: done인 골든의 verify가 실재하고(A-①, 하드
+# 실패) 자기 GA-ID를 본문에 포함하는지(A-②, 경고만) 확인한다(원장 28e·28g).
+# ⚠️ 이 코멘트는 이전에 "GA-52가 done인데도 CI가 초록이었다"고 적었으나
+# 거짓이었다(독립 평가 blocker 2, git 이력 전수 역추적으로 정정) — GA-52는
+# 실제로는 status: todo인 채로 존재하지 않는 파일을 verify로 가리킨 상태로
+# 약 10일 남아 있었다. todo였으므로 "검증됨"으로 읽힌 적은 없다 — 이 게이트가
+# 막는 것은 done으로 전환하는 시점의 검증 부재이지, todo 체류 중인 깨진
+# verify가 아니다(todo는 이 게이트의 검사 대상이 아니다). "처리했다는 보고가
+# 검증 없이 나간다"는 같은 계열의 드리프트에 사람 주의력이 다섯 번째로 졌다는
+# 원장 28e의 취지는 여전히 유효하다 — 이 게이트가 막는 지점(전환 시점)만
+# GA-52의 실제 이력과 다를 뿐이다(상세: gate_golden_backref.py 상단 docblock).
+python .claude/hooks/gate_golden_backref.py --selftest
+python .claude/hooks/gate_golden_backref.py --check
+
+# 이 저장소 최초의 Python pytest 스위트(`tests/gates/`) — 위 --selftest는
+# 구현자(coder)가 쓰고, 이 pytest는 test-writer가 독립적으로 쓴다(검증 격리,
+# CLAUDE.md 최상위 규칙 — 작업한 세션이 자기 산출물의 합격 여부를 스스로
+# 판정하지 않는다). `PYTHONUTF8=1`이 필요한 이유: 이 스위트의 CLI 계약
+# ⚠️ pytest는 `npm ci`가 설치하지 않는다 — 파이썬 서드파티 의존이다.
+# fresh clone에서 이 줄이 조용히 건너뛰어지면 게이트 검증 층이 통째로
+# 빠진 채 초록이 나온다(「고장 난 센서는 없는 센서보다 나쁘다」). 그래서
+# 없으면 **시끄럽게 죽인다**.
+if ! python -c "import pytest" >/dev/null 2>&1; then
+  echo "  ✗ pytest가 없다 — 하네스 게이트 검증 층(tests/gates/)을 돌릴 수 없다." >&2
+  echo "    조치: pip install pytest   (docs/ONBOARDING.md 2절 · ADR-0008 결정 3 예외)" >&2
+  exit 1
+fi
+
+# `PYTHONUTF8=1`이 필요한 이유(실측): 테스트가 `subprocess.run(gate, ...)`로
+# 게이트 프로세스를 띄우는데, 한국어 Windows에서 부모(pytest) 프로세스의
+# 로케일이 cp949라 자식의 UTF-8 출력(한글·em-dash)을 디코드하다
+# `UnicodeDecodeError`가 났다.
+#
+# ⚠️ **현재 테스트는 `encoding="utf-8"`을 직접 넘기므로 이 변수 없이도 통과한다**
+# (PR #71 리뷰 major 2 — 위 서술이 최종 코드와 어긋났다). 그래도 남겨 두는
+# 이유는 **게이트 자신의 stdout 인코딩**을 UTF-8로 고정해, 새 테스트가
+# `encoding=`을 빠뜨려도 같은 함정에 빠지지 않게 하는 두 번째 그물이기
+# 때문이다. Linux CI는 로케일이 UTF-8이라 애초에 무관하다.
+PYTHONUTF8=1 python -m pytest tests/gates/ -q
+
 # 트리거 발화 검출기 — **경고만 낸다(항상 exit 0)**. ADR-0012 조건 1이 이월 행에
 # 착수 트리거를 요구하지만 그것을 발화시키는 것이 사람의 기억뿐이라, 이 저장소에서
 # 트리거가 **세 번** 조용히 미발화했다(원장 26af·26x·26ae/26ak). 변경 경로와 이어진

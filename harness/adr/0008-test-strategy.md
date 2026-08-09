@@ -36,6 +36,28 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
 3. **러너**: **Vitest** — Vite 클라이언트와 생태계 일관, TS 네이티브,
    fake timer 내장. 테스트 위치: `tests/unit/`(순수 로직),
    `tests/integration/`(Colyseus 룸 경계). 테스트 이름에 RQ-ID 포함.
+
+   **예외 — 하네스 도구(게이트) 테스트**(2026-08-09 개정, 원장 28g):
+   러너는 **pytest**, 위치는 **`tests/gates/`**, RQ-ID 명명 규칙은
+   **적용하지 않는다**(RQ가 아니라 게이트를 검증한다).
+
+   ⚠️ **왜 두 번째 러너를 허용하는가**: 게이트는 파이썬으로 쓰이고
+   (`.claude/hooks/`), 그 검증은 지금까지 각 훅의 `--selftest`에 내장돼
+   있었다 — 그런데 **`--selftest`는 구현자(coder)가 쓴다.** 게이트 하나를
+   test-writer/coder 분리 파이프라인으로 만드는 순간 그 구조는
+   **자기 채점**이 된다(CLAUDE.md 「검증 판정은 별도 에이전트 세션에서」).
+   독립 세션이 쓰는 검증 층이 필요하고, 파이썬 대상에 Vitest를 붙일 수는
+   없다. **비용은 CI에 `pip install pytest` 한 줄**이다.
+
+   ⚠️ **이 예외는 하네스 도구에만 적용된다** — `src/`의 제품 코드는
+   여전히 Vitest 하나다. 러너가 둘로 갈리는 대가(온보딩 단계 증가,
+   실행 경로 이원화)를 제품 코드까지 지불하지 않는다.
+
+   **결정 4(Red 증거)의 적용**: 하네스 도구 테스트의 Red 증거는
+   `vitest run` 대신 **`pytest tests/gates/`** 출력을 첨부한다. `tsc
+   --noEmit`은 파이썬 대상에 해당하지 않으므로 그 자리는 비운다 —
+   대신 **임포트 실패(`ModuleNotFoundError`)가 그린필드 Red의 증거**다
+   (TS의 TS2307/TS2305와 같은 성격).
 4. **Red 증거**: 테스트 커밋이 구현 커밋보다 선행하고 PR에 Red 실행
    출력(`vitest run` + `tsc --noEmit`)을 첨부한다. tsc 오류가 아직 만들지
    않은 src/ 모듈 임포트(TS2307/TS2305)에 국한되면 정당한 Red다(그린필드
