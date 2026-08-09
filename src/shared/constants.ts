@@ -153,3 +153,14 @@ export const UI = {
   /** 킬 피드 동시 표시 최대 줄 수 (RQ-55) */
   KILLFEED_MAX_ROWS: 5,
 } as const
+
+/** 오디오 (RQ-72, ADR-0014 결정 4) */
+export const AUDIO = {
+  /** 가청 거리(m) — 발소리·착지음 공통. `WORLD.SIZE_M`에서 유도하지
+   * 않는 **독립 상수**다(ADR-0014 결정 4, 사용자 결정 — 맵 크기가
+   * 바뀌어도 가청 거리는 따라 움직이지 않는다). */
+  AUDIBLE_RANGE_M: 15,
+  /** 발소리 1회당 누적 수평 이동 거리(m, 보폭). 달리기 6m/s ÷ 2.0m =
+   * 초당 3보(ADR-0014 결정 4). */
+  FOOTSTEP_STRIDE_M: 2.0,
+} as const

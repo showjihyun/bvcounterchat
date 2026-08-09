@@ -163,14 +163,32 @@ def fmt(v: float) -> str:
 MIRRORS: list[tuple[str, str, list[str]]] = [
     ("WORLD.SAFE_ZONE_RADIUS_M", "Safe Zone 반경",
      [r"반경\s*\*{0,2}(\d+(?:\.\d+)?)\s*m"]),
+    # ⚠️ 두 수가 **같을 때만** 걸리게 역참조를 쓴다(원장 24bm). 플레이 면적은
+    # 정사각형(60×60m)이라 이것이 정확한 형태다. 초안은 `A×Bm` 아무 곱셈이나
+    # 잡아서, RQ-72 골든 GA-85가 done으로 전환되는 순간 「19×0.2m」(체공 19틱 ×
+    # 틱당 0.2m)를 플레이 면적 주장으로 오해해 **하드 실패**했다 — 실측으로
+    # 드러난 과탐이다. 같은 형태의 과탐 축을 SAFE_ZONE_RADIUS_M 패턴도 갖는다
+    # (「반경 <수>m」 — 다른 반경이 생기면 걸린다).
     ("WORLD.SIZE_M", "플레이 면적 한 변",
-     [r"(\d+(?:\.\d+)?)\s*×\s*\d+(?:\.\d+)?\s*m"]),
+     [r"(\d+(?:\.\d+)?)\s*×\s*\1\s*m"]),
     ("MOVEMENT.SPEED", "기본 이동 속도",
      [r"기본 이동 속도[^|\n]*\|\s*(\d+(?:\.\d+)?)\s*m/s"]),
     ("MOVEMENT.JUMP_HEIGHT", "점프 높이",
      [r"점프 높이[^|\n]*\|\s*(\d+(?:\.\d+)?)\s*m"]),
     ("FALL_DAMAGE.SAFE_HEIGHT_M", "낙하 무피해 임계",
      [r"낙하 데미지[^|\n]*\|\s*(\d+(?:\.\d+)?)m 초과분"]),
+    # RQ-72(발소리, 원장 24bm). ADR-0014 결정 4의 확정값 표가 두 값을 인용한다.
+    # ⚠️ **`requirements.md` RQ-72 본문은 이 게이트의 대상이 아니다**(위 docblock의
+    # 제외 목록) — 등재가 실제로 덮는 것은 **ADR-0014 확정값 표 두 줄뿐**이다.
+    # 초안 주석이 「requirements.md도 같은 수치를 적으니 등록하지 않으면 못 잡는다」고
+    # 적었으나 **등록해도 못 잡는다**(PR #74 리뷰 major).
+    # ⚠️ 패턴이 `|`를 요구하므로 **표 행만** 걸린다 — 골든 산문(파이프 없음)은
+    # 대조 대상이 아니다. 「착지음의 가청 거리 | 발소리와 같다」처럼 값이 숫자가
+    # 아닌 행도 자연히 빠진다.
+    ("AUDIO.AUDIBLE_RANGE_M", "발소리·착지음 가청 거리",
+     [r"가청 거리[^|\n]*\|\s*(\d+(?:\.\d+)?)\s*m"]),
+    ("AUDIO.FOOTSTEP_STRIDE_M", "발소리 보폭",
+     [r"보폭[^|\n]*\|\s*(\d+(?:\.\d+)?)\s*m"]),
 ]
 
 
@@ -368,7 +386,8 @@ def run_selftest() -> int:
     failed: list[str] = []
     values = {"WORLD.SAFE_ZONE_RADIUS_M": 4.0, "WORLD.SIZE_M": 60.0,
               "MOVEMENT.SPEED": 6.0, "MOVEMENT.JUMP_HEIGHT": 1.0,
-              "FALL_DAMAGE.SAFE_HEIGHT_M": 3.0}
+              "FALL_DAMAGE.SAFE_HEIGHT_M": 3.0,
+              "AUDIO.AUDIBLE_RANGE_M": 15.0, "AUDIO.FOOTSTEP_STRIDE_M": 2.0}
 
     def scan(text: str) -> list[str]:
         hits = []
