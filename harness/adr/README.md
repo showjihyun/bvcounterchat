@@ -15,7 +15,7 @@
 | [ADR-0005](0005-hit-registration.md) | 히트 판정 | 서버 hitscan + 랙보상 되감기 상한 200ms, 킬 이벤트 `headshot` 플래그 | 승인 |
 | [ADR-0006](0006-identity-and-persistence.md) | 신원·영속성 | 닉네임(표시용) + 익명 UUID(통계 키) + Redis 세션 + SQLite 통계 | 승인 |
 | [ADR-0007](0007-map-asset-pipeline.md) | 맵 에셋 파이프라인 | 60×60m 오리지널 맵(색조만 Dust2류), glTF, 충돌/시각 메시 분리, 스프레이 아틀라스(AI 생성) | 승인 |
-| [ADR-0008](0008-test-strategy.md) | 테스트 전략 | TDD, Vitest, 순수 tick 함수 결정론, 렌더링 비단위테스트 | 승인 |
+| [ADR-0008](0008-test-strategy.md) | 테스트 전략 | TDD, Vitest, 순수 tick 함수 결정론, 렌더링 비단위테스트. **2026-08-09 개정** — 하네스 게이트 테스트는 pytest·`tests/gates/`(원장 28g, 검증 격리) | 승인 |
 | [ADR-0009](0009-deployment.md) | 배포 | Docker(서버 이미지) + Nginx(HTTP/WS, TLS 불요) + Redis, 멀티 컨테이너 단일 호스트 | 승인 |
 | [ADR-0010](0010-project-layout.md) | 프로젝트 레이아웃 | 단일 package.json + `src/{client,server,shared}`, `@shared/*` 별칭 | 승인 |
 | [ADR-0011](0011-selective-red.md) | Red-first 적용 범위 | `src/shared`·서버 판정 로직·결함 재현만 Red-first, 그 외는 test-after(coder 테스트는 순증만) | 승인 |

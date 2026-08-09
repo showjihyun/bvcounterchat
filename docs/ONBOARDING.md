@@ -38,13 +38,20 @@
 git clone https://github.com/showjihyun/bvcounterchat.git
 cd bvcounterchat
 npm ci
-npm run check      # 이게 통과하면 준비 끝
+pip install pytest   # 하네스 게이트 테스트용 (ADR-0008 결정 3 예외, 원장 28g)
+npm run check        # 이게 통과하면 준비 끝
 ```
+
+⚠️ **`pip install pytest`가 왜 필요한가**: `npm run check`가 하네스 게이트의
+독립 검증 층(`tests/gates/`, pytest)을 함께 돌린다. 게이트의 `--selftest`는
+**구현자가 쓰는 것**이라 자기 채점이 되므로, 독립 세션이 쓰는 층을 따로 뒀다
+(CLAUDE.md 검증 격리). 제품 코드(`src/`)는 여전히 Vitest 하나다.
 
 `npm run check`는 이 순서로 돈다:
 
 ```
-스펙 동결 게이트 → lint → typecheck → test
+게이트들(스펙 동결·원장 표·스펙 미러·골든 역참조 …) → 게이트 pytest
+  → lint → typecheck → test
 ```
 
 실행해 볼 것:

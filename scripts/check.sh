@@ -101,12 +101,26 @@ python .claude/hooks/gate_golden_backref.py --check
 # 구현자(coder)가 쓰고, 이 pytest는 test-writer가 독립적으로 쓴다(검증 격리,
 # CLAUDE.md 최상위 규칙 — 작업한 세션이 자기 산출물의 합격 여부를 스스로
 # 판정하지 않는다). `PYTHONUTF8=1`이 필요한 이유: 이 스위트의 CLI 계약
-# 테스트가 `subprocess.run(gate, ..., text=True)`로 게이트 프로세스를 띄우는데,
-# 인코딩을 지정하지 않으면 파이썬이 **부모(pytest) 프로세스의 로케일**
-# (한국어 Windows 기본값 cp949)로 자식의 UTF-8 출력(한글·em-dash 포함)을
-# 디코드하려다 `UnicodeDecodeError`가 난다(실측). 이 환경변수가 부모 파이썬
-# 프로세스 자체를 UTF-8 모드로 돌려 그 디코드 인코딩을 자식의 실제 출력
-# 인코딩과 맞춘다.
+# ⚠️ pytest는 `npm ci`가 설치하지 않는다 — 파이썬 서드파티 의존이다.
+# fresh clone에서 이 줄이 조용히 건너뛰어지면 게이트 검증 층이 통째로
+# 빠진 채 초록이 나온다(「고장 난 센서는 없는 센서보다 나쁘다」). 그래서
+# 없으면 **시끄럽게 죽인다**.
+if ! python -c "import pytest" >/dev/null 2>&1; then
+  echo "  ✗ pytest가 없다 — 하네스 게이트 검증 층(tests/gates/)을 돌릴 수 없다." >&2
+  echo "    조치: pip install pytest   (docs/ONBOARDING.md 2절 · ADR-0008 결정 3 예외)" >&2
+  exit 1
+fi
+
+# `PYTHONUTF8=1`이 필요한 이유(실측): 테스트가 `subprocess.run(gate, ...)`로
+# 게이트 프로세스를 띄우는데, 한국어 Windows에서 부모(pytest) 프로세스의
+# 로케일이 cp949라 자식의 UTF-8 출력(한글·em-dash)을 디코드하다
+# `UnicodeDecodeError`가 났다.
+#
+# ⚠️ **현재 테스트는 `encoding="utf-8"`을 직접 넘기므로 이 변수 없이도 통과한다**
+# (PR #71 리뷰 major 2 — 위 서술이 최종 코드와 어긋났다). 그래도 남겨 두는
+# 이유는 **게이트 자신의 stdout 인코딩**을 UTF-8로 고정해, 새 테스트가
+# `encoding=`을 빠뜨려도 같은 함정에 빠지지 않게 하는 두 번째 그물이기
+# 때문이다. Linux CI는 로케일이 UTF-8이라 애초에 무관하다.
 PYTHONUTF8=1 python -m pytest tests/gates/ -q
 
 # 트리거 발화 검출기 — **경고만 낸다(항상 exit 0)**. ADR-0012 조건 1이 이월 행에
