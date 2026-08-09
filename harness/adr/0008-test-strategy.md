@@ -52,6 +52,12 @@ TDD(Red→Green→Refactor)가 이 하네스의 규칙이다. 채팅 앱(bvwebch
    ⚠️ **이 예외는 하네스 도구에만 적용된다** — `src/`의 제품 코드는
    여전히 Vitest 하나다. 러너가 둘로 갈리는 대가(온보딩 단계 증가,
    실행 경로 이원화)를 제품 코드까지 지불하지 않는다.
+
+   **결정 4(Red 증거)의 적용**: 하네스 도구 테스트의 Red 증거는
+   `vitest run` 대신 **`pytest tests/gates/`** 출력을 첨부한다. `tsc
+   --noEmit`은 파이썬 대상에 해당하지 않으므로 그 자리는 비운다 —
+   대신 **임포트 실패(`ModuleNotFoundError`)가 그린필드 Red의 증거**다
+   (TS의 TS2307/TS2305와 같은 성격).
 4. **Red 증거**: 테스트 커밋이 구현 커밋보다 선행하고 PR에 Red 실행
    출력(`vitest run` + `tsc --noEmit`)을 첨부한다. tsc 오류가 아직 만들지
    않은 src/ 모듈 임포트(TS2307/TS2305)에 국한되면 정당한 Red다(그린필드
