@@ -25,6 +25,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # 골든 역참조 게이트(원장 28g)의 pytest 스위트(`tests/gates/`)가 이
+      # 저장소 최초의 Python 테스트 인프라다 — `setup-python`은 인터프리터만
+      # 설치하고 pytest는 별도 설치가 필요하다.
+      - run: pip install pytest
+
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -41,6 +46,7 @@ jobs:
           python .claude/hooks/gate_map_asset_provenance.py --selftest
           python .claude/hooks/gate_ledger_table.py --selftest
           python .claude/hooks/gate_spec_mirror.py --selftest
+          python .claude/hooks/gate_golden_backref.py --selftest
           python .claude/hooks/gate_trigger_due.py --selftest
 
       # 이월 행의 착수 트리거가 왔는지 알린다 — **경고만, 머지를 막지 않는다**.

@@ -83,6 +83,27 @@ python .claude/hooks/gate_ledger_table.py --check
 python .claude/hooks/gate_spec_mirror.py --selftest
 python .claude/hooks/gate_spec_mirror.py --check
 
+# 골든 역참조 게이트 — status: done인 골든의 verify가 실재하고(A-①, 하드
+# 실패) 자기 GA-ID를 본문에 포함하는지(A-②, 경고만) 확인한다(원장 28e·28g).
+# GA-52의 verify가 존재하지 않는 파일을 가리켰는데도 CI가 계속 초록이었던
+# 사례가 있다 — 의도적 감사가 아니라 다음 라운드 후보를 조사하다 우연히
+# 발견됐다. "처리했다는 보고가 검증 없이 나간다"는 같은 계열의 드리프트에
+# 사람 주의력이 다섯 번째로 졌다(원장 28e).
+python .claude/hooks/gate_golden_backref.py --selftest
+python .claude/hooks/gate_golden_backref.py --check
+
+# 이 저장소 최초의 Python pytest 스위트(`tests/gates/`) — 위 --selftest는
+# 구현자(coder)가 쓰고, 이 pytest는 test-writer가 독립적으로 쓴다(검증 격리,
+# CLAUDE.md 최상위 규칙 — 작업한 세션이 자기 산출물의 합격 여부를 스스로
+# 판정하지 않는다). `PYTHONUTF8=1`이 필요한 이유: 이 스위트의 CLI 계약
+# 테스트가 `subprocess.run(gate, ..., text=True)`로 게이트 프로세스를 띄우는데,
+# 인코딩을 지정하지 않으면 파이썬이 **부모(pytest) 프로세스의 로케일**
+# (한국어 Windows 기본값 cp949)로 자식의 UTF-8 출력(한글·em-dash 포함)을
+# 디코드하려다 `UnicodeDecodeError`가 난다(실측). 이 환경변수가 부모 파이썬
+# 프로세스 자체를 UTF-8 모드로 돌려 그 디코드 인코딩을 자식의 실제 출력
+# 인코딩과 맞춘다.
+PYTHONUTF8=1 python -m pytest tests/gates/ -q
+
 # 트리거 발화 검출기 — **경고만 낸다(항상 exit 0)**. ADR-0012 조건 1이 이월 행에
 # 착수 트리거를 요구하지만 그것을 발화시키는 것이 사람의 기억뿐이라, 이 저장소에서
 # 트리거가 **세 번** 조용히 미발화했다(원장 26af·26x·26ae/26ak). 변경 경로와 이어진
