@@ -21,7 +21,9 @@
  * 상단 주석과 `_workspace/RQ-63/01_test-writer_red.md` §2·§3을 참고.
  */
 
+import { AUDIO, PLAYER } from '@shared/constants'
 import type { MoveInput } from '@shared/sim/movement'
+import { stepFootstepAccumulator } from '@shared/sim/footsteps'
 
 export interface InterpolationPosition {
   x: number
@@ -36,6 +38,21 @@ export interface RemoteSnapshot extends InterpolationPosition {
    * 옵셔널 — 생략하면 `'run'`(기존 스냅샷 리터럴 전부와의 하위 호환,
    * 순증 규칙). **위치와 달리 보간하지 않는다** — `getMode`(아래) 참고. */
   mode?: MoveInput['mode']
+  /** RQ-72 2/2(GA-83) — 이 스냅샷 시점의 서버 확정 접지 여부
+   * (`GameState.grounded`와 동일 의미). 옵셔널 — 생략하면 `true`(기존
+   * 스냅샷 리터럴 전부와의 하위 호환, `mode`와 동일 관례). 발소리 누적
+   * eligible 판정(`getFootstepCount`)의 입력이자, `getGrounded`(아래)로도
+   * 조회할 수 있다. */
+  grounded?: boolean
+  /** RQ-72 2/2(GA-83) — 이 스냅샷 시점의 서버 확정 체력(`GameState.hp`와
+   * 동일 의미). 옵셔널 — 생략하면 `PLAYER.MAX_HP`(`mode`·`grounded`와
+   * 동일 관례). 오직 위치 불연속(리스폰) 검출의 내부 입력이다 — 이
+   * 라운드에는 hp 자체를 렌더 시각으로 조회하는 별도 접근자가 없다
+   * (소비자 없음, YAGNI). 직전 스냅샷의 hp가 정확히 0이고 이번 스냅샷의
+   * hp가 정확히 `PLAYER.MAX_HP`면 그 쌍은 리스폰으로 간주해 발소리 누적을
+   * 0으로 리셋한다(`GameRoom.ts`의 `respawnPlayer`가 같은 틱에 좌표·hp를
+   * 함께 대입하므로 좌표 점프가 이동으로 오검출되지 않는다). */
+  hp?: number
 }
 
 export interface RemoteEntityInterpolator {
@@ -91,11 +108,104 @@ export interface RemoteEntityInterpolator {
    * 함수, 배선은 면제"의 반대 축 방어).
    */
   getMode(sessionId: string, renderTime: number): MoveInput['mode'] | undefined
+
+  /**
+   * RQ-72 2/2(GA-83) — 주어진 렌더 시각에서의 접지 여부. `getMode`(GA-75)와
+   * 완전히 동일한 계단 함수 조회 패턴 — 렌더 시각을 감싸는 스냅샷 쌍
+   * `(from, to)`을 찾으면 `from.grounded`를 그대로 반환한다(가중 평균 없음).
+   * 경계 정책도 위치·자세와 동일(스냅샷 1개뿐이면 그 값, 최신보다 앞서면
+   * 최신 값, 가장 오래된 스냅샷보다도 이전이면 그 값 — 모두 "고정").
+   * 세션을 모르면(스냅샷을 한 번도 받지 못함) `undefined` — `getPosition`/
+   * `getMode`와 동일한 GA-39 계약.
+   *
+   * ⚠️ `getFootstepCount`(아래)는 이 접근자를 재사용하지 않는다 — 완전히
+   * 독립된 경로다(발소리 누적은 렌더 시각과 무관해야 하므로, 렌더 시각
+   * 기반 조회를 내부에서 부르면 그 통로로 프레임률이 다시 스며든다).
+   */
+  getGrounded(sessionId: string, renderTime: number): boolean | undefined
+
+  /**
+   * RQ-72 2/2(GA-83) — 이 세션(원격 플레이어)의 누적 발소리 총 발생 횟수
+   * (`addSnapshot` 호출 시점부터 지금까지 누적된 단조 증가값). **`renderTime`
+   * 인자를 받지 않는다** — 이것이 GA-83의 핵심 방어선이다. `getPosition`/
+   * `getMode`/`getGrounded`는 "렌더 시각을 감싸는 두 스냅샷을 그때그때
+   * 찾아" 계산하는 무상태 조회라 몇 번을 조회하든 항상 같은 값을 내지만,
+   * 발소리 누적은 유상태 계산(같은 델타를 두 번 세면 안 된다)이다 —
+   * 렌더 시각을 인자로 받지 않으면 "조회 시점의 렌더 시각"이 계산에 끼어들
+   * 통로가 시그니처 수준에서 사라진다. 계산은 오직 `addSnapshot`(서버
+   * 스냅샷 수신, 30Hz, 렌더 프레임률과 무관)에서만 일어나고, 이 접근자는
+   * 그 결과를 읽기만 한다(소진(drain)이 아니라 순수 읽기 — 여러 소비자가
+   * 동시에 읽어도 서로 간섭하지 않는다).
+   *
+   * 세션을 모르면(스냅샷을 한 번도 받지 못함) `undefined` — `getPosition`과
+   * 동일한 GA-39 계약. `selfSessionId`는 `addSnapshot` 단계에서 이미
+   * 무시되므로 자동으로 같은 결과(`undefined`)다.
+   */
+  getFootstepCount(sessionId: string): number | undefined
 }
 
 interface RemoteBuffer {
   /** `receivedAt` 오름차순 — `addSnapshot` 계약의 순서 가정을 그대로 따른다. */
   snapshots: RemoteSnapshot[]
+  /** RQ-72 2/2(GA-83) — 발소리 누적 상태. `snapshots`(보간용, 렌더 시각
+   * 조회에 쓰임)와 물리적으로 분리된 별도 상태다 — `getFootstepCount`가
+   * `renderTime`을 받지 않는 이유(위 인터페이스 docblock)와 짝을 이룬다.
+   * `addSnapshot` 호출 시점에만 전진하고, 렌더 프레임 조회는 이 상태를
+   * 절대 건드리지 않는다. */
+  footstep: {
+    /** 직전 `addSnapshot` 호출의 스냅샷(델타 계산용 "직전 상태"). 이
+     * 세션의 첫 `addSnapshot`이면 `undefined` — 비교할 직전이 없으므로
+     * 최초 스폰과 동일하게 무음 처리한다. */
+    previous: RemoteSnapshot | undefined
+    /** `stepFootstepAccumulator`가 다음 호출로 이어서 쓰는 잔여 누적
+     * 거리(m, 보폭 미달분). */
+    accumM: number
+    /** 누적 발소리 총 발생 횟수(단조 증가) — `getFootstepCount`가 그대로
+     * 반환한다. */
+    totalCount: number
+  }
+}
+
+/**
+ * RQ-72 2/2(GA-83) — 세션의 새 스냅샷 한 개를 발소리 누적 상태에 먹인다.
+ * `addSnapshot` 호출마다(서버 스냅샷 수신, 30Hz) 정확히 한 번 호출된다 —
+ * 렌더 프레임(`getPosition`/`getGrounded` 등)과는 완전히 무관한 경로다.
+ *
+ * 판정 순서(전문은 `RemoteEntityInterpolator.getFootstepCount` docblock):
+ * 1. 직전 스냅샷이 없으면(첫 호출) 무음 — 최초 스폰과 동일 취급.
+ * 2. 직전 hp(생략 시 `PLAYER.MAX_HP`)가 정확히 0이고 이번 hp(생략 시
+ *    `PLAYER.MAX_HP`)가 정확히 `PLAYER.MAX_HP`면 리스폰 — `discontinuous`로
+ *    `stepFootstepAccumulator`에 넘겨 누적을 0으로 리셋한다.
+ * 3. 그 외 — 두 스냅샷의 수평 거리(`Math.hypot`)와 grounded·mode(둘 다
+ *    생략 시 기본값)를 `stepFootstepAccumulator`(`@shared/sim/footsteps`,
+ *    순수 판정 로직 자체는 `sim-footsteps.test.ts`가 검증)에 먹여 누적을
+ *    전진시킨다. `strideM`은 `AUDIO.FOOTSTEP_STRIDE_M`(ADR-0010 — 값 복제
+ *    금지).
+ */
+function advanceFootstepAccumulator(state: RemoteBuffer['footstep'], snapshot: RemoteSnapshot): void {
+  const previous = state.previous
+  state.previous = snapshot
+
+  if (!previous) return // 첫 addSnapshot — 최초 스폰과 동일 취급, 무음.
+
+  const previousHp = previous.hp ?? PLAYER.MAX_HP
+  const currentHp = snapshot.hp ?? PLAYER.MAX_HP
+  const discontinuous = previousHp === 0 && currentHp === PLAYER.MAX_HP
+
+  const result = stepFootstepAccumulator(
+    state.accumM,
+    {
+      wasGrounded: previous.grounded ?? true,
+      isGrounded: snapshot.grounded ?? true,
+      mode: snapshot.mode ?? 'run',
+      horizontalDeltaM: Math.hypot(snapshot.x - previous.x, snapshot.z - previous.z),
+      discontinuous,
+    },
+    AUDIO.FOOTSTEP_STRIDE_M,
+  )
+
+  state.accumM = result.accumM
+  state.totalCount += result.footstepCount
 }
 
 /**
@@ -237,6 +347,40 @@ function computeMode(buffer: RemoteBuffer, targetTime: number): MoveInput['mode'
   return newest.mode ?? 'run'
 }
 
+/**
+ * RQ-72 2/2(GA-83) — `computeMode`와 완전히 동일한 계단 함수 조회 패턴을
+ * `grounded` 필드에 적용한다(가중 평균 없음, 경계 정책 동일). 별도 함수로
+ * 둔 이유도 `computeMode`와 같다 — 위치용 가중 평균 경로에 접지 여부가
+ * 물리적으로 섞일 자리를 없앤다.
+ */
+function computeGrounded(buffer: RemoteBuffer, targetTime: number): boolean {
+  const { snapshots } = buffer
+
+  if (snapshots.length === 1) {
+    return snapshots[0]!.grounded ?? true
+  }
+
+  const oldest = snapshots[0]!
+  const newest = snapshots[snapshots.length - 1]!
+
+  if (targetTime <= oldest.receivedAt) {
+    return oldest.grounded ?? true
+  }
+  if (targetTime >= newest.receivedAt) {
+    return newest.grounded ?? true
+  }
+
+  for (let i = snapshots.length - 2; i >= 0; i -= 1) {
+    const from = snapshots[i]!
+    if (targetTime < from.receivedAt) continue
+    return from.grounded ?? true
+  }
+
+  // 위 경계 검사로 targetTime이 (oldest, newest) 안임이 보장되므로 도달
+  // 불가 — TS 문맥 안전을 위한 방어적 폴백일 뿐이다.
+  return newest.grounded ?? true
+}
+
 export function createRemoteEntityInterpolator(
   selfSessionId: string,
   delayMs: number,
@@ -249,11 +393,13 @@ export function createRemoteEntityInterpolator(
 
       let buffer = buffers.get(sessionId)
       if (!buffer) {
-        buffer = { snapshots: [] }
+        buffer = { snapshots: [], footstep: { previous: undefined, accumM: 0, totalCount: 0 } }
         buffers.set(sessionId, buffer)
       }
       buffer.snapshots.push(snapshot)
       pruneBuffer(buffer, delayMs)
+
+      advanceFootstepAccumulator(buffer.footstep, snapshot)
     },
 
     getPosition(sessionId, renderTime) {
@@ -281,6 +427,22 @@ export function createRemoteEntityInterpolator(
       if (!buffer || buffer.snapshots.length === 0) return undefined
 
       return computeMode(buffer, renderTime - delayMs)
+    },
+
+    getGrounded(sessionId, renderTime) {
+      if (sessionId === selfSessionId) return undefined // GA-39
+      const buffer = buffers.get(sessionId)
+      if (!buffer || buffer.snapshots.length === 0) return undefined
+
+      return computeGrounded(buffer, renderTime - delayMs)
+    },
+
+    getFootstepCount(sessionId) {
+      if (sessionId === selfSessionId) return undefined // GA-39
+      const buffer = buffers.get(sessionId)
+      if (!buffer) return undefined
+
+      return buffer.footstep.totalCount
     },
   }
 }
