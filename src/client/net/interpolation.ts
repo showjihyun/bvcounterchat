@@ -133,7 +133,7 @@ export interface RemoteEntityInterpolator {
    * 발소리 누적은 유상태 계산(같은 델타를 두 번 세면 안 된다)이다 —
    * 렌더 시각을 인자로 받지 않으면 "조회 시점의 렌더 시각"이 계산에 끼어들
    * 통로가 시그니처 수준에서 사라진다. 계산은 오직 `addSnapshot`(서버
-   * 스냅샷 수신, 30Hz, 렌더 프레임률과 무관)에서만 일어나고, 이 접근자는
+   * 스냅샷 수신, 렌더 프레임률과 무관)에서만 일어나고, 이 접근자는
    * 그 결과를 읽기만 한다(소진(drain)이 아니라 순수 읽기 — 여러 소비자가
    * 동시에 읽어도 서로 간섭하지 않는다).
    *
@@ -168,7 +168,7 @@ interface RemoteBuffer {
 
 /**
  * RQ-72 2/2(GA-83) — 세션의 새 스냅샷 한 개를 발소리 누적 상태에 먹인다.
- * `addSnapshot` 호출마다(서버 스냅샷 수신, 30Hz) 정확히 한 번 호출된다 —
+ * `addSnapshot` 호출마다(서버 스냅샷 수신) 정확히 한 번 호출된다 —
  * 렌더 프레임(`getPosition`/`getGrounded` 등)과는 완전히 무관한 경로다.
  *
  * 판정 순서(전문은 `RemoteEntityInterpolator.getFootstepCount` docblock):
@@ -227,7 +227,9 @@ const PRUNE_WINDOW_MULTIPLIER = 10
 /**
  * 세션 버퍼에서 최신 수신 시각 기준 `delayMs * PRUNE_WINDOW_MULTIPLIER`보다
  * 오래된 스냅샷을 버린다. `addSnapshot` 호출 직후에만 실행한다 — 스냅샷
- * 수신(약 30Hz)마다 한 번이면 충분하고, `useFrame`(60fps × 원격 최대 9명)
+ * 수신(⚠️ **약 20Hz** — `GameRoom`이 `patchRate`를 설정하지 않아 Colyseus
+ * 기본값 `1e3/20`이 쓰인다. 서버 **틱**은 30Hz지만 상태 패치는 그보다
+ * 성기다. 원장 **24bu** 참고)마다 한 번이면 충분하고, `useFrame`(60fps × 원격 최대 9명)
  * 경로에는 없다. `snapshots`는 `receivedAt` 오름차순이라 맨 앞부터 지우면
  * 되고, 항상 최소 1개는 남긴다 — `computePosition`의 "스냅샷 1개뿐" 고정
  * 정책이 빈 배열을 절대 보지 않아야 한다.

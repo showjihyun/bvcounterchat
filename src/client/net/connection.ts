@@ -133,6 +133,21 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
  * (`GameRoom.ts`)의 서버 쪽 방어적 파싱과 동일한 정신, 여기는 신뢰하는
  * 서버 스키마 값을 읽을 뿐이지만 필드가 아직 없는 과도기(구 서버·첫 패치
  * 전)를 안전하게 다루기 위해 같은 가드를 쓴다. */
+/** RQ-72(원장 24bs) — 원격 발소리 누적의 두 입력. `readMode`와 같은 가드
+ * 정신이다(필드가 아직 없는 과도기를 안전하게 다룬다). ⚠️ **싣지 않으면
+ * 조용히 그럴듯하게 틀린다**: `grounded`가 빠지면 `RemoteSnapshot`의 기본값
+ * `true`로 폴백돼 **공중 변위가 누적되고**(GA-85 위반), `hp`가 빠지면 항상
+ * `MAX_HP`라 `0 → MAX_HP` 전이가 영원히 안 일어나 **리스폰 리셋이 무동작**
+ * 이다(순간이동이 발소리로 샌다). 크래시가 아니라 그럴듯한 오동작이라
+ * 배선 누락이 눈에 안 띈다 — PR #75 리뷰 major. */
+function readGrounded(value: { grounded?: unknown }): boolean | undefined {
+  return typeof value.grounded === 'boolean' ? value.grounded : undefined
+}
+
+function readHp(value: { hp?: unknown }): number | undefined {
+  return typeof value.hp === 'number' && Number.isFinite(value.hp) ? value.hp : undefined
+}
+
 function readMode(value: { mode?: unknown }): MoveInput['mode'] | undefined {
   return value.mode === 'run' || value.mode === 'walk' || value.mode === 'crouch' ? value.mode : undefined
 }
@@ -147,17 +162,23 @@ function readMode(value: { mode?: unknown }): MoveInput['mode'] | undefined {
 function forEachRemotePlayer(
   room: Room,
   selfSessionId: string,
-  cb: (sessionId: string, position: InterpolationPosition, mode: MoveInput['mode'] | undefined) => void,
+  cb: (
+    sessionId: string,
+    position: InterpolationPosition,
+    mode: MoveInput['mode'] | undefined,
+    grounded: boolean | undefined,
+    hp: number | undefined,
+  ) => void,
 ): void {
   const state = room.state as {
     players?: {
-      forEach?: (cb2: (value: { x?: unknown; y?: unknown; z?: unknown; mode?: unknown }, key: string) => void) => void
+      forEach?: (cb2: (value: { x?: unknown; y?: unknown; z?: unknown; mode?: unknown; grounded?: unknown; hp?: unknown }, key: string) => void) => void
     }
   } | null
   state?.players?.forEach?.((value, sessionId) => {
     if (sessionId === selfSessionId) return
     if (typeof value?.x === 'number' && typeof value?.y === 'number' && typeof value?.z === 'number') {
-      cb(sessionId, { x: value.x, y: value.y, z: value.z }, readMode(value))
+      cb(sessionId, { x: value.x, y: value.y, z: value.z }, readMode(value), readGrounded(value), readHp(value))
     }
   })
 }
@@ -388,12 +409,21 @@ export async function connectToGame(
     // 수신 시각으로 보간 버퍼에 먹인다 — 패치 안의 모든 플레이어가 같은
     // 순간의 상태이므로 시각을 한 번만 실측해 공유한다.
     const receivedAt = now()
-    forEachRemotePlayer(room, room.sessionId, (sessionId, position, mode) => {
+    forEachRemotePlayer(room, room.sessionId, (sessionId, position, mode, grounded, hp) => {
       // `exactOptionalPropertyTypes`(tsconfig) — `mode: undefined`를
       // 명시적으로 싣지 않는다(gameStore.ts `applyServerState`와 동일한
       // 근거). 필드 자체가 없으면 `RemoteSnapshot.mode` 계약대로 `'run'`
-      // 폴백이 소비 시점(`computeMode`)에 적용된다.
-      interpolator.addSnapshot(sessionId, { ...position, receivedAt, ...(mode !== undefined ? { mode } : {}) })
+      // 폴백이 소비 시점(`computeMode`)에 적용된다. `grounded`·`hp`(RQ-72)도
+      // 같은 형태 — ⚠️ 다만 그 둘은 **폴백이 조용히 그럴듯하다**(항상 접지·
+      // 항상 만피)라서 싣지 않으면 공중 변위가 누적되고 리스폰 리셋이
+      // 무동작이 된다. `readGrounded`/`readHp` docblock 참고(원장 24bs).
+      interpolator.addSnapshot(sessionId, {
+        ...position,
+        receivedAt,
+        ...(mode !== undefined ? { mode } : {}),
+        ...(grounded !== undefined ? { grounded } : {}),
+        ...(hp !== undefined ? { hp } : {}),
+      })
     })
   }
 
