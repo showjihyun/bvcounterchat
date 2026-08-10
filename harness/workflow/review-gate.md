@@ -65,6 +65,24 @@
 
 - **APPROVE** → 사용자에게 보고서 요약과 함께 "머지 가능"을 보고.
   머지 실행은 사용자 확인 후 (`gh pr merge`)
+
+  ⚠️ **`--auto`를 쓰지 않는다.** `main`에 **브랜치 보호가 없어**(실측 2026-08-10:
+  `gh api repos/OWNER/REPO/branches/main/protection` → **404 Branch not protected**)
+  필수 상태 검사가 하나도 등록돼 있지 않고, `gh pr merge --auto`는 mergeable만
+  보고 **CI 완료를 기다리지 않고 즉시 머지한다**. PR #76에서 실제로 발생했다 —
+  ADR-0012의 「CI 선행」이 낱말 하나로 빠졌다(원장 28af). 머지 직전 순서를
+  **명령으로** 고정한다:
+
+  ```bash
+  gh pr checks <PR번호>                      # run id와 headSha를 얻는다
+  gh run view <run-id> --json status,conclusion,headSha
+  # status=completed · conclusion=success · headSha가 머지할 커밋과 일치할 때만
+  gh pr merge <PR번호> --squash --delete-branch
+  ```
+
+  ⚠️ **`gh pr checks --watch`로 갈음하지 않는다** — 새 커밋을 push한 직후에는
+  **직전 run이 끝나는 순간 종료**해서 새 run을 못 본 채 초록으로 읽힌다
+  (PR #76에서 실제로 그렇게 빠져나왔다). **headSha 대조가 유일한 그물이다.**
 - **REQUEST_CHANGES** → blocker 목록을 사용자에게 보고.
   - 구현 수정이 필요하면 `tdd.md`(coder 재호출)로 라우팅
   - 스펙·ADR 문제면 해당 문서 개정이 먼저 (같은 PR)
