@@ -20,7 +20,10 @@ CI(`.github/workflows/ci.yml`)와 함께 이중 게이트를 구성한다 — CI
 1. **리뷰 대상 결정**: 현재 브랜치 vs `origin/main`. 사용자가 PR 번호를
    지정하면 그 PR의 head 브랜치.
 2. **전제 확인**:
-   - **CI 통과 확인**(ADR-0012 — CI 선행): `gh pr checks <PR번호>`.
+   - **CI 통과 확인**(ADR-0012 — CI 선행): **Phase 3 「머지 절차」의
+     `headRefOid` 대조 형태를 쓴다.** 맨 `gh pr checks <PR번호>`로 갈음하지
+     않는다 — 출력에 headSha가 없어 **어느 커밋의 결과인지 알 수 없고**,
+     push 직후에는 이미 끝나 있던 **옛 run을 보고 초록으로 읽힌다**.
      실패나 진행 중이면 **리뷰를 시작하지 않고 중단한다** — CI가 넣는
      반례를 사람 게이트가 먼저 보면 그 리뷰는 버려진다(RQ-18 실측 2회)
    - 미커밋 변경이 있으면 먼저 커밋을 요청한다 (리뷰 대상이 흔들리면 안 된다)
@@ -72,8 +75,31 @@ git log origin/main..HEAD --format=%s%n%b   # 커밋 메시지에서 RQ-ID/ADR �
 
 | 판정 | 처리 |
 |---|---|
-| **APPROVE** | 보고서 요약과 함께 "머지 가능"을 사용자에게 보고. **머지 실행은 사용자 확인 후** (`gh pr merge`). major/minor는 아래 ADR-0012 분류에 따라 처리한다 |
+| **APPROVE** | 보고서 요약과 함께 "머지 가능"을 사용자에게 보고. **머지 실행은 사용자 확인 후** (아래 머지 절차). major/minor는 아래 ADR-0012 분류에 따라 처리한다 |
 | **REQUEST_CHANGES** | blocker 목록을 사용자에게 보고. 머지하지 않는다 |
+
+### 머지 절차 — headSha 대조를 기계가 한다
+
+⚠️ **`gh pr merge --auto`를 쓰지 않는다.** PR #76이 그렇게 **CI 완료 35초 전에**
+머지됐다. **근거·실측의 정본은 원장 28af다** — 여기 복제하지 않는다(그 근거는
+**가변 저장소 설정**에 걸려 있어, 복제하면 설정이 바뀌는 날 여러 곳이 한꺼번에
+낡는다. 이 금지를 만든 사고가 정확히 그 형태였다). ⚠️ **`allow_auto_merge`를
+켜게 되면 이 금지의 근거가 바뀌므로 28af를 먼저 갱신하라.**
+
+⚠️ **`gh pr checks --watch`로 갈음하지 않는다.** 새 커밋을 push한 직후에는
+**이미 끝나 있던 옛 run**을 보고 즉시 종료한다. `gh pr checks`도 같은 스테일에 노출되고 **출력에
+headSha가 없다** — 그래서 아래 형태로 **비교를 기계에게 맡긴다**:
+
+```bash
+SHA=$(gh pr view <PR번호> --json headRefOid -q .headRefOid)
+gh run list --branch <브랜치> --json databaseId,headSha,status,conclusion \
+  -q ".[] | select(.headSha==\"$SHA\")"
+# 위가 status=completed · conclusion=success 인 항목을 낼 때만 ↓
+gh pr merge <PR번호> --squash --delete-branch
+```
+
+아직 `in_progress`면 그 run이 끝날 때까지 기다린 뒤 **같은 명령을 다시 돌린다**
+(`gh run watch <databaseId>` 후 재확인). 새 커밋을 push했다면 `SHA`부터 다시 얻는다.
 
 REQUEST_CHANGES 후 라우팅:
 - 구현 수정이 필요하면 → `tdd-workflow` 스킬(coder 재호출)
@@ -125,11 +151,17 @@ REQUEST_CHANGES 후 라우팅:
 리뷰가 **전부 통과시킨** 통합 테스트 타이밍 결함이었다.
 
 reviewer APPROVE는 **필요조건이지 충분조건이 아니다.** 머지 전에 CI(`gate` 잡)도
-통과해야 한다. 둘 다 통과했는지 확인한다:
+통과해야 한다. 둘 다 통과했는지 확인한다 — **확인 명령은 Phase 3 「머지 절차」의
+`headRefOid` 대조 형태를 쓴다.** 맨 `gh pr checks <PR번호>`로 갈음하지 않는다:
+그 출력에는 **headSha가 없어** 어느 커밋의 결과인지 알 수 없고, push 직후에는
+**옛 run을 보고 초록으로 읽힌다**(PR #76 실측 — 원장 28af).
 
-```bash
-gh pr checks <PR번호>
-```
+⚠️ **2026-08-10부터 `gate`는 브랜치 보호의 필수 검사다**(`enforce_admins` 켬 ·
+`strict` **끔** — 「`gate` 초록」이 「현재 `main` 기준 초록」을 뜻하지는 않는다.
+설정 실측값의 정본은 원장 **28af**다).
+즉 CI 미통과 머지는 이제 GitHub이 막는다. **그래도 이 확인을 생략하지 않는다** —
+보호는 3주간 없었고 그 사실을 아무도 몰랐다. 보호 설정은 언제든 바뀔 수 있고,
+`reviewer APPROVE`는 **여전히 기계가 강제하지 않는다**.
 
 CI 실패 상태에서 reviewer가 APPROVE했다면 그건 reviewer가 결정론적 검사를
 대신할 수 없다는 뜻이지 CI를 무시해도 된다는 뜻이 아니다.
