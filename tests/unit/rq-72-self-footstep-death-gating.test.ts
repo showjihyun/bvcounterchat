@@ -35,7 +35,7 @@ import { createSelfFootstepTracker, type SelfFootstepTrackerTickInput } from '@c
  * 별개다 — 임의로 GA-ID를 만들지 않고 F1로만 추적한다.
  *
  * **레벨**: `createSelfFootstepTracker`는 DOM·네트워크·실시간 API에
- * 의존하지 않는 순수 함수 팩토리라 단위 테스트 대상이다(ADR-0008 §6 면제는
+ * 의존하지 않는 순수 함수 팩토리라 단위 테스트 대상이다(ADR-0014 결정 5 면제는
  * 소비자인 `PlayerControls.tsx` 배선에만 적용된다 — 이 모듈 자체는 면제
  * 대상이 아니다, F1 원인 분석과 동일 논거).
  *

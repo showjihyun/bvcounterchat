@@ -1,5 +1,5 @@
 import { createRng } from '@shared/sim/rng'
-import { AUDIO } from '@shared/constants'
+import { AUDIO_TUNING } from '@shared/config/audio-tuning'
 
 /**
  * RQ-72 2/2-b — 발소리 파형 절차적 합성(ADR-0014 결정 2: 노이즈 소스 +
@@ -18,7 +18,7 @@ import { AUDIO } from '@shared/constants'
  * 결정론이 검증된 시드 PRNG가 있는데 새 PRNG를 발명하면 로직 복제다).
  */
 export function synthesizeFootstepBurst(sampleRateHz: number, seed: number): Float32Array {
-  const sampleCount = Math.round((sampleRateHz * AUDIO.FOOTSTEP_DURATION_MS) / 1000)
+  const sampleCount = Math.round((sampleRateHz * AUDIO_TUNING.FOOTSTEP_DURATION_MS) / 1000)
   const samples = new Float32Array(sampleCount)
   const rng = createRng(seed)
 

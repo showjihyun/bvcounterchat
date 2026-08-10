@@ -2,7 +2,7 @@ import { isFootstepAudible } from '@shared/sim/footsteps'
 
 /**
  * RQ-72 2/2-b — 발소리 재생 스케줄러(원장 24bv "반드시 잠글 것 3"). 순수
- * 함수 — `AudioContext`를 참조하지 않는다(ADR-0008 §6 면제는 재생 배선
+ * 함수 — `AudioContext`를 참조하지 않는다(ADR-0014 결정 5 면제는 재생 배선
  * 에만 적용되고, 이 결정 로직 자체는 면제 대상이 아니다).
  *
  * `@shared/sim/footsteps`의 `isFootstepAudible`(가청 판정)과

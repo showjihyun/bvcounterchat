@@ -76,7 +76,7 @@ import { createFootstepPlaybackScheduler } from '@client/audio/footstepPlayback'
  * ## 스코프 밖
  *
  * - `AudioContext`로 실제 소리를 내는 것, `getFootstepCount`를 실제로
- *   폴링하는 배선(어느 프레임에서 몇 Hz로 부르는지) — ADR-0008 §6 면제,
+ *   폴링하는 배선(어느 프레임에서 몇 Hz로 부르는지) — ADR-0014 결정 5 면제,
  *   배선 계층의 몫.
  * - `isFootstepAudible` 자체의 판정 로직 정확성 — 이미
  *   `tests/unit/sim-footsteps.test.ts`(GA-80·81)가 검증했다. 이 파일은 그

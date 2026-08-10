@@ -156,7 +156,7 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // RQ-40 M4 — 게임 레이어 출구 단일 choke point(모듈 코멘트 참고).
     const gatedActions = createChatGatedActions(() => uiStore.getState().chatFocused, connection)
 
-    // RQ-72 2/2-b(원장 24bv) — 발소리 재생 배선(ADR-0008 §6 면제, 자동
+    // RQ-72 2/2-b(원장 24bv) — 발소리 재생 배선(ADR-0014 결정 5 면제, 자동
     // 테스트 없음 — 판정 자체는 `@shared/sim/footsteps`·순수 스케줄러
     // (`footstepPlayback.ts`)가 이미 값으로 검증했다). `AudioContext`는
     // 포인터 락과 같은 클릭 제스처 안에서 연다(`footstepAudioEngine.ts`

@@ -1,7 +1,7 @@
 import { synthesizeFootstepBurst } from '@client/audio/footstepSynth'
 
 /**
- * RQ-72 2/2-b — 발소리 재생 배선(ADR-0008 §6 렌더·오디오 계층 면제 — 이
+ * RQ-72 2/2-b — 발소리 재생 배선(ADR-0014 결정 5 — 재생 배선 층 — 이
  * 파일 자체는 자동 테스트 대상이 아니다. 값 검증은 이미 순수 함수
  * (`footstepSynth.ts`의 파형·`footstepPlayback.ts`의 재생 횟수 판정)가
  * 했다. 이 파일이 하는 일은 그 둘을 실제 `AudioContext`로 소리 낼 뿐,
