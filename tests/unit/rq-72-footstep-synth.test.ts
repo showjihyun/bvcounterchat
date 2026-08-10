@@ -40,7 +40,7 @@ import { synthesizeFootstepBurst } from '@client/audio/footstepSynth'
  *   2^32 미만이 아니면 던진다 — 이 계약을 그대로 물려받는다). 노이즈 샘플은
  *   `rng.nextRange(-1, 1)` 등으로 [-1, 1) 범위에서 뽑는다.
  * - **길이**: `sampleRateHz`와 새 상수 `AUDIO_TUNING.FOOTSTEP_DURATION_MS`
- *   (`@shared/constants`, 이 라운드가 새로 추가 — ADR-0010 "매직 넘버를
+ *   (`@shared/config/audio-tuning`, 이 라운드가 새로 추가 — ADR-0010 "매직 넘버를
  *   함수 안에 감추지 않는다")로부터 `Math.round(sampleRateHz *
  *   AUDIO_TUNING.FOOTSTEP_DURATION_MS / 1000)`개의 샘플을 반환한다. **이 파일은
  *   그 상수의 정확한 값을 알 필요가 없다** — 아래 "길이는 sampleRateHz에
