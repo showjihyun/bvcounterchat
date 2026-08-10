@@ -14,9 +14,11 @@ import { createFootstepPlaybackScheduler } from '@client/audio/footstepPlayback'
  * (drain)이 아니라 단조 누적** — `interpolation.ts` docblock)는 이미 있지만,
  * 그 둘을 이어 "이번 폴링에서 몇 번 재생해야 하는가"를 계산하는 소비 계층이
  * 없었다(`getFootstepCount`의 소비자 0명, 원장 24bv). 이 모듈이 그 간극을
- * 메운다 — **순수 함수**로 둬 재생 배선(`AudioContext`)과 분리한다(ADR-0008
- * §6 면제는 재생 배선에만 적용되고, 이 결정 로직 자체는 면제 대상이 아니다
- * — 사용자 결정, 원장 24bv).
+ * 메운다 — **순수 함수**로 둬 재생 배선(`AudioContext`)과 분리한다
+ * (**ADR-0014 결정 5**의 면제는 **재생 배선 층**에만 적용되고, 이 결정 로직
+ * 자체는 면제 대상이 아니다 — 사용자 결정, 원장 24bv. ⚠️ 초안이 「ADR-0008
+ * §6」을 근거로 들었으나 §6은 **렌더링(R3F)만** 면제하고 오디오를 면제한 적이
+ * 없다 — 그 공백을 메운 절이 결정 5다).
  *
  * ## API 계약(test-writer 지정 — coder가 아래대로 구현하면 이 파일이
  * Green이 된다)
