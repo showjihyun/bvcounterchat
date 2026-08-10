@@ -8,8 +8,10 @@ import { join } from 'node:path'
 import { buildServer } from '@server/index'
 import { createGameStore, type GameStoreState } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
-import { NET } from '@shared/constants'
+import { AUDIO, MOVEMENT, NET, PLAYER } from '@shared/constants'
 import { getStats, openStatsDb, type StatsDb, type StatsRow } from '@server/persistence/statsDb'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { escapeSafeZone, getSafeZoneSeam } from '../support/safe-zone'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — netcode 레이어
@@ -1085,5 +1087,365 @@ describe('20b/RQ-81(평가 major 3): connectToGame이 uuid를 실제로 서버�
       expect(getStats(statsDb, randomUUID())).toBeUndefined()
     },
     20_000,
+  )
+})
+
+/**
+ * RQ-72 발소리 구현 2/2-b — 원장 **28ab** 배선 통합 잠금(PR #75 델타 재평가
+ * 권고 1·델타 재리뷰 major D2, `_workspace/RQ-72b/04_evaluator_delta.md`
+ * §9 Q1).
+ *
+ * **왜 이 두 describe가 필요한가**: `connection.ts`의 `addSnapshot` 호출
+ * 리터럴에서 `grounded`·`hp` 스프레드를 지우고 원복해도(MD2·MD3, 각각
+ * "생략하면 항상 접지"·"생략하면 항상 만피"라는 **그럴듯한** 기본값으로
+ * 조용히 대체된다) 기존 828 unit + 169 integration 스위트가 **전부
+ * 통과했다** — 이 배선에 자동 검출력이 0이었다. 델타 평가가 제시한 최소
+ * 재현("클라 2개 → 한쪽이 점프 **또는** 사망→리스폰 → 다른 쪽
+ * `connection.interpolator.getFootstepCount(remoteSessionId)` 단언")을
+ * 그대로 구현하되, **둘 다** 쓴다 — 각 필드가 정확히 어떤 실패 모드를
+ * 덮는지가 다르기 때문이다(아래 두 describe 각각의 "왜 이 시나리오인가"
+ * 참고, test-writer 실측 분석).
+ *
+ * **이 두 describe는 지금(production 코드 828+169 시점) GREEN이 기대값이다.**
+ * ADR-0011(선별 Red)상 클라이언트 배선은 test-after 허용 영역이고
+ * (CLAUDE.md "TDD — 선별 Red"), 이 배선 자체는 이미 구현돼 있다(원장
+ * 24bs·PR #75) — 이 라운드가 새로 만드는 결함 재현이 아니라, **미래에
+ * 이 배선이 회귀했을 때 잡는 그물**이다(선례: `20b/RQ-64/F1` describe가
+ * `connection.getRttMs()`를 단언하는 이유와 동일 — "이 배선 없으면 RQ-72는
+ * 제품에서 조용히 틀린 소리를 낸다"). 실제 검출력(변이 실험)은 이 라운드의
+ * 몫이 아니라 격리된 evaluator 세션이 확인한다(CLAUDE.md "검증 판정은
+ * 반드시 별도 에이전트 세션").
+ *
+ * ⚠️ **순증 규칙**: 이 파일의 기존 `it()`은 한 글자도 고치지 않았다 — 이
+ * 두 describe와 상단 helper 함수 추가, import 3줄 추가(`AUDIO`·
+ * `MOVEMENT`·`PLAYER`, `DEFAULT_HITBOX`, `escapeSafeZone`/`getSafeZoneSeam`)
+ * 뿐이다.
+ */
+
+/** 사격 사이 여유 — ADR-0005 rate-limit(150ms)을 명백히 초과한다
+ * (`rq-15-respawn-timer.test.ts`의 동명 상수와 동일 값·근거). */
+const BETWEEN_SHOTS_MS = 300
+/** 리스폰 관측 상한(ms) — `PLAYER.RESPAWN_MS`(3000) + 실 서버 스케줄링
+ * 지터를 넉넉히 흡수하는 여유(`rq-15-respawn-timer.test.ts`와 동일 근거). */
+const RESPAWN_OBSERVE_TIMEOUT_MS = 8_000
+/** "3초보다 눈에 띄게 이르게 리스폰되면 안 된다"는 하한(ms) —
+ * `rq-15-respawn-timer.test.ts`의 동명 상수와 동일 값·근거. */
+const MIN_RESPAWN_ELAPSED_MS = 2_500
+/** 위치·모드 선언 메시지가 서버에 반영될 시간(로컬 WS라 짧아도 충분하나
+ * 여유를 둔다) — `rq-15-respawn-timer.test.ts`의
+ * `RELEASE_PROTECTION_SETTLE_MS`와 동일 정신, 이 파일은 용도가 하나 더
+ * 넓어(위치 탈출 + mode 선언 + 안정화 확인 3곳) 이름을 일반화했다. */
+const SETTLE_MS = 300
+
+/** `connection.interpolator.getFootstepCount(sessionId)`가 `undefined`가
+ * 아니게 될 때까지(그 세션의 첫 스냅샷이 도착할 때까지) 폴링한다 — 첫
+ * 스냅샷은 계약상 항상 무음(0)이므로(`interpolation.ts` "첫 addSnapshot"
+ * 규칙) 이 값 자체가 0이어도 "관측 시작"의 신호로 유효하다. 이 파일 §RQ-64/F1의
+ * `waitForRttCondition`과 동일한 폴링 정신.
+ */
+function waitForFootstepBaseline(
+  connection: Connection,
+  sessionId: string,
+  timeoutMs: number,
+  label: string,
+): Promise<number> {
+  return withTimeout(
+    new Promise<number>((resolve) => {
+      const tryResolve = (): boolean => {
+        const count = connection.interpolator.getFootstepCount(sessionId)
+        if (count !== undefined) {
+          resolve(count)
+          return true
+        }
+        return false
+      }
+      if (tryResolve()) return
+      const interval = setInterval(() => {
+        if (tryResolve()) clearInterval(interval)
+      }, 15)
+    }),
+    timeoutMs,
+    label,
+  )
+}
+
+/** A(사수)의 눈높이에서 target의 바디 중심을 겨누는 조준 벡터.
+ * `rq-15-respawn-timer.test.ts`의 동명 헬퍼와 동일 계산(그 파일은 이
+ * 헬퍼를 export하지 않아 이 파일이 독립적으로 재선언한다 — 기존 통합
+ * 테스트 파일들의 관례, 각 파일이 자기 몫의 조준 수학을 갖는다). */
+function aimAtBody(
+  shooter: { x: number; z: number },
+  target: { x: number; z: number },
+): { dirX: number; dirY: number; dirZ: number } {
+  const bodyCenterM = (DEFAULT_HITBOX.bodyBottomM + DEFAULT_HITBOX.bodyTopM) / 2
+  const dx = target.x - shooter.x
+  const dz = target.z - shooter.z
+  const dy = bodyCenterM - DEFAULT_HITBOX.eyeHeightM
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  return { dirX: dx / magnitude, dirY: dy / magnitude, dirZ: dz / magnitude }
+}
+
+/**
+ * 원장 28ab — **grounded** 배선 잠금(MD1·MD2·MD5를 겨냥).
+ *
+ * **왜 점프 시나리오인가**: `grounded`를 생략하면 `RemoteSnapshot.grounded`가
+ * `true`로 기본 대체된다(`interpolation.ts` — "생략하면 true"). 접지
+ * 이동(달리기) 중에는 실제 값도 거의 항상 `true`이므로 그 상태만 관찰하면
+ * 기본값과 실제값이 우연히 일치해 결함이 **가려진다**. 공중 구간
+ * (`grounded===false`)이 있어야 기본값(`true`)과 실제값(`false`)이
+ * 갈라져 결함이 드러난다.
+ *
+ * **수치 근거(ADR-0014 결정 3·GA-85 — 이미 `sim-footsteps.test.ts`·
+ * `rq-72-remote-footsteps.test.ts`가 재사용한 값)**: `JUMP_V0=√40·g=20`
+ * (둘 다 `movement.ts`의 모듈 비공개 상수라 이 파일이 직접 임포트할 수
+ * 없다 — ADR-0014 §결정 3·GA-85가 이미 유도해 둔 결과값 19틱을 그대로
+ * 인용한다)이라 30Hz에서 체공은 **정확히 19틱**이고, 공중에서는
+ * `AIR_CONTROL=false`라 이함 시점의 수평 속도(`MOVEMENT.SPEED`, run이므로
+ * 감쇠 없음)가 착지까지 그대로 유지된다. 접지 이동은 가속이 없어
+ * 틱당 수평 변위가 `MOVEMENT.SPEED / NET.TICK_HZ`로 고정이다(GA-85 근거
+ * 문단과 동일 산술) — 그 값을 그대로 계산에 쓴다(하드코딩하지 않는다,
+ * ADR-0010).
+ *
+ * `grounded`가 잘못 항상 `true`로 대체되면(MD1·MD2·MD5), 이함 틱부터
+ * 이미 `wasGrounded && isGrounded && mode==='run'`이 참이 되어 공중
+ * 변위가 즉시 누적되기 시작한다 — `Math.ceil(FOOTSTEP_STRIDE_M /
+ * (SPEED/TICK_HZ))`(=10)틱만에 첫 발소리가 등록된다. 올바른 구현은 체공
+ * 19틱 내내 0을 유지한다(이함·공중·착지 틱이 전부 배제되므로). 두 값의
+ * 중간 지점(약 15틱)에서 확인하면 버그면 이미 1, 정상이면 여전히 0 —
+ * 명확히 갈린다.
+ */
+describe('RQ-72 2/2-b/원장 28ab: 원격 발소리 grounded 배선 잠금 — 공중 구간의 변위가 발소리로 새지 않는다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    "RQ-72/28ab: B가 달리며 점프(grounded=false 구간 발생) 하는 동안 A가 관측하는 B의 발소리 횟수가 체공 중에는 0을 유지하고, 착지 후 실제 접지 이동이 이어지면 정상적으로 등록된다(양성 대조군)",
+    async () => {
+      const storeA = createGameStore()
+      const connA: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'listenerJump', storeA),
+        CONNECT_TIMEOUT_MS,
+        "A: connectToGame(nickname: 'listenerJump')",
+      )
+      const storeB = createGameStore()
+      const connB: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'jumperB', storeB),
+        CONNECT_TIMEOUT_MS,
+        "B: connectToGame(nickname: 'jumperB')",
+      )
+
+      // A의 B에 대한 첫 관측(계약상 무음) — 이후 카운트 변화만 비교하면
+      // 되므로 정확한 시작값은 몰라도 되지만, 아직 이동이 없었으므로
+      // 0이어야 한다(양성 대조군의 전제).
+      const baseline = await waitForFootstepBaseline(
+        connA,
+        connB.sessionId,
+        STORE_TIMEOUT_MS,
+        'A가 B의 첫 스냅샷을 관측(발소리 기준값 확립)하길 대기',
+      )
+      expect(baseline).toBe(0)
+
+      // 단일 메시지 — dirX=1(run)과 jump=true를 동시에 보낸다. 서버
+      // `pendingInputs`는 다음 'move' 메시지가 올 때까지 이 입력을
+      // 유지하며 매 틱 적용한다(`GameRoom.ts` — jump는 소비 후 자동으로
+      // false로 되돌지만 dirX·mode는 그대로 유지된다) — 그래서 이함 이후
+      // 추가 메시지 없이도 AIR_CONTROL=false 하에 체공 내내 수평 이동이
+      // 계속되고, 착지 후에도 같은 방향으로 접지 이동이 자연히 이어진다.
+      connB.room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: true })
+
+      const GROUND_TICK_DISTANCE_M = MOVEMENT.SPEED / NET.TICK_HZ // 0.2m/틱(GA-85 산술과 동일)
+      const MUTATION_TRIGGER_TICKS = Math.ceil(AUDIO.FOOTSTEP_STRIDE_M / GROUND_TICK_DISTANCE_M) // 10틱 — grounded가 항상 true로 새면 이 시점에 이미 1회 등록된다
+      const AIR_TIME_TICKS = 19 // ADR-0014 결정 3 / GA-85 — JUMP_V0=√40, g=20, 30Hz
+      const MID_AIR_CHECK_TICKS = Math.round((MUTATION_TRIGGER_TICKS + AIR_TIME_TICKS) / 2) // 두 임계의 중간 — 버그면 1, 정상이면 아직 0
+
+      await sleep(MID_AIR_CHECK_TICKS * NET.TICK_MS)
+
+      const midAirCount = connA.interpolator.getFootstepCount(connB.sessionId)
+      expect(midAirCount).toBe(0)
+
+      // 양성 대조군 — 착지 후에도 같은 방향 입력이 이어지므로 실제 접지
+      // 이동이 계속된다. 체공(19틱) 이후 보폭(2.0m)을 채우는 데 필요한
+      // 틱 수만큼 더 기다리면 정상적으로 최소 1회는 등록돼야 한다("영원히
+      // 0"인 별개의 결함과 이 테스트를 구분한다). 패치 전달 지연(≈20Hz)
+      // 여유를 더한다.
+      const EXTRA_GROUND_TICKS = Math.ceil(AUDIO.FOOTSTEP_STRIDE_M / GROUND_TICK_DISTANCE_M) + 5
+      await sleep((AIR_TIME_TICKS - MID_AIR_CHECK_TICKS + EXTRA_GROUND_TICKS) * NET.TICK_MS + 200)
+
+      const afterLandingCount = connA.interpolator.getFootstepCount(connB.sessionId)
+      expect(afterLandingCount).toBeGreaterThanOrEqual(1)
+
+      await Promise.all([
+        withTimeout(connA.disconnect(), LEAVE_TIMEOUT_MS, 'A: disconnect'),
+        withTimeout(connB.disconnect(), LEAVE_TIMEOUT_MS, 'B: disconnect'),
+      ])
+    },
+    20_000,
+  )
+})
+
+/**
+ * 원장 28ab — **hp** 배선 잠금(MD3·MD4를 겨냥).
+ *
+ * **왜 사망→리스폰 시나리오인가**: `hp`를 생략하면 `RemoteSnapshot.hp`가
+ * `PLAYER.MAX_HP`로 기본 대체된다. 죽지 않은 정상 플레이 중에는 실제 hp도
+ * 대부분 `MAX_HP` 근처이므로(정확히 다른 값일 때만 갈린다) 사망(hp=0)이
+ * 없으면 기본값과 실제값이 우연히 일치해 결함이 가려진다 — 위 점프
+ * 시나리오가 hp를 전혀 건드리지 않는 것과 대칭이다(그래서 이 파일이 둘 다
+ * 필요하다, 델타 평가 §9 Q1의 "또는" 표현이 한 종류의 필드만 가리키는
+ * 것이 아님을 이 test-writer가 실측으로 재확인했다).
+ *
+ * `respawnPlayer`는 좌표를 스폰 지점으로 순간이동시키고 `grounded=true`를
+ * 명시하지만 `mode`는 대입하지 않는다(`GameRoom.ts` — ADR-0014 결정 4
+ * 근거 문단이 이미 정확히 이 조합을 지목한다: "부활 틱은 grounded===true
+ * ∧ mode==='run' ∧ 수평 변위=스폰 간 거리이고, 새 누적 규칙이 정확히 그
+ * 조합을 누적 대상으로 지정한다"). `hp`가 잘못 항상 `MAX_HP`로 새면(MD3·
+ * MD4) 사망 직전 hp가 이미 0이었다는 사실 자체가 관측되지 않아
+ * discontinuous 판정(직전 hp===0 ∧ 이번 hp===MAX_HP)이 **영원히 발동하지
+ * 않고**, 스폰 지점 간 순간이동(최소 8.602325m, 원장 26s 실측 — 보폭
+ * 2.0m보다 훨씬 크다)이 그대로 누적돼 리스폰 즉시 여러 번의 발소리가
+ * 터진다.
+ *
+ * **화이트박스 텔레포트(Safe Zone 탈출) 오염 회피**: `escapeSafeZone`
+ * (전투 준비용)은 그 자체로 실제 위치 점프이지만 hp를 건드리지 않으므로
+ * discontinuous가 아니다 — 올바른 구현에서도 (조건이 맞으면) 발소리로
+ * 새는 게 원리상 가능하다. 이 테스트는 그 오염을 원천 차단한다: **B를
+ * 먼저 탈출시키고 나서 A를 접속시킨다** — A가 B를 처음 관측하는 스냅샷이
+ * 이미 탈출 후 위치이므로 "첫 addSnapshot은 무음" 규칙이 탈출 점프를
+ * 조용히 흡수한다(위 점프 시나리오와 달리 이 시나리오만 순서에 민감하다).
+ */
+describe('RQ-72 2/2-b/원장 28ab: 원격 발소리 hp 배선 잠금 — 사망→리스폰 순간이동이 발소리로 새지 않는다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    'RQ-72/28ab: A의 사격으로 B가 사망한 뒤 리스폰(스폰 간 순간이동)해도 A가 관측하는 B의 발소리 횟수는 그대로이고, 리스폰 후 실제 이동은 정상적으로 등록된다(양성 대조군)',
+    async () => {
+      // B를 먼저 접속·탈출시킨다(오염 회피, 위 docblock).
+      const storeB = createGameStore()
+      const connB: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'victimHp', storeB),
+        CONNECT_TIMEOUT_MS,
+        "B: connectToGame(nickname: 'victimHp')",
+      )
+      const bNickname = await waitForSelfNickname(storeB, connB.sessionId)
+      expect(bNickname).toBe('victimHp')
+      const baselineB = storeB.getState().players.get(connB.sessionId)!
+      expect(baselineB.hp).toBe(PLAYER.MAX_HP)
+
+      const seam = getSafeZoneSeam(connB.room)
+      const escapedB = escapeSafeZone(seam, connB.sessionId, baselineB)
+
+      // 정지 상태에서 mode만 'run'으로 선언한다(수평 변위 0, 위치는 전혀
+      // 안 바뀐다) — ADR-0014 결정 4가 지목하는 "부활 시각에도 mode는
+      // 'run'"이라는 정확한 조건을 재현하기 위함이다. 이게 없으면
+      // `Player.mode`의 스키마 기본값이 이미 `'run'`이라(`GameState.ts`)
+      // 사실 없어도 같은 조건이 성립하지만, 이 파일이 그 사실에 암묵적으로
+      // 기대지 않고 명시적으로 만든다(다음에 스키마 기본값이 바뀌어도 이
+      // 테스트의 전제가 스스로 깨지지 않는다).
+      connB.room.send('move', { dirX: 0, dirZ: 0, mode: 'run', jump: false })
+      await sleep(SETTLE_MS)
+
+      // 이제 A를 접속시킨다 — A의 B에 대한 첫 관측은 이미 탈출 후 위치이므로
+      // "첫 addSnapshot은 무음" 규칙이 탈출 점프를 흡수한다.
+      const storeA = createGameStore()
+      const connA: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'listenerHp', storeA),
+        CONNECT_TIMEOUT_MS,
+        "A: connectToGame(nickname: 'listenerHp')",
+      )
+      await waitForSelfNickname(storeA, connA.sessionId)
+      const baseline = await waitForFootstepBaseline(
+        connA,
+        connB.sessionId,
+        STORE_TIMEOUT_MS,
+        'A가 B의 첫 스냅샷을 관측(발소리 기준값 확립)하길 대기 — 탈출 점프가 여기서 조용히 흡수된다',
+      )
+      expect(baseline).toBe(0)
+
+      // A를 Safe Zone 밖으로 옮기고(사격 가능하게), B의 스폰 보호를
+      // 해제한다(RQ-16 — 화이트박스, `rq-15-respawn-timer.test.ts`와 동일
+      // 근거: 자기 사격 대신 화이트박스를 쓰는 이유는 RQ-31 회귀 대응).
+      const baselineA = storeA.getState().players.get(connA.sessionId)!
+      const escapedA = escapeSafeZone(seam, connA.sessionId, baselineA)
+      seam.firedSinceSpawn.set(connB.sessionId, true)
+      await sleep(SETTLE_MS)
+
+      // 전투 직전에도 여전히 무음이어야 한다(탈출·설정 단계에서 아무 변위도
+      // 실제로 발생하지 않았다는 확인 — 핵심 단언 전의 건전성 확인).
+      expect(connA.interpolator.getFootstepCount(connB.sessionId)).toBe(baseline)
+
+      const aim = aimAtBody(escapedA, escapedB)
+      // `PLAYER.MAX_HP`는 `as const` 리터럴 타입(100)이라 명시적으로
+      // `number`로 넓히지 않으면 아래 재대입에서 TS2322가 난다
+      // (`rq-15-respawn-timer.test.ts`의 `killPlayer`가 `baselineB.hp`
+      // 라는 이미 넓혀진 값에서 시작해 이 함정을 겪지 않은 것과 대비된다).
+      let previousHp: number = PLAYER.MAX_HP
+      const MAX_KILL_SHOTS = 4 // 바디샷만 맞을 때의 상한(헤드샷이 섞이면 더 일찍 끝난다)
+      for (let shot = 1; shot <= MAX_KILL_SHOTS && previousHp > 0; shot += 1) {
+        connA.room.send('fire', aim)
+        const afterShot = await waitForStoreCondition(
+          storeB,
+          (s) => s.players.get(connB.sessionId)?.hp !== previousHp,
+          STORE_TIMEOUT_MS,
+          `${shot}번째 사격 후 B의 HP 변화 대기(직전 HP=${previousHp})`,
+        )
+        previousHp = afterShot.players.get(connB.sessionId)!.hp
+        if (previousHp > 0) await sleep(BETWEEN_SHOTS_MS)
+      }
+      expect(previousHp).toBe(0)
+
+      // 사망 직후에도 발소리 관측은 그대로다(사망 자체는 이동이 아니다).
+      expect(connA.interpolator.getFootstepCount(connB.sessionId)).toBe(baseline)
+
+      const deathAtMs = Date.now()
+      const afterRespawn = await waitForStoreCondition(
+        storeB,
+        (s) => s.players.get(connB.sessionId)?.hp === PLAYER.MAX_HP,
+        RESPAWN_OBSERVE_TIMEOUT_MS,
+        'RQ-72/28ab: 사망 후 리스폰(HP 100 복귀) 대기',
+      )
+      const respawnElapsedMs = Date.now() - deathAtMs
+      expect(respawnElapsedMs).toBeGreaterThanOrEqual(MIN_RESPAWN_ELAPSED_MS)
+
+      const respawnedB = afterRespawn.players.get(connB.sessionId)!
+      const teleportDistanceM = Math.hypot(respawnedB.x - escapedB.x, respawnedB.z - escapedB.z)
+      // 스폰 지점 간 최소 거리는 8.602325m(원장 26s 실측, `sim-spawn.test.ts`
+      // GA-51)이므로 이 순간이동은 항상 보폭(2.0m)보다 훨씬 크다 — 이 값이
+      // 작으면 애초에 이 테스트가 hp 배선의 결함을 드러낼 수 없어 무의미하다.
+      expect(teleportDistanceM).toBeGreaterThan(AUDIO.FOOTSTEP_STRIDE_M)
+
+      // 핵심 단언 — 순간이동이 발소리로 새지 않았다. 아직 도착하지 않은
+      // 패치가 있을 가능성까지 짧게 안정화시킨 뒤 다시 확인한다.
+      await sleep(SETTLE_MS)
+      expect(connA.interpolator.getFootstepCount(connB.sessionId)).toBe(baseline)
+
+      // 양성 대조군 — 리스폰 후 실제로 보폭을 채우면 정상적으로 등록된다
+      // ("영원히 0"인 별개의 결함과 이 테스트를 구분한다).
+      connB.room.send('move', { dirX: 1, dirZ: 0, mode: 'run', jump: false })
+      const GROUND_TICK_DISTANCE_M = MOVEMENT.SPEED / NET.TICK_HZ
+      const RUN_AFTER_RESPAWN_TICKS = Math.ceil(AUDIO.FOOTSTEP_STRIDE_M / GROUND_TICK_DISTANCE_M) + 5
+      await sleep(RUN_AFTER_RESPAWN_TICKS * NET.TICK_MS + 200)
+      expect(connA.interpolator.getFootstepCount(connB.sessionId)).toBeGreaterThanOrEqual(baseline + 1)
+
+      await Promise.all([
+        withTimeout(connA.disconnect(), LEAVE_TIMEOUT_MS, 'A: disconnect'),
+        withTimeout(connB.disconnect(), LEAVE_TIMEOUT_MS, 'B: disconnect'),
+      ])
+    },
+    30_000,
   )
 })
