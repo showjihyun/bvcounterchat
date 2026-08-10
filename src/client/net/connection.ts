@@ -128,18 +128,23 @@ function readSelfAuthoritativeState(room: Room): AuthoritativeMoveState | undefi
   return undefined
 }
 
-/** `value.mode`가 알려진 3종 리터럴 중 하나면 그대로, 아니면(필드
- * 부재·패치 미도착·조작된 값) `undefined`를 반환한다 — `sanitizeMoveInput`
- * (`GameRoom.ts`)의 서버 쪽 방어적 파싱과 동일한 정신, 여기는 신뢰하는
- * 서버 스키마 값을 읽을 뿐이지만 필드가 아직 없는 과도기(구 서버·첫 패치
- * 전)를 안전하게 다루기 위해 같은 가드를 쓴다. */
-/** RQ-72(원장 24bs) — 원격 발소리 누적의 두 입력. `readMode`와 같은 가드
- * 정신이다(필드가 아직 없는 과도기를 안전하게 다룬다). ⚠️ **싣지 않으면
+/** RQ-72(원장 24bs) — 원격 발소리 누적의 두 입력. `readMode`(아래)와 같은
+ * 가드 정신이다(필드가 아직 없는 과도기를 안전하게 다룬다). ⚠️ **싣지 않으면
  * 조용히 그럴듯하게 틀린다**: `grounded`가 빠지면 `RemoteSnapshot`의 기본값
  * `true`로 폴백돼 **공중 변위가 누적되고**(GA-85 위반), `hp`가 빠지면 항상
  * `MAX_HP`라 `0 → MAX_HP` 전이가 영원히 안 일어나 **리스폰 리셋이 무동작**
  * 이다(순간이동이 발소리로 샌다). 크래시가 아니라 그럴듯한 오동작이라
- * 배선 누락이 눈에 안 띈다 — PR #75 리뷰 major. */
+ * 배선 누락이 눈에 안 띈다 — PR #75 리뷰 major.
+ *
+ * ⚠️ **`false`·`0`이 살아남아야 한다.** 호출부의 조건부 스프레드가
+ * `!== undefined`로 판정하는 이유다 — `...(hp ? { hp } : {})`로 썼다면
+ * `hp: 0`이 실리지 않아 **리스폰 리셋 전체가 무동작**이 된다(= 이 코드가
+ * 닫으려는 결함의 재발). 델타 재평가가 그 변이(MD4)를 확인했다.
+ *
+ * ⚠️ **이 두 함수는 어떤 테스트도 덮지 않는다.** 스프레드를 지우고 원복해도
+ * 828+169건이 전부 통과한다(델타 재평가 MD2·MD3 실측). `fe.md`가 배선을
+ * 면제하고 선례(`readMode`)도 그렇지만, `mode` 오류는 화면에 보이고 이 둘은
+ * **소리만 조용히 어긋난다** — 통합 층에서 잠그는 것이 원장 **24bv**의 몫이다. */
 function readGrounded(value: { grounded?: unknown }): boolean | undefined {
   return typeof value.grounded === 'boolean' ? value.grounded : undefined
 }
@@ -148,6 +153,11 @@ function readHp(value: { hp?: unknown }): number | undefined {
   return typeof value.hp === 'number' && Number.isFinite(value.hp) ? value.hp : undefined
 }
 
+/** `value.mode`가 알려진 3종 리터럴 중 하나면 그대로, 아니면(필드
+ * 부재·패치 미도착·조작된 값) `undefined`를 반환한다 — `sanitizeMoveInput`
+ * (`GameRoom.ts`)의 서버 쪽 방어적 파싱과 동일한 정신, 여기는 신뢰하는
+ * 서버 스키마 값을 읽을 뿐이지만 필드가 아직 없는 과도기(구 서버·첫 패치
+ * 전)를 안전하게 다루기 위해 같은 가드를 쓴다. */
 function readMode(value: { mode?: unknown }): MoveInput['mode'] | undefined {
   return value.mode === 'run' || value.mode === 'walk' || value.mode === 'crouch' ? value.mode : undefined
 }
