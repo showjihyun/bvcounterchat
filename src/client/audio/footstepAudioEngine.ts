@@ -24,8 +24,15 @@ import { synthesizeFootstepBurst } from '@client/audio/footstepSynth'
  * 아니다.
  */
 export interface FootstepAudioEngine {
-  /** 사용자 제스처(포인터 락 클릭) 핸들러 안에서 호출한다. 멱등 — 이미
-   * 열려 있으면 아무 일도 하지 않는다. */
+  /** 사용자 제스처(포인터 락 클릭) 핸들러 안에서 호출한다.
+   *
+   * ⚠️ **완전 멱등이 아니다**(재평가 N3 — 초안 문면이 「이미 열려 있으면
+   * 아무 일도 하지 않는다」였으나 낡았다): 컨텍스트 생성과 파형 합성은
+   * **1회뿐**이지만, `context.state === 'suspended'` 검사와 `resume()`은
+   * **매 제스처마다** 돈다. 그러지 않으면 브라우저가 컨텍스트를 정지시킨 뒤
+   * **어떤 클릭으로도 복구되지 않아 영구 무음**이 된다(1차 평가 F2).
+   * `resume()` 실패는 조용히 넘기지 않고 `console.warn`한다 —
+   * `pointerLock.ts`가 원장 24e-2 이후 거절을 경고로 남기는 것과 같은 대우다. */
   open(): void
   /** 캐시된 버퍼를 새 `AudioBufferSourceNode`로 재생한다. `open()`이 아직
    * 호출되지 않았으면(배선 순서 오류 방어) 조용한 no-op — 자동재생
