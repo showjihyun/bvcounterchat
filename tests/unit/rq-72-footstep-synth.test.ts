@@ -39,10 +39,10 @@ import { synthesizeFootstepBurst } from '@client/audio/footstepSynth'
  *   PRNG를 발명하면 로직 복제다. `createRng`는 `seed`가 음이 아닌 정수·
  *   2^32 미만이 아니면 던진다 — 이 계약을 그대로 물려받는다). 노이즈 샘플은
  *   `rng.nextRange(-1, 1)` 등으로 [-1, 1) 범위에서 뽑는다.
- * - **길이**: `sampleRateHz`와 새 상수 `AUDIO.FOOTSTEP_DURATION_MS`
+ * - **길이**: `sampleRateHz`와 새 상수 `AUDIO_TUNING.FOOTSTEP_DURATION_MS`
  *   (`@shared/constants`, 이 라운드가 새로 추가 — ADR-0010 "매직 넘버를
  *   함수 안에 감추지 않는다")로부터 `Math.round(sampleRateHz *
- *   AUDIO.FOOTSTEP_DURATION_MS / 1000)`개의 샘플을 반환한다. **이 파일은
+ *   AUDIO_TUNING.FOOTSTEP_DURATION_MS / 1000)`개의 샘플을 반환한다. **이 파일은
  *   그 상수의 정확한 값을 알 필요가 없다** — 아래 "길이는 sampleRateHz에
  *   비례한다" 테스트가 두 sampleRateHz의 **비율**만으로 검증한다(값을
  *   하드코딩하면 ADR-0010 복제가 되므로 피한다).
@@ -79,7 +79,7 @@ const SAMPLE_RATE_HZ = 48_000
 
 /** 큰 배열에 `Math.max(...arr)`를 쓰면 스택 인자 상한에 걸릴 수 있어(엔진
  * 마다 다르지만 대체로 수만 개 이상에서 위험) reduce 기반으로 최대 절대값을
- * 구한다 — `AUDIO.FOOTSTEP_DURATION_MS`가 커져도 안전하다. */
+ * 구한다 — `AUDIO_TUNING.FOOTSTEP_DURATION_MS`가 커져도 안전하다. */
 function maxAbs(samples: Float32Array, fromInclusive: number, toExclusive: number): number {
   let max = 0
   for (let i = fromInclusive; i < toExclusive; i += 1) {
@@ -109,7 +109,7 @@ describe('RQ-72 2/2-b: synthesizeFootstepBurst — 길이 공식', () => {
     expect(samples.length).toBeGreaterThan(0)
   })
 
-  it('길이는 sampleRateHz에 비례한다(AUDIO.FOOTSTEP_DURATION_MS 고정 지속시간 계약 — 이 파일은 그 상수의 실제 값을 몰라도 비율로 검증한다)', () => {
+  it('길이는 sampleRateHz에 비례한다(AUDIO_TUNING.FOOTSTEP_DURATION_MS 고정 지속시간 계약 — 이 파일은 그 상수의 실제 값을 몰라도 비율로 검증한다)', () => {
     const half = synthesizeFootstepBurst(SAMPLE_RATE_HZ / 2, 1)
     const full = synthesizeFootstepBurst(SAMPLE_RATE_HZ, 1)
     // 반올림 오차(최대 ±1 샘플)를 감안한 비율 확인 — sampleRateHz를 절반으로

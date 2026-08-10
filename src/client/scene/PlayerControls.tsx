@@ -122,9 +122,10 @@ interface PlayerControlsProps {
  * 안에서 자기 발소리를 누적(`@client/audio/selfFootstepTracker`, 사망 중
  * 게이팅 포함 — 원장 28ab 평가 FAIL F1)하고 원격 발소리를
  * `connection.interpolator.getFootstepCount`로 폴링해 재생한다
- * (`@client/audio/footstepAudioEngine`·`footstepPlayback`). ADR-0008 §6
- * 면제 대상(렌더·오디오 배선)이라 이 파일 자체에 대응하는 단위 테스트는
- * 없다 — 판정·재생 횟수 계산 자체는 `selfFootstepTracker`·
+ * (`@client/audio/footstepAudioEngine`·`footstepPlayback`). **ADR-0014
+ * 결정 5의 재생 배선 층**이라 이 파일 자체에 대응하는 단위 테스트는
+ * 없다(⚠️ 초안이 「ADR-0008 §6 면제 대상(렌더·오디오 배선)」이라 적었으나
+ * §6은 오디오를 면제한 적이 없다 — 결정 5가 그 공백을 메운 절이다) — 판정·재생 횟수 계산 자체는 `selfFootstepTracker`·
  * `footstepPlayback`의 순수 함수 테스트가 값으로 검증한다.
  */
 export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {

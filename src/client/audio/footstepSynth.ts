@@ -7,8 +7,10 @@ import { AUDIO_TUNING } from '@shared/config/audio-tuning'
  * `AudioContext`를 참조하지 않는다(원장 24bv 사용자 결정 1: 검증 수단으로
  * 합성기를 재생 배선과 분리했다 — 샘플 배열을 리턴하면 길이·엔벨로프·
  * 클리핑을 값으로 단언할 수 있다). 배선 계층(`footstepAudioEngine.ts`)이
- * 이 함수의 결과를 `AudioBuffer`로 감싸 재생한다 — 그 배선은 ADR-0008 §6
- * 면제 대상이라 이 파일과 별도로 취급한다.
+ * 이 함수의 결과를 `AudioBuffer`로 감싸 재생한다 — 그 배선은 **ADR-0014
+ * 결정 5의 재생 배선 층**이라 이 파일과 별도로 취급한다(⚠️ 초안이
+ * 「ADR-0008 §6 면제 대상」이라 적었으나 §6은 **렌더링(R3F)만** 면제하고
+ * `footstepAudioEngine.ts`는 평범한 `.ts`라 §6이 아무것도 주지 않는다).
  *
  * 계약 전문은 `tests/unit/rq-72-footstep-synth.test.ts` 상단 docblock
  * (test-writer 지정)이 정본이다 — 이 함수는 그 계약을 그대로 구현한다.
