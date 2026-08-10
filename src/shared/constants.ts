@@ -163,4 +163,10 @@ export const AUDIO = {
   /** 발소리 1회당 누적 수평 이동 거리(m, 보폭). 달리기 6m/s ÷ 2.0m =
    * 초당 3보(ADR-0014 결정 4). */
   FOOTSTEP_STRIDE_M: 2.0,
+  /** 발소리 파형 1회 지속 시간(ms, RQ-72 2/2-b). ADR-0014 결정 4가
+   * 확정한 값이 아니다 — 정확한 감쇠 곡선 모양·지속 시간은 스펙이
+   * 규정하지 않는 구현 세부라 test-writer가 coder 재량으로 남겼다
+   * (`tests/unit/rq-72-footstep-synth.test.ts` 상단 docblock). 짧은
+   * 타격음(수십~백여 ms대) 감각을 노린 coder 선택값이다. */
+  FOOTSTEP_DURATION_MS: 90,
 } as const
