@@ -18,8 +18,11 @@ import * as THREE from 'three'
 import type { InterpolationPosition } from '@client/net/interpolation'
 import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { hitboxForMode } from '@shared/sim/combat'
-import { NET } from '@shared/constants'
+import { AUDIO, NET, PLAYER } from '@shared/constants'
 import type { MoveInput } from '@shared/sim/movement'
+import { createFootstepAudioEngine } from '@client/audio/footstepAudioEngine'
+import { createFootstepPlaybackScheduler } from '@client/audio/footstepPlayback'
+import { createSelfFootstepTracker } from '@client/audio/selfFootstepTracker'
 
 interface PlayerControlsProps {
   store: StoreApi<GameStoreState>
@@ -113,6 +116,17 @@ interface PlayerControlsProps {
  * 분산 체크하지 않는다"를 문자 그대로: 체크 자체가 한 곳에만 있다).
  * `uiStore`는 `ChatPanel.tsx`(HUD)가 입력창 포커스/블러에서 쓴다 — 이
  * 컴포넌트는 그 최신값을 콜백으로 읽기만 한다.
+ *
+ * RQ-72 2/2-b(원장 24bv) — 발소리 재생도 이 컴포넌트가 배선한다: 캔버스
+ * 클릭(포인터 락과 같은 제스처)에서 `AudioContext`를 열고, 이 이동 루프
+ * 안에서 자기 발소리를 누적(`@client/audio/selfFootstepTracker`, 사망 중
+ * 게이팅 포함 — 원장 28ab 평가 FAIL F1)하고 원격 발소리를
+ * `connection.interpolator.getFootstepCount`로 폴링해 재생한다
+ * (`@client/audio/footstepAudioEngine`·`footstepPlayback`). **ADR-0014
+ * 결정 5의 재생 배선 층**이라 이 파일 자체에 대응하는 단위 테스트는
+ * 없다(⚠️ 초안이 「ADR-0008 §6 면제 대상(렌더·오디오 배선)」이라 적었으나
+ * §6은 오디오를 면제한 적이 없다 — 결정 5가 그 공백을 메운 절이다) — 판정·재생 횟수 계산 자체는 `selfFootstepTracker`·
+ * `footstepPlayback`의 순수 함수 테스트가 값으로 검증한다.
  */
 export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {
   const { camera, gl } = useThree()
@@ -142,6 +156,29 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     const fireCooldown = createLocalFireCooldown()
     // RQ-40 M4 — 게임 레이어 출구 단일 choke point(모듈 코멘트 참고).
     const gatedActions = createChatGatedActions(() => uiStore.getState().chatFocused, connection)
+
+    // RQ-72 2/2-b(원장 24bv) — 발소리 재생 배선(ADR-0014 결정 5 면제, 자동
+    // 테스트 없음 — 판정 자체는 `@shared/sim/footsteps`·순수 스케줄러
+    // (`footstepPlayback.ts`)가 이미 값으로 검증했다). `AudioContext`는
+    // 포인터 락과 같은 클릭 제스처 안에서 연다(`footstepAudioEngine.ts`
+    // 모듈 코멘트 — 브라우저 자동재생 정책, ADR-0014 「결과」).
+    const footstepEngine = createFootstepAudioEngine()
+    const footstepScheduler = createFootstepPlaybackScheduler(AUDIO.AUDIBLE_RANGE_M)
+    // 자기 발소리 누적 — `interpolation.ts`의 `advanceFootstepAccumulator`
+    // (원격 경로, GA-83)와 동일한 판정 순서를 로컬 예측 위치에 적용한다
+    // (서버가 발소리 이벤트를 보내지 않으므로, ADR-0014 결정 1 — 자기
+    // 발소리도 클라이언트가 로컬로 계산한다). 판정(첫 관측 무음·리스폰
+    // 리셋·사망 중 게이팅)은 `selfFootstepTracker.ts`(원장 28ab 평가 FAIL
+    // F1)로 분리했다 — `state.players.get(selfSessionId)?.hp`로 hp를
+    // 관측한다(`selfPredictedState`는 `MoveState`뿐이라 hp가 없다).
+    const selfFootstepTracker = createSelfFootstepTracker(AUDIO.FOOTSTEP_STRIDE_M)
+    // 원격 발소리 거리 계산용 재사용 버퍼(프레임 예산 규율 — 이 루프는
+    // 30Hz라도 같은 관례를 따른다, 아래 `anchorScratch`와 동일한 이유).
+    const footstepPositionScratch: InterpolationPosition = { x: 0, y: 0, z: 0 }
+    function handleFootstepAudioGesture(): void {
+      footstepEngine.open()
+    }
+    canvas.addEventListener('click', handleFootstepAudioGesture)
 
     function handleFireDown(event: MouseEvent): void {
       // 주 버튼(좌클릭)만 발사한다 — 우클릭·휠클릭은 조준경(스펙 없음)이나
@@ -210,6 +247,48 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
         uiStore.getState().setNameplate(null)
         return
       }
+
+      // RQ-72 2/2-b(원장 24bv) — 자기 발소리 누적 한 틱 전진. `predicted`가
+      // 아직 없으면(접속 직후, 서버 스냅샷 폴백 중) 이번 틱은 건너뛴다 —
+      // 다음 틱부터 트래커가 첫 관측을 채운다. 판정(리스폰 리셋·사망 중
+      // 게이팅)은 `selfFootstepTracker`에 위임한다(원장 28ab 평가 FAIL F1).
+      if (predicted) {
+        const currentHp = state.players.get(selfId)?.hp ?? PLAYER.MAX_HP
+        const selfFootstepTotalCount = selfFootstepTracker.step({
+          x: predicted.x,
+          z: predicted.z,
+          grounded: predicted.grounded,
+          mode: sent.mode,
+          hp: currentHp,
+        })
+
+        // 자기 발소리는 거리와 무관하게 항상 들린다(GA-81) — isSelf=true면
+        // horizontalDistanceM은 무시된다는 계약(`footstepPlayback.ts`)을
+        // 그대로 쓴다.
+        const selfPlayCount = footstepScheduler.poll(selfId, selfFootstepTotalCount, true, Number.NaN)
+        for (let i = 0; i < selfPlayCount; i += 1) footstepEngine.playBurst()
+      }
+
+      // RQ-72 2/2-b — 원격 발소리 재생. 누적 발생 총합은
+      // `interpolator.getFootstepCount`가 이미 계산해 두었다(GA-83) — 이
+      // 루프는 "이번 틱에 몇 번 재생할지"만 스케줄러에 위임하고, 가청
+      // 판정 거리는 자기 위치(`selfFoot`)와 보간된 원격 위치의 수평 거리다.
+      state.players.forEach((_player, remoteId) => {
+        if (remoteId === selfId) return
+        const total = connection.interpolator.getFootstepCount(remoteId)
+        if (total === undefined) return
+        // total이 정의됐다는 것은 그 세션에 최소 한 번 addSnapshot이
+        // 있었다는 뜻이라(interpolation.ts GA-83) copyPositionInto도 항상
+        // 같은 세션 버퍼를 찾아 성공한다.
+        connection.interpolator.copyPositionInto(remoteId, connection.now(), footstepPositionScratch)
+        const distanceM = Math.hypot(
+          footstepPositionScratch.x - selfFoot.x,
+          footstepPositionScratch.z - selfFoot.z,
+        )
+        const playCount = footstepScheduler.poll(remoteId, total, false, distanceM)
+        for (let i = 0; i < playCount; i += 1) footstepEngine.playBurst()
+      })
+
       // 자기 자신을 후보에서 뺀다 — 넣으면 자기 이름이 뜬다.
       // 시신 제외는 `resolveNameplateTarget`이 서버와 같은 술어(`canAct`)로 한다.
       const candidates: Map<string, NameplateCandidate> = new Map()
@@ -281,6 +360,7 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       mouseLookRef.current = null
       movementTracker.dispose()
       canvas.removeEventListener('mousedown', handleFireDown)
+      canvas.removeEventListener('click', handleFootstepAudioGesture)
       window.clearInterval(movementIntervalId)
     }
   }, [gl, connection, uiStore, store])
