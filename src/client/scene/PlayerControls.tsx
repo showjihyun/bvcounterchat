@@ -20,9 +20,9 @@ import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { hitboxForMode } from '@shared/sim/combat'
 import { AUDIO, NET, PLAYER } from '@shared/constants'
 import type { MoveInput } from '@shared/sim/movement'
-import { stepFootstepAccumulator } from '@shared/sim/footsteps'
 import { createFootstepAudioEngine } from '@client/audio/footstepAudioEngine'
 import { createFootstepPlaybackScheduler } from '@client/audio/footstepPlayback'
+import { createSelfFootstepTracker } from '@client/audio/selfFootstepTracker'
 
 interface PlayerControlsProps {
   store: StoreApi<GameStoreState>
@@ -119,12 +119,13 @@ interface PlayerControlsProps {
  *
  * RQ-72 2/2-b(원장 24bv) — 발소리 재생도 이 컴포넌트가 배선한다: 캔버스
  * 클릭(포인터 락과 같은 제스처)에서 `AudioContext`를 열고, 이 이동 루프
- * 안에서 자기 발소리를 누적(`@shared/sim/footsteps`)하고 원격 발소리를
+ * 안에서 자기 발소리를 누적(`@client/audio/selfFootstepTracker`, 사망 중
+ * 게이팅 포함 — 원장 28ab 평가 FAIL F1)하고 원격 발소리를
  * `connection.interpolator.getFootstepCount`로 폴링해 재생한다
  * (`@client/audio/footstepAudioEngine`·`footstepPlayback`). ADR-0008 §6
  * 면제 대상(렌더·오디오 배선)이라 이 파일 자체에 대응하는 단위 테스트는
- * 없다 — 판정·재생 횟수 계산 자체는 그 두 모듈의 순수 함수 테스트가
- * 이미 값으로 검증했다.
+ * 없다 — 판정·재생 횟수 계산 자체는 `selfFootstepTracker`·
+ * `footstepPlayback`의 순수 함수 테스트가 값으로 검증한다.
  */
 export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {
   const { camera, gl } = useThree()
@@ -162,16 +163,14 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 모듈 코멘트 — 브라우저 자동재생 정책, ADR-0014 「결과」).
     const footstepEngine = createFootstepAudioEngine()
     const footstepScheduler = createFootstepPlaybackScheduler(AUDIO.AUDIBLE_RANGE_M)
-    // 자기 발소리 누적 상태 — `interpolation.ts`의 `advanceFootstepAccumulator`
+    // 자기 발소리 누적 — `interpolation.ts`의 `advanceFootstepAccumulator`
     // (원격 경로, GA-83)와 동일한 판정 순서를 로컬 예측 위치에 적용한다
     // (서버가 발소리 이벤트를 보내지 않으므로, ADR-0014 결정 1 — 자기
-    // 발소리도 클라이언트가 로컬로 계산한다). 첫 관측은 무음, hp가
-    // 0→`PLAYER.MAX_HP`로 전이하면 리스폰으로 간주해 누적을 리셋한다
-    // (`state.players.get(selfSessionId)?.hp`로 관측 — `selfPredictedState`
-    // 는 `MoveState`뿐이라 hp가 없다).
-    let selfFootstepPrevious: { x: number; z: number; grounded: boolean; hp: number } | undefined
-    let selfFootstepAccumM = 0
-    let selfFootstepTotalCount = 0
+    // 발소리도 클라이언트가 로컬로 계산한다). 판정(첫 관측 무음·리스폰
+    // 리셋·사망 중 게이팅)은 `selfFootstepTracker.ts`(원장 28ab 평가 FAIL
+    // F1)로 분리했다 — `state.players.get(selfSessionId)?.hp`로 hp를
+    // 관측한다(`selfPredictedState`는 `MoveState`뿐이라 hp가 없다).
+    const selfFootstepTracker = createSelfFootstepTracker(AUDIO.FOOTSTEP_STRIDE_M)
     // 원격 발소리 거리 계산용 재사용 버퍼(프레임 예산 규율 — 이 루프는
     // 30Hz라도 같은 관례를 따른다, 아래 `anchorScratch`와 동일한 이유).
     const footstepPositionScratch: InterpolationPosition = { x: 0, y: 0, z: 0 }
@@ -248,35 +247,19 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
         return
       }
 
-      // RQ-72 2/2-b(원장 24bv) — 자기 발소리 누적 한 틱 전진(위 효과
-      // 코멘트 "자기 발소리 누적 상태" 참고). `predicted`가 아직 없으면
-      // (접속 직후, 서버 스냅샷 폴백 중) 이번 틱은 건너뛴다 — 다음 틱에
-      // `previous`가 채워지면 그때부터 시작한다.
+      // RQ-72 2/2-b(원장 24bv) — 자기 발소리 누적 한 틱 전진. `predicted`가
+      // 아직 없으면(접속 직후, 서버 스냅샷 폴백 중) 이번 틱은 건너뛴다 —
+      // 다음 틱부터 트래커가 첫 관측을 채운다. 판정(리스폰 리셋·사망 중
+      // 게이팅)은 `selfFootstepTracker`에 위임한다(원장 28ab 평가 FAIL F1).
       if (predicted) {
         const currentHp = state.players.get(selfId)?.hp ?? PLAYER.MAX_HP
-        if (selfFootstepPrevious) {
-          // interpolation.ts의 advanceFootstepAccumulator와 동일한 리스폰
-          // 판정(hp 0 → PLAYER.MAX_HP 전이는 discontinuous로 취급해 누적을
-          // 0으로 리셋한다, GA-89 정신).
-          const discontinuous = selfFootstepPrevious.hp === 0 && currentHp === PLAYER.MAX_HP
-          const result = stepFootstepAccumulator(
-            selfFootstepAccumM,
-            {
-              wasGrounded: selfFootstepPrevious.grounded,
-              isGrounded: predicted.grounded,
-              mode: sent.mode,
-              horizontalDeltaM: Math.hypot(
-                predicted.x - selfFootstepPrevious.x,
-                predicted.z - selfFootstepPrevious.z,
-              ),
-              discontinuous,
-            },
-            AUDIO.FOOTSTEP_STRIDE_M,
-          )
-          selfFootstepAccumM = result.accumM
-          selfFootstepTotalCount += result.footstepCount
-        }
-        selfFootstepPrevious = { x: predicted.x, z: predicted.z, grounded: predicted.grounded, hp: currentHp }
+        const selfFootstepTotalCount = selfFootstepTracker.step({
+          x: predicted.x,
+          z: predicted.z,
+          grounded: predicted.grounded,
+          mode: sent.mode,
+          hp: currentHp,
+        })
 
         // 자기 발소리는 거리와 무관하게 항상 들린다(GA-81) — isSelf=true면
         // horizontalDistanceM은 무시된다는 계약(`footstepPlayback.ts`)을

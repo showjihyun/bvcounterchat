@@ -42,17 +42,33 @@ export function createFootstepAudioEngine(seed = 1): FootstepAudioEngine {
 
   return {
     open(): void {
-      if (context) return
-      context = new AudioContext()
-      const samples = synthesizeFootstepBurst(context.sampleRate, seed)
-      const newBuffer = context.createBuffer(1, samples.length, context.sampleRate)
-      // `copyToChannel`은 `Float32Array<ArrayBuffer>`를 요구하는데
-      // `synthesizeFootstepBurst`의 반환 타입은 (제네릭을 명시하지 않아)
-      // `Float32Array<ArrayBufferLike>`로 넓혀진다 — 새 배열로 감싸
-      // 구체 `ArrayBuffer` 백업을 보장한다(값 복사는 어차피 1회, 초기화
-      // 시점에만 일어난다).
-      newBuffer.copyToChannel(new Float32Array(samples), 0)
-      buffer = newBuffer
+      if (!context) {
+        context = new AudioContext()
+        const samples = synthesizeFootstepBurst(context.sampleRate, seed)
+        const newBuffer = context.createBuffer(1, samples.length, context.sampleRate)
+        // `copyToChannel`은 `Float32Array<ArrayBuffer>`를 요구하는데
+        // `synthesizeFootstepBurst`의 반환 타입은 (제네릭을 명시하지 않아)
+        // `Float32Array<ArrayBufferLike>`로 넓혀진다 — 새 배열로 감싸
+        // 구체 `ArrayBuffer` 백업을 보장한다(값 복사는 어차피 1회, 초기화
+        // 시점에만 일어난다).
+        newBuffer.copyToChannel(new Float32Array(samples), 0)
+        buffer = newBuffer
+      }
+      // 원장 28ab 평가 F2 — `AudioContext`가 `suspended` 상태로 열릴 수
+      // 있다(브라우저 자동재생 정책이 첫 제스처에서 즉시 `running`을
+      // 보장하지 않는 경우가 있다). 위 `if (!context)` 가드 때문에 재개
+      // 시도를 여기서 하지 않으면 이후 어떤 클릭도 복구할 방법이 없어
+      // 영구 무음이 된다 — 그래서 이 검사는 `open()`이 불릴 때마다(매
+      // 제스처) 반복한다. `pointerLock.ts`가 락 거절을 `console.warn`하는
+      // 것과 같은 대우(원장 24e-2 "실패가 조용하면 안 된다") — 실패해도
+      // 예외를 던지지 않고 다음 제스처에서 다시 시도할 수 있게 둔다.
+      if (context.state === 'suspended') {
+        context.resume().catch((err: unknown) => {
+          console.warn(
+            `[footstepAudioEngine] AudioContext 재개 실패: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+      }
     },
     playBurst(): void {
       if (!context || !buffer) return
