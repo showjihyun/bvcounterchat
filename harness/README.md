@@ -79,8 +79,15 @@ TDD 파이프라인(test-writer·coder·evaluator)도 실행 가능하지만 **�
 
 **여전히 없는 것.** 트래젝토리 로그 · 골든 파일 ask 게이트(17g) ·
 coder의 `tests/` 쓰기 차단 hook(17f) · PostToolUse 빠른 검사(`check.sh --fast`는
-있으나 호출자 미등록) · GitHub 브랜치 보호. 즉 "reviewer APPROVE 없이 머지 금지"도
-"테스트 커밋이 먼저"도 지금은 **규율로만** 지켜진다.
+있으나 호출자 미등록). 즉 "reviewer APPROVE 없이 머지 금지"도 "테스트 커밋이
+먼저"도 지금은 **규율로만** 지켜진다.
+
+**GitHub 브랜치 보호는 2026-08-10에 걸렸다**(원장 28af) — `gate` 필수 검사 ·
+`enforce_admins` 켬 · force-push·삭제 차단. ⚠️ **리뷰 승인 요구는 걸지 않았다**
+(솔로 체제라 걸면 자기 PR을 못 머지한다). 즉 **CI는 이제 기계가 강제하고,
+reviewer APPROVE는 여전히 규율이다.** 스캐폴딩 후 3주간 보호가 **없었는데
+`review-gate.md`는 있다고 단언**하고 있었다 — 그 어긋남이 PR #76의 머지 사고를
+낳았다.
 
 → **다음 단계: 결정론 시뮬레이션 하네스**(`progress.md` 17e) — RQ-04의 선행
    조건이다. 고정 틱 + fake timer 없이는 시간 기반 RQ(재장전·리스폰·AFK·30Hz 틱)를

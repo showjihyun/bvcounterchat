@@ -72,8 +72,30 @@ git log origin/main..HEAD --format=%s%n%b   # 커밋 메시지에서 RQ-ID/ADR �
 
 | 판정 | 처리 |
 |---|---|
-| **APPROVE** | 보고서 요약과 함께 "머지 가능"을 사용자에게 보고. **머지 실행은 사용자 확인 후** (`gh pr merge`). major/minor는 아래 ADR-0012 분류에 따라 처리한다 |
+| **APPROVE** | 보고서 요약과 함께 "머지 가능"을 사용자에게 보고. **머지 실행은 사용자 확인 후** (아래 머지 절차). major/minor는 아래 ADR-0012 분류에 따라 처리한다 |
 | **REQUEST_CHANGES** | blocker 목록을 사용자에게 보고. 머지하지 않는다 |
+
+### 머지 절차 — headSha 대조를 기계가 한다
+
+⚠️ **`gh pr merge --auto`를 쓰지 않는다.** 이 저장소는 `allow_auto_merge`가
+**`false`**(실측)라 `--auto`가 auto-merge로 등록되지 못하고 **즉시 머지로
+퇴화**한다. PR #76이 그렇게 **CI 완료 35초 전에** 머지됐다(원장 28af).
+
+⚠️ **`gh pr checks --watch`로 갈음하지 않는다.** 새 커밋을 push한 직후에는
+**이미 끝나 있던 옛 run**을 보고 즉시 종료한다(실측: 옛 run 12:48:39Z 완료,
+새 run 13:07:18Z 생성). `gh pr checks`도 같은 스테일에 노출되고 **출력에
+headSha가 없다** — 그래서 아래 형태로 **비교를 기계에게 맡긴다**:
+
+```bash
+SHA=$(gh pr view <PR번호> --json headRefOid -q .headRefOid)
+gh run list --branch <브랜치> --json databaseId,headSha,status,conclusion \
+  -q ".[] | select(.headSha==\"$SHA\")"
+# 위가 status=completed · conclusion=success 인 항목을 낼 때만 ↓
+gh pr merge <PR번호> --squash --delete-branch
+```
+
+아직 `in_progress`면 그 run이 끝날 때까지 기다린 뒤 **같은 명령을 다시 돌린다**
+(`gh run watch <databaseId>` 후 재확인). 새 커밋을 push했다면 `SHA`부터 다시 얻는다.
 
 REQUEST_CHANGES 후 라우팅:
 - 구현 수정이 필요하면 → `tdd-workflow` 스킬(coder 재호출)
@@ -125,11 +147,15 @@ REQUEST_CHANGES 후 라우팅:
 리뷰가 **전부 통과시킨** 통합 테스트 타이밍 결함이었다.
 
 reviewer APPROVE는 **필요조건이지 충분조건이 아니다.** 머지 전에 CI(`gate` 잡)도
-통과해야 한다. 둘 다 통과했는지 확인한다:
+통과해야 한다. 둘 다 통과했는지 확인한다 — **확인 명령은 Phase 3 「머지 절차」의
+`headRefOid` 대조 형태를 쓴다.** 맨 `gh pr checks <PR번호>`로 갈음하지 않는다:
+그 출력에는 **headSha가 없어** 어느 커밋의 결과인지 알 수 없고, push 직후에는
+**옛 run을 보고 초록으로 읽힌다**(PR #76 실측 — 원장 28af).
 
-```bash
-gh pr checks <PR번호>
-```
+⚠️ **2026-08-10부터 `gate`는 브랜치 보호의 필수 검사다**(`enforce_admins` 켬).
+즉 CI 미통과 머지는 이제 GitHub이 막는다. **그래도 이 확인을 생략하지 않는다** —
+보호는 3주간 없었고 그 사실을 아무도 몰랐다. 보호 설정은 언제든 바뀔 수 있고,
+`reviewer APPROVE`는 **여전히 기계가 강제하지 않는다**.
 
 CI 실패 상태에서 reviewer가 APPROVE했다면 그건 reviewer가 결정론적 검사를
 대신할 수 없다는 뜻이지 CI를 무시해도 된다는 뜻이 아니다.

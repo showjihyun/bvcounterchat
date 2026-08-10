@@ -15,6 +15,16 @@
 필요조건으로 삼는다. 브랜치 보호(status check `gate` 필수)와 함께 이중
 게이트를 구성한다: CI가 결정론적 검사를, reviewer가 추론적 검사를 맡는다.
 
+⚠️ **이 문장은 2026-08-10까지 거짓이었다**(PR #77 리뷰 blocker). 스캐폴딩
+시점부터 3주간 `main`에 **브랜치 보호가 없었고**(실측 `404 Branch not
+protected`), 그 사이 이 단언을 읽은 사람은 「필수 status check가 걸려 있다」고
+믿었다 — PR #76에서 `--auto`로 머지한 직접 원인이 그 믿음이다(원장 28af).
+**2026-08-10 사용자 결정으로 실제로 걸었다**: `gate` 필수 · `enforce_admins`
+**켬**(관리자도 우회 못 한다) · force-push·브랜치 삭제 차단 · **리뷰 승인 요구는
+걸지 않았다**(솔로 체제라 걸면 자기 PR을 못 머지한다). ⇒ **`gate`는 이제
+기계가 강제하고, `reviewer APPROVE`는 여전히 규율로만 선다.** 둘의 강제력이
+다르다는 것을 알고 읽어라.
+
 **규칙: reviewer의 APPROVE 없이 머지하지 않는다.** blocker가 있는데 급하다는
 이유로 우회하면 이 게이트는 그날로 장식이 된다.
 
@@ -66,23 +76,17 @@
 - **APPROVE** → 사용자에게 보고서 요약과 함께 "머지 가능"을 보고.
   머지 실행은 사용자 확인 후 (`gh pr merge`)
 
-  ⚠️ **`--auto`를 쓰지 않는다.** `main`에 **브랜치 보호가 없어**(실측 2026-08-10:
-  `gh api repos/OWNER/REPO/branches/main/protection` → **404 Branch not protected**)
-  필수 상태 검사가 하나도 등록돼 있지 않고, `gh pr merge --auto`는 mergeable만
-  보고 **CI 완료를 기다리지 않고 즉시 머지한다**. PR #76에서 실제로 발생했다 —
-  ADR-0012의 「CI 선행」이 낱말 하나로 빠졌다(원장 28af). 머지 직전 순서를
-  **명령으로** 고정한다:
+  **규범**: 머지 전에 **머지 대상 커밋의 CI 완료·성공을 `headSha`로 대조해**
+  확인한다. `--auto`·`--watch`로 갈음하지 않는다. ⚠️ **명령 절차의 정본은
+  SKILL이다** — 이 문서는 절차를 복제하지 않는다(`:21-25`와 같은 이유).
 
-  ```bash
-  gh pr checks <PR번호>                      # run id와 headSha를 얻는다
-  gh run view <run-id> --json status,conclusion,headSha
-  # status=completed · conclusion=success · headSha가 머지할 커밋과 일치할 때만
-  gh pr merge <PR번호> --squash --delete-branch
-  ```
-
-  ⚠️ **`gh pr checks --watch`로 갈음하지 않는다** — 새 커밋을 push한 직후에는
-  **직전 run이 끝나는 순간 종료**해서 새 run을 못 본 채 초록으로 읽힌다
-  (PR #76에서 실제로 그렇게 빠져나왔다). **headSha 대조가 유일한 그물이다.**
+  근거(원장 28af, PR #76 실측): `--auto`는 **저장소 설정 `allow_auto_merge`가
+  `false`**라 auto-merge로 등록되지 못하고 **즉시 머지로 퇴화**했고, 당시
+  브랜치 보호도 없어 기다릴 필수 검사 자체가 없었다 — **두 조건이 겹쳤다**.
+  ⚠️ 보호를 건 지금도 `allow_auto_merge=false`는 그대로이므로 **`--auto` 금지는
+  유효하다.** `--watch`는 새 커밋 push 직후 **이미 끝나 있던 옛 run을 보고 즉시
+  종료**한다(실측: 옛 run 12:48:39Z 완료, 새 run 13:07:18Z 생성) — 그래서
+  **`headSha` 대조가 유일한 그물이다.**
 - **REQUEST_CHANGES** → blocker 목록을 사용자에게 보고.
   - 구현 수정이 필요하면 `tdd.md`(coder 재호출)로 라우팅
   - 스펙·ADR 문제면 해당 문서 개정이 먼저 (같은 PR)
