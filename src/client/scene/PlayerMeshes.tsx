@@ -5,40 +5,167 @@ import type { StoreApi } from 'zustand/vanilla'
 import type { GameStoreState } from '@client/store/gameStore'
 import type { GameConnection } from '@client/net/connection'
 import type { InterpolationPosition } from '@client/net/interpolation'
+import type { MoveInput } from '@shared/sim/movement'
+import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { SCENE } from '@client/config/design-tokens'
-import { remoteMeshHeightM } from '@client/scene/remoteMeshHeight'
+import { GAIT_TUNING } from '@client/config/player-model-tuning'
+import {
+  computePlayerModelLayout,
+  isRemoteMeshVisible,
+  type PlayerModelLayout,
+} from '@client/scene/playerModelLayout'
+import { gaitPhase01 } from '@client/scene/gaitPhase'
 
-const BOX_WIDTH = 0.8
-const BOX_HEIGHT = 1.8
-// 원장 24c — 색 정본은 `SCENE`이다. 값은 그대로다(이관이지 재도색이 아니다).
-const SELF_COLOR = SCENE.self
-const OTHER_COLOR = SCENE.other
+/**
+ * 플레이어를 **6파츠 절차적 지오메트리**(머리·몸통·팔2·다리2)로 표시한다
+ * (RQ-73, ADR-0015). RQ-61: 자기 자신은 예측(RQ-62), 다른 플레이어는
+ * 보간(RQ-63) 위치로 렌더한다 — 서버 스냅샷은 두 경로 모두의 원천이지만
+ * 표시 자체는 그대로가 아니다.
+ *
+ * **이 파일은 "렌더 배선" 층이다(ADR-0015 결정 5, 단위 테스트 면제 —
+ * 대신 스크린샷)** — 파츠 좌표·크기·걸음 위상의 **계산**은 전부
+ * `@client/scene/playerModelLayout`·`@client/scene/gaitPhase`(순수 함수,
+ * `tests/unit/rq-73-player-model.test.ts`가 값으로 단언)가 담당하고, 이
+ * 파일은 그 결과로 `THREE.Mesh`를 만들거나 `.position`/`.scale`을 갱신하기만
+ * 한다.
+ *
+ * `harness/workflow/fe.md` 규칙 — R3F 컴포넌트 안에서 `useStore()` 구독
+ * 금지(store가 30Hz 갱신돼 매 프레임 React 리렌더가 걸린다). 대신 두
+ * 경로로 나눈다:
+ * - 참가·퇴장(파츠 6개 그룹 생성·제거)은 `store.subscribe`(transient)로
+ *   처리한다. React 리렌더 경로를 타지 않고, 실제로 인원이 바뀔 때만
+ *   그룹을 만들거나 지운다.
+ * - 위치·자세·걸음 스윙 갱신은 `useFrame` 안에서 `getState()`로 직접 읽어
+ *   기존 객체의 `.position`/`.scale`만 `.set()`/대입으로 갱신한다 — 새
+ *   객체를 만들지 않는다(프레임 예산, ADR-0001).
+ *
+ * **지오메트리·머티리얼은 모듈 스코프에서 한 번만 만들어 전 플레이어·전
+ * 파츠가 공유한다** — 10명 × 6파츠라도 실제 GPU 버퍼는 4개 지오메트리
+ * (머리·몸통·팔·다리, 좌우는 같은 지오메트리를 미러 위치에 둘 뿐이다) ×
+ * 2개 머티리얼(자기·타인)뿐이다. 이전 구현(단일 `BoxGeometry`)이 플레이어별로
+ * 지오메트리·머티리얼을 새로 만들고 퇴장 시 `dispose()`하던 것과 달리, 이
+ * 공유 자원은 **절대 dispose하지 않는다**(앱 생애주기 내내 존재).
+ */
+
+// RQ-73/ADR-0015 결정 5 — 배치는 순수 함수(`computePlayerModelLayout`)가
+// 값으로 정한다. 가능한 자세는 선(run/walk 공통)·앉음(crouch) 둘뿐이므로
+// (`hitboxForMode` 선례) 이 두 상수가 전부다 — **모듈 로드 시 한 번만**
+// 계산해 캐싱한다. `useFrame` 안에서 매 프레임 다시 부르면 프레임마다 새
+// 객체 그래프를 할당해 프레임 예산(ADR-0001)을 어긴다.
+const STANDING_LAYOUT: PlayerModelLayout = computePlayerModelLayout(DEFAULT_HITBOX)
+const CROUCH_LAYOUT: PlayerModelLayout = computePlayerModelLayout(CROUCH_HITBOX)
+
+function layoutForMode(mode: MoveInput['mode'] | undefined): PlayerModelLayout {
+  return mode === 'crouch' ? CROUCH_LAYOUT : STANDING_LAYOUT
+}
+
+// 몸통·팔·다리의 수평(X·Z) 치수는 두 자세에서 완전히 같다(`bodyRadiusM`
+// 불변, `player-model-tuning.ts` 참고) — 지오메트리 자체는 선 자세 치수로
+// 한 번만 만들고, 앉은 자세는 `scale.y`로만 눌러 표현한다(이전 단일 박스
+// 구현이 `BOX_HEIGHT`를 `scale.y`로 눌렀던 것과 동일한 기법).
+const HEAD_GEOMETRY = new THREE.SphereGeometry(STANDING_LAYOUT.head.radius, 12, 8)
+const TORSO_GEOMETRY = new THREE.BoxGeometry(
+  STANDING_LAYOUT.torso.halfExtents.x * 2,
+  STANDING_LAYOUT.torso.halfExtents.y * 2,
+  STANDING_LAYOUT.torso.halfExtents.z * 2,
+)
+// 좌·우 팔(그리고 다리)은 같은 지오메트리를 공유한다 — 둘은 X 위치(부호)만
+// 다를 뿐 형태가 완전히 대칭이다(ADR-0015 결정 3).
+const ARM_GEOMETRY = new THREE.BoxGeometry(
+  STANDING_LAYOUT.armLeft.halfExtents.x * 2,
+  STANDING_LAYOUT.armLeft.halfExtents.y * 2,
+  STANDING_LAYOUT.armLeft.halfExtents.z * 2,
+)
+const LEG_GEOMETRY = new THREE.BoxGeometry(
+  STANDING_LAYOUT.legLeft.halfExtents.x * 2,
+  STANDING_LAYOUT.legLeft.halfExtents.y * 2,
+  STANDING_LAYOUT.legLeft.halfExtents.z * 2,
+)
+
+// 원장 24c — 색 정본은 `SCENE`이다.
+const SELF_MATERIAL = new THREE.MeshStandardMaterial({ color: SCENE.self })
+const OTHER_MATERIAL = new THREE.MeshStandardMaterial({ color: SCENE.other })
+
+interface PlayerModelInstance {
+  /** 플레이어의 **발** 위치에 놓이는 부모 그룹 — 6파츠 전부 이 그룹의
+   * 자식으로, 로컬 좌표가 곧 `playerModelLayout.ts`가 계산한 발-기준
+   * 높이다. */
+  group: THREE.Group
+  head: THREE.Mesh
+  torso: THREE.Mesh
+  armLeft: THREE.Mesh
+  armRight: THREE.Mesh
+  legLeft: THREE.Mesh
+  legRight: THREE.Mesh
+}
+
+function createPlayerModelInstance(isSelf: boolean): PlayerModelInstance {
+  const material = isSelf ? SELF_MATERIAL : OTHER_MATERIAL
+  const group = new THREE.Group()
+
+  const head = new THREE.Mesh(HEAD_GEOMETRY, material)
+  const torso = new THREE.Mesh(TORSO_GEOMETRY, material)
+  const armLeft = new THREE.Mesh(ARM_GEOMETRY, material)
+  const armRight = new THREE.Mesh(ARM_GEOMETRY, material)
+  const legLeft = new THREE.Mesh(LEG_GEOMETRY, material)
+  const legRight = new THREE.Mesh(LEG_GEOMETRY, material)
+  group.add(head, torso, armLeft, armRight, legLeft, legRight)
+
+  return { group, head, torso, armLeft, armRight, legLeft, legRight }
+}
+
+/**
+ * `instance`의 6파츠를 `layout`(자세별 정적 배치)과 `gaitPhase`(0~1, 걸음
+ * 위상)에 맞춰 갱신한다. **할당 없음** — 전부 기존 `Vector3`의 `.set()`
+ * 또는 숫자 대입이다(useFrame 안전).
+ *
+ * 머리·몸통은 스윙하지 않는다(사람의 걸음에서 흔들리는 것은 팔다리뿐).
+ * 팔·다리는 로컬 **Z축으로만 평행이동**한다(회전이 아니다 — 진폭 안전
+ * 마진 근거는 `player-model-tuning.ts` docblock). 같은 쪽 팔은 다리와
+ * **반대** 위상(교차 보행)으로 움직인다.
+ */
+function updatePlayerModelPose(instance: PlayerModelInstance, layout: PlayerModelLayout, gaitPhase: number): void {
+  const swing = Math.sin(gaitPhase * Math.PI * 2)
+  const legSwingZ = GAIT_TUNING.LEG_SWING_AMPLITUDE_M * swing
+  const armSwingZ = GAIT_TUNING.ARM_SWING_AMPLITUDE_M * swing
+
+  instance.head.position.set(layout.head.center.x, layout.head.center.y, layout.head.center.z)
+
+  instance.torso.position.set(layout.torso.center.x, layout.torso.center.y, layout.torso.center.z)
+  const torsoScaleY = layout.torso.halfExtents.y / STANDING_LAYOUT.torso.halfExtents.y
+  instance.torso.scale.y = torsoScaleY
+
+  // 팔의 half-height는 몸통과 같은 값으로 유도했으므로(playerModelLayout.ts
+  // — armLeft/armRight의 halfExtents.y가 torsoHalfHeightM 그대로) 스케일도
+  // 몸통과 같다. 다리는 별도 높이 구간(엉덩이 아래)이라 따로 계산한다.
+  instance.armLeft.scale.y = torsoScaleY
+  instance.armRight.scale.y = torsoScaleY
+  instance.armLeft.position.set(layout.armLeft.center.x, layout.armLeft.center.y, layout.armLeft.center.z - armSwingZ)
+  instance.armRight.position.set(
+    layout.armRight.center.x,
+    layout.armRight.center.y,
+    layout.armRight.center.z + armSwingZ,
+  )
+
+  const legScaleY = layout.legLeft.halfExtents.y / STANDING_LAYOUT.legLeft.halfExtents.y
+  instance.legLeft.scale.y = legScaleY
+  instance.legRight.scale.y = legScaleY
+  instance.legLeft.position.set(layout.legLeft.center.x, layout.legLeft.center.y, layout.legLeft.center.z + legSwingZ)
+  instance.legRight.position.set(
+    layout.legRight.center.x,
+    layout.legRight.center.y,
+    layout.legRight.center.z - legSwingZ,
+  )
+}
 
 interface PlayerMeshesProps {
   store: StoreApi<GameStoreState>
   connection: GameConnection
 }
 
-/**
- * 플레이어 박스 표시(RQ-61: 자기 자신은 예측(RQ-62), 다른 플레이어는
- * 보간(RQ-63) 위치로 렌더한다 — 서버 스냅샷은 두 경로 모두의 원천이지만
- * 표시 자체는 그대로가 아니다).
- *
- * `harness/workflow/fe.md` 규칙 — R3F 컴포넌트 안에서 `useStore()` 구독
- * 금지(store가 30Hz 갱신돼 매 프레임 React 리렌더가 걸린다). 대신 두
- * 경로로 나눈다:
- * - 참가·퇴장(mesh 생성·제거)은 `store.subscribe`(transient)로 처리한다.
- *   React 리렌더 경로를 타지 않고, 실제로 인원이 바뀔 때만 mesh를
- *   만들거나 지운다 — 매 프레임 일어나는 일이 아니다.
- * - 위치 갱신은 `useFrame` 안에서 `getState()`로 직접 읽어 기존 mesh의
- *   `.position`만 `.set()`으로 갱신한다 — 새 객체를 만들지 않는다(프레임
- *   예산 규칙, `harness/workflow/fe.md`). 다른 플레이어 위치는
- *   `connection.interpolator.copyPositionInto`로 얻는다 — `getPosition`
- *   (단위 테스트 계약)과 달리 재사용 버퍼에 덮어써 프레임당 할당이 없다.
- */
 export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
   const groupRef = useRef<THREE.Group>(null)
-  const meshesRef = useRef(new Map<string, THREE.Mesh>())
+  const instancesRef = useRef(new Map<string, PlayerModelInstance>())
   // RQ-63: copyPositionInto의 out 인자로 재사용한다 — useFrame 안에서 매
   // 프레임·매 세션마다 새 객체를 만들지 않기 위한 스크래치 버퍼 하나.
   const interpolatedRef = useRef<InterpolationPosition>({ x: 0, y: 0, z: 0 })
@@ -52,58 +179,38 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
     // 취급되게 한다.
     const group: THREE.Group = current
 
-    const meshes = meshesRef.current
+    const instances = instancesRef.current
 
     function syncMeshes(state: GameStoreState): void {
-      for (const [sessionId, mesh] of meshes) {
+      for (const [sessionId, instance] of instances) {
         if (!state.players.has(sessionId)) {
-          group.remove(mesh)
-          mesh.geometry.dispose()
-          ;(mesh.material as THREE.Material).dispose()
-          meshes.delete(sessionId)
+          group.remove(instance.group)
+          instances.delete(sessionId)
         }
       }
 
       state.players.forEach((_player, sessionId) => {
-        if (meshes.has(sessionId)) return
+        if (instances.has(sessionId)) return
         const isSelf = sessionId === state.selfSessionId
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(BOX_WIDTH, BOX_HEIGHT, BOX_WIDTH),
-          new THREE.MeshStandardMaterial({ color: isSelf ? SELF_COLOR : OTHER_COLOR }),
-        )
-        group.add(mesh)
-        meshes.set(sessionId, mesh)
+        const instance = createPlayerModelInstance(isSelf)
+        // 초기 정지 포즈(스윙 없음, 선 자세) — 원격이면 다음 useFrame이
+        // 실제 자세·걸음 위상으로 즉시 덮어쓴다.
+        updatePlayerModelPose(instance, STANDING_LAYOUT, 0)
+        group.add(instance.group)
+        instances.set(sessionId, instance)
       })
 
-      // 22b: 1인칭 카메라가 자기 박스 **내부**에 있어 아래를 보면 자기
-      // 박스가 시야를 가린다. ⚠️ **REV(RQ-92 v2.2, 2026-08-07) — 이 주석이
-      // 틀린 방향으로 적혀 있었다(실측으로 정정)**: "`eyeHeightM` 1.9는
-      // BOX_HEIGHT 1.8보다 0.1m **위**"라고 서술했으나, 실제 `DEFAULT_HITBOX
-      // .eyeHeightM`은 **1.7**이고(`combat-tuning.ts`) 이는 BOX_HEIGHT
-      // 1.8보다 0.1m **아래** — 정반대다. 즉 서술이 가리키던 "RQ-31 이후
-      // 현실값으로 복원되면 박스 내부가 된다"는 미래형 경고가 아니라 **이미
-      // 일어난 현재 상태**다(RQ-31 스폰 로테이션 도입으로 1.9→1.7 복원 완료,
-      // `combat-tuning.ts` "복원 완료" 주석, 22a 후속 이월 ①). 앉으면
-      // (`mode==='crouch'`) 눈높이가 `CROUCH_HITBOX.eyeHeightM`(≈1.222)로
-      // 더 낮아져 박스 안쪽으로 더 깊이 들어간다 — **하지만 자기 박스는
-      // 어차피 숨긴다**(바로 아래)이라 실제로 보이는 문제는 아니다.
-      // ✅ **REV2(RQ-92 v2.4, 2026-08-08, 원장 24az)** — 원격 플레이어
-      // 렌더에는 이제 자세 필드가 있다(`Player.mode`, `useFrame` 아래
-      // `remoteMeshHeightM` 배선 참고): 원격 박스 높이가 자세를 따라간다.
-      // **자기 박스만은 여전히 `BOX_HEIGHT` 고정이다** — RQ-92 v2.4 원문이
-      // "원격 플레이어의 렌더 높이"로 한정하고(자기 박스는 애초에 숨겨서
-      // 안 보인다), 자기 자신의 현재 자세를 `store`가 노출하지 않는다
-      // (`selfPredictedState`는 `MoveState`뿐 — `mode` 필드가 없다,
-      // `@shared/sim/movement` 참고). 3인칭 관전(RQ-91)에서 자기 박스를
-      // 다시 켤 때 이 축을 함께 볼 필요가 있다(다음 라운드 판단). 자기
-      // 것만 숨긴다 — 위치 갱신
-      // (`useFrame`)은 계속 돌려 둔다(3인칭 관전 RQ-91 등에서 다시 켜기만
-      // 하면 되도록). 여기서 매번 갱신하는 이유: `selfSessionId`가 첫
-      // 스냅샷보다 늦게 정해지는 경우에도 자기 메시가 계속 보이지 않도록
-      // (mesh 생성 시점 한 번만 판단하면 그 순간의 값에 고정된다). 이
-      // 함수는 store 변경 시에만 돌고 렌더 루프가 아니다.
-      for (const [sessionId, mesh] of meshes) {
-        mesh.visible = sessionId !== state.selfSessionId
+      // 22b: 1인칭 카메라가 자기 모델 **내부**에 있어 아래를 보면 자기
+      // 모델이 시야를 가린다 — 자기 것만 숨긴다(RQ-73 "자기 자신은
+      // 1인칭이므로 렌더하지 않는다", GA-95). 여기서 매번 갱신하는 이유:
+      // `selfSessionId`가 첫 스냅샷보다 늦게 정해지는 경우에도 자기 모델이
+      // 계속 보이지 않도록(그룹 생성 시점 한 번만 판단하면 그 순간의 값에
+      // 고정된다). 이 함수는 store 변경 시에만 돌고 렌더 루프가 아니다.
+      // `isRemoteMeshVisible`(순수 함수, `tests/unit/rq-73-player-model
+      // .test.ts` GA-95)이 판정을 값으로 고정한다 — 여기는 그 값을
+      // `.visible`에 대입만 한다.
+      for (const [sessionId, instance] of instances) {
+        instance.group.visible = isRemoteMeshVisible(sessionId, state.selfSessionId)
       }
     }
 
@@ -112,12 +219,12 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
 
     return () => {
       unsubscribe()
-      for (const mesh of meshes.values()) {
-        group.remove(mesh)
-        mesh.geometry.dispose()
-        ;(mesh.material as THREE.Material).dispose()
+      // 지오메트리·머티리얼은 모듈 스코프 공유 자원이라 dispose하지 않는다
+      // (위 파일 docblock) — 씬 그래프에서 그룹만 떼어내면 충분하다.
+      for (const instance of instances.values()) {
+        group.remove(instance.group)
       }
-      meshes.clear()
+      instances.clear()
     }
   }, [store])
 
@@ -128,37 +235,37 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
     // for...of — Map.forEach의 화살표 콜백은 매 프레임 클로저를 새로 할당한다
     // (리뷰 minor). for...of는 화살표 클로저의 명시적 프레임당 할당을
     // 제거한다(프레임 예산 규칙 — 순회 자체가 할당 0이라는 뜻은 아니다).
-    for (const [sessionId, mesh] of meshesRef.current) {
-      // RQ-62: 자기 자신은 예측 위치로 렌더한다(GA-34/35, 서버 왕복 지연
-      // 없이 즉시 반응) — 서버 스냅샷 그대로 표시하면 지연이 그대로
-      // 체감된다. 예측이 아직 없으면(접속 직후) 서버 스냅샷으로 폴백한다.
+    for (const [sessionId, instance] of instancesRef.current) {
+      // RQ-62: 자기 자신은 예측 위치로 렌더한다(GA-34/35) — 하지만 자기
+      // 모델은 항상 숨겨져 있으므로(위) 위치만 갱신하고 자세(스윙)는
+      // 갱신하지 않는다 — `selfPredictedState`에 자세(`mode`) 필드가 없다
+      // (`@shared/sim/movement`의 `MoveState`, 22b REV 참고).
       if (sessionId === state.selfSessionId && state.selfPredictedState) {
         const predicted = state.selfPredictedState
-        mesh.position.set(predicted.x, predicted.y + BOX_HEIGHT / 2, predicted.z)
+        instance.group.position.set(predicted.x, predicted.y, predicted.z)
         continue
       }
       // RQ-63: 다른 플레이어는 지연 버퍼를 반영한 보간 위치로 렌더한다
       // (GA-37/38, ADR-0003) — 아직 스냅샷을 한 번도 받지 못했으면(막
       // 참가해 다음 패치를 기다리는 중) 서버 스냅샷으로 폴백한다.
-      // RQ-92 v2.4(원장 24az, GA-72) — 자세는 보간하지 않는다(RQ-63 예외,
-      // `interpolator.getMode` 참고) — 위치와 별도로 조회한다. 높이는
-      // `remoteMeshHeightM`이 인자로 받은 두 히트박스 상수 중 하나에서
-      // 유도한 숫자를 그대로 반환할 뿐 새 객체를 만들지 않는다(프레임
-      // 예산 ADR-0001). `mesh.scale.y`로 기존 지오메트리(`BOX_HEIGHT`
-      // 기준)를 비율 조정할 뿐 지오메트리 자체를 재생성하지 않는다 —
-      // 폭(`BOX_WIDTH`)은 자세와 무관하게 그대로다(GA-72가 규정하는 것은
-      // 높이뿐이다).
+      // 자세(`getMode`, RQ-92 v2.4)와 걸음 누적 거리(`getGaitDistance`,
+      // RQ-73/ADR-0015 결정 4)는 위치와 별도로 조회한다 — 둘 다 렌더
+      // 시각과 무관한 계단/누적 값이다(위치처럼 보간하지 않는다).
       if (connection.interpolator.copyPositionInto(sessionId, renderTime, interpolated)) {
-        const heightM = remoteMeshHeightM(connection.interpolator.getMode(sessionId, renderTime) ?? 'run')
-        mesh.scale.y = heightM / BOX_HEIGHT
-        mesh.position.set(interpolated.x, interpolated.y + heightM / 2, interpolated.z)
+        const mode = connection.interpolator.getMode(sessionId, renderTime) ?? 'run'
+        const gaitDistanceM = connection.interpolator.getGaitDistance(sessionId) ?? 0
+        instance.group.position.set(interpolated.x, interpolated.y, interpolated.z)
+        updatePlayerModelPose(
+          instance,
+          layoutForMode(mode),
+          gaitPhase01(gaitDistanceM, GAIT_TUNING.CYCLE_DISTANCE_M),
+        )
         continue
       }
       const player = state.players.get(sessionId)
       if (!player) continue
-      const heightM = remoteMeshHeightM(player.mode ?? 'run')
-      mesh.scale.y = heightM / BOX_HEIGHT
-      mesh.position.set(player.x, player.y + heightM / 2, player.z)
+      instance.group.position.set(player.x, player.y, player.z)
+      updatePlayerModelPose(instance, layoutForMode(player.mode), 0)
     }
   })
 

@@ -24,6 +24,7 @@
 import { AUDIO, PLAYER } from '@shared/constants'
 import type { MoveInput } from '@shared/sim/movement'
 import { stepFootstepAccumulator } from '@shared/sim/footsteps'
+import { stepGaitDistance } from '@client/scene/gaitPhase'
 
 export interface InterpolationPosition {
   x: number
@@ -142,6 +143,22 @@ export interface RemoteEntityInterpolator {
    * 무시되므로 자동으로 같은 결과(`undefined`)다.
    */
   getFootstepCount(sessionId: string): number | undefined
+
+  /**
+   * RQ-73/ADR-0015 결정 4(GA-93/94) — 이 세션(원격 플레이어)의 걸음 스윙
+   * 누적 접지 수평 이동 거리(m, 단조 증가하지 않을 수 있다 — 리스폰 시
+   * 0으로 리셋된다). **`renderTime` 인자를 받지 않는다** — `getFootstepCount`
+   * (바로 위)와 완전히 동일한 방어선이다: 계산은 오직 `addSnapshot`에서만
+   * 일어나고, 이 접근자는 그 결과를 읽기만 한다. 위상(0~1)으로 변환하는
+   * 것은 이 함수의 일이 아니다 — 무상태 변환(`gaitPhase01`,
+   * `@client/scene/gaitPhase`)은 렌더 배선(`PlayerMeshes.tsx`)이 매 프레임
+   * 직접 호출한다(발소리가 `getFootstepCount`를 그대로 읽는 것과 동일한
+   * 분리 원칙).
+   *
+   * 세션을 모르면(스냅샷을 한 번도 받지 못함) `undefined` — `getFootstepCount`와
+   * 동일한 GA-39 계약.
+   */
+  getGaitDistance(sessionId: string): number | undefined
 }
 
 interface RemoteBuffer {
@@ -163,6 +180,20 @@ interface RemoteBuffer {
     /** 누적 발소리 총 발생 횟수(단조 증가) — `getFootstepCount`가 그대로
      * 반환한다. */
     totalCount: number
+  }
+  /** RQ-73/ADR-0015 결정 4(GA-93/94) — 걸음 스윙 누적 상태. `footstep`(위)과
+   * 물리적으로 분리된 별도 상태다(같은 이유 — 렌더 시각과 무관해야 하므로,
+   * `getGaitDistance`가 `renderTime`을 받지 않는다). `addSnapshot` 호출
+   * 시점에만 전진한다. */
+  gait: {
+    /** 직전 `addSnapshot` 호출의 스냅샷(델타 계산용 "직전 상태"). `footstep
+     * .previous`와 같은 스냅샷을 가리키지 않는다 — 두 상태가 서로 다른
+     * 스텝에서 갱신될 수 있는 구조를 열어 두지 않기 위해 각자 자신의
+     * `previous`를 갖는다(현재는 항상 같은 시점에 함께 갱신되지만, 이
+     * 독립성이 "값 복제"가 아니라 "책임 분리"임을 코드 구조로 보인다). */
+    previous: RemoteSnapshot | undefined
+    /** `stepGaitDistance`가 다음 호출로 이어서 쓰는 누적 거리(m). */
+    distanceM: number
   }
 }
 
@@ -206,6 +237,31 @@ function advanceFootstepAccumulator(state: RemoteBuffer['footstep'], snapshot: R
 
   state.accumM = result.accumM
   state.totalCount += result.footstepCount
+}
+
+/**
+ * RQ-73/ADR-0015 결정 4(GA-93/94) — 세션의 새 스냅샷 한 개를 걸음 스윙
+ * 누적 상태에 먹인다. `advanceFootstepAccumulator`(바로 위)와 같은 판정
+ * 순서(리스폰 리셋 → 수평 거리 누적)를 쓰지만 **`mode` 필터가 없다** —
+ * 이 함수가 `advanceFootstepAccumulator`와 갈리는 지점 그 자체다(자세와
+ * 무관하게 접지 이동이면 누적한다, ADR-0015 결정 4·GA-94).
+ */
+function advanceGaitAccumulator(state: RemoteBuffer['gait'], snapshot: RemoteSnapshot): void {
+  const previous = state.previous
+  state.previous = snapshot
+
+  if (!previous) return // 첫 addSnapshot — 최초 스폰과 동일 취급, 무음.
+
+  const previousHp = previous.hp ?? PLAYER.MAX_HP
+  const currentHp = snapshot.hp ?? PLAYER.MAX_HP
+  const discontinuous = previousHp === 0 && currentHp === PLAYER.MAX_HP
+
+  state.distanceM = stepGaitDistance(state.distanceM, {
+    wasGrounded: previous.grounded ?? true,
+    isGrounded: snapshot.grounded ?? true,
+    horizontalDeltaM: Math.hypot(snapshot.x - previous.x, snapshot.z - previous.z),
+    discontinuous,
+  })
 }
 
 /**
@@ -395,13 +451,18 @@ export function createRemoteEntityInterpolator(
 
       let buffer = buffers.get(sessionId)
       if (!buffer) {
-        buffer = { snapshots: [], footstep: { previous: undefined, accumM: 0, totalCount: 0 } }
+        buffer = {
+          snapshots: [],
+          footstep: { previous: undefined, accumM: 0, totalCount: 0 },
+          gait: { previous: undefined, distanceM: 0 },
+        }
         buffers.set(sessionId, buffer)
       }
       buffer.snapshots.push(snapshot)
       pruneBuffer(buffer, delayMs)
 
       advanceFootstepAccumulator(buffer.footstep, snapshot)
+      advanceGaitAccumulator(buffer.gait, snapshot)
     },
 
     getPosition(sessionId, renderTime) {
@@ -445,6 +506,14 @@ export function createRemoteEntityInterpolator(
       if (!buffer) return undefined
 
       return buffer.footstep.totalCount
+    },
+
+    getGaitDistance(sessionId) {
+      if (sessionId === selfSessionId) return undefined // GA-39
+      const buffer = buffers.get(sessionId)
+      if (!buffer) return undefined
+
+      return buffer.gait.distanceM
     },
   }
 }
