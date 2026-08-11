@@ -5,13 +5,15 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { createGameStore, type GameStoreState } from '@client/store/gameStore'
 import { connectToGame } from '@client/net/connection'
 import { AUDIO, MOVEMENT, NET, PLAYER } from '@shared/constants'
 import { getStats, openStatsDb, type StatsDb, type StatsRow } from '@server/persistence/statsDb'
-import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
-import { escapeSafeZone, getSafeZoneSeam } from '../support/safe-zone'
+import { DEFAULT_HITBOX, type SpreadTuning } from '@shared/config/combat-tuning'
+import { WALL_EAST } from '@shared/sim/walls'
+import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
  * 20b(클라이언트 기본 1차 — 접속·씬·상태 표시) — netcode 레이어
@@ -1447,5 +1449,221 @@ describe('RQ-72 2/2-b/원장 28ab: 원격 발소리 hp 배선 잠금 — 사망�
       ])
     },
     30_000,
+  )
+})
+
+/**
+ * RQ-70/RQ-71 — **GA-100** (`harness/evals/golden/track-a-product.jsonl`,
+ * `verify` 필드가 이 파일 경로를 직접 지정한다).
+ *
+ * **왜 통합이어야 하는가(골든 자신의 근거, `given`/`then` 절 그대로)**:
+ * "명중 이벤트가 `connectToGame`이 **실제로 등록한 핸들러**를 통해
+ * 도착한다"는 전제와 "탄흔·피격 수집기가 **실제로 호출된다**"는 결과
+ * 둘 다 배선(wiring) 자체가 관측 대상이다 — 단위 테스트로 두면
+ * `connection.ts`를 별도 모듈로 뽑아 그 모듈만 부르는 우회가 가능해
+ * "`connectToGame`이 그것을 정말 부르는가"라는 한 홉이 남는다(RQ-73
+ * 라운드에서 변이 4건이 1039/1039를 통과한 바로 그 구조, ADR-0016 결정 4
+ * 참고). 그래서 이 describe 두 개는 **실 서버 + 실 `fire` 판정 + 실
+ * WebSocket**으로 진짜 `hit` 브로드캐스트를 만들어 흘려보낸다 — 합성
+ * `HitEvent` 객체를 직접 주입하지 않는다(그건 `rq-70-71-hit-feedback
+ * .test.ts`의 GA-98 몫이다, 레벨 분리).
+ *
+ * **왜 시나리오가 둘인가(벽·플레이어)**: ADR-0016 결정 1이 "대상 종류
+ * (벽/플레이어)"를 이벤트의 필수 축으로 못박았고, 서버가 그 두 갈래를
+ * 각각 **판정해 만드는 경로 자체가 이번 라운드의 신규 코드**(맥락 —
+ * `rq-12-wall-occlusion.test.ts`가 이미 "차폐"는 덮지만 "차폐되지 않았을
+ * 때 벽 자체에 명중 이벤트가 생기는가"는 오늘 아무도 덮지 않는다). 한
+ * 갈래만 배선하고 다른 갈래를 빠뜨리는 회귀(예: 벽 이벤트만 만들고 플레이어
+ * 이벤트 브로드캐스트를 잊는 경우, 또는 그 반대)를 각각 잡으려면 두 경로
+ * 모두 실제로 발화시켜야 한다 — RQ-72 2/2-b(원장 28ab)가 "필드 하나만
+ * 생략해도 828+169건이 전부 통과했다"고 실측한 것과 같은 이유로, 한
+ * 시나리오만으로는 나머지 갈래의 배선 누락이 조용히 가려진다.
+ *
+ * **결정론(탄착점) — `spreadTuningOverride`(RQ-90 그린필드 화이트박스
+ * 계약, `rq-90-spread-seed-determinism.test.ts` 선례와 동일한 권한)로
+ * 콘 반경을 0으로 고정한다.** 기본 탄퍼짐(0.5°)은 이 파일의 사거리
+ * (15m·약 11.6m)에서도 대개 명중하지만, 이 테스트는 "배선이 있는가"만
+ * 보고 싶을 뿐 탄퍼짐 확률에 기대고 싶지 않다 — 콘 반경 0이면 항상
+ * 정확히 조준한 방향 그대로 나간다(`applySpread`의 `coneRadiusRad===0`
+ * 항등 계약).
+ *
+ * **화이트박스 계약**: `moveStates`·`positionHistory`·`firedSinceSpawn`은
+ * 그린필드가 아니다(기존 rq-12/rq-31/rq-90 파일들과 동일 필드).
+ * `spreadTuningOverride`도 그린필드가 아니다(RQ-90 기존 계약,
+ * `combat-tuning.ts`의 `SpreadTuning`을 그대로 재사용 — 이 필드 자체를
+ * 새로 만들지 않는다). 이 describe 쌍이 **새로 요구하는 것은 오직**
+ * `store.getState().bulletHoles`·`store.getState().hitEffects`
+ * (`GameStoreState` 확장, `tests/unit/rq-70-71-hit-feedback.test.ts` 상단
+ * "gameStore.ts/connection.ts 배선" 절이 요약한 계약)뿐이다.
+ *
+ * **정확한 명중 기하(라켓스캔 자체)는 이 파일의 검증 대상이 아니다** —
+ * 벽 쪽은 `tests/unit/sim-combat-wall-hit.test.ts`, 플레이어 쪽은 기존
+ * `sim-combat.test.ts`/`rq-12-server-hitscan.test.ts`가 이미 담당한다.
+ * 이 describe 쌍은 "그 판정 결과가 실제로 `hit` 메시지로 나가 store까지
+ * 닿는가"만 본다 — 벽 시나리오만 좌표를 정밀하게 검산한다(손으로 검산
+ * 가능한 배치를 골랐을 뿐 그 자체가 이 파일의 핵심 관심사는 아니다),
+ * 플레이어 시나리오는 "B 근방"이라는 느슨한 위치 확인으로 충분하다.
+ */
+
+/** GA-100 화이트박스 접근 대상 — `SafeZoneEscapeSeam`(`../support/safe
+ * -zone`, 그린필드 아님)에 RQ-90 기존 계약(`spreadTuningOverride`)만
+ * 얹는다. `wallsOverride`는 쓰지 않는다 — 기본값(`PRODUCTION_WALLS`)에
+ * 이미 `WALL_EAST`가 들어 있으므로 오버라이드가 필요 없다(간섭 표면을
+ * 최소화한다). */
+interface HitFeedbackTestSeam extends SafeZoneEscapeSeam<unknown> {
+  spreadTuningOverride?: SpreadTuning
+}
+
+function getHitFeedbackSeam(room: { roomId: string }): HitFeedbackTestSeam {
+  const serverRoom = matchMaker.getLocalRoomById(room.roomId) as unknown as HitFeedbackTestSeam | undefined
+  if (!serverRoom) {
+    throw new Error(`GA-100 화이트박스 접근 실패 — matchMaker.getLocalRoomById('${room.roomId}')가 룸을 찾지 못했다`)
+  }
+  return serverRoom
+}
+
+/** 콘 반경 0 — 탄착점을 결정론적으로 만든다(위 describe 상단 "결정론" 절). */
+const ZERO_SPREAD: SpreadTuning = { coneRadiusRad: 0, movingMultiplier: 1, airborneMultiplier: 1 }
+
+/** 화이트박스 텔레포트 후 스키마 동기화 정착 대기
+ * (`rq-12-wall-occlusion.test.ts`의 `TELEPORT_SETTLE_MS`와 동일 근거·값). */
+const HIT_TELEPORT_SETTLE_MS = 150
+
+/** 사수를 원점(0,0,0)으로 텔레포트한다 — `WALL_EAST.minX`(15)보다 한참
+ * 안쪽이고 모든 Safe Zone 밖(`rq-12-wall-occlusion.test.ts`의
+ * `SHOOTER_POS`와 동일 좌표·동일 근거, 이 파일이 그 결론을 재검산하지
+ * 않고 재사용한다). */
+function teleportShooterToOrigin(seam: HitFeedbackTestSeam, sessionId: string): void {
+  seam.moveStates.set(sessionId, { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: true })
+  seam.positionHistory.delete(sessionId)
+}
+
+describe('20b/RQ-70/GA-100(벽): 실 사격으로 만들어진 벽 명중 이벤트가 connectToGame 경로로 도착해 store.bulletHoles를 갱신한다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    "GA-100(벽): 원점에서 WALL_EAST를 향해 수평으로 쏘면, 서버가 벽 명중 좌표·법선을 담은 'hit' 이벤트를 브로드캐스트하고 그것이 connectToGame이 등록한 핸들러를 통해 store.bulletHoles에 실제로 쌓인다(store.hitEffects는 비어 있다)",
+    async () => {
+      const store = createGameStore()
+      const connection: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'wallShooter', store),
+        CONNECT_TIMEOUT_MS,
+        "connectToGame(nickname: 'wallShooter')",
+      )
+      await waitForSelfNickname(store, connection.sessionId)
+
+      const seam = getHitFeedbackSeam(connection.room)
+      seam.spreadTuningOverride = ZERO_SPREAD
+      teleportShooterToOrigin(seam, connection.sessionId)
+      await sleep(HIT_TELEPORT_SETTLE_MS)
+
+      // 사수 눈높이(DEFAULT_HITBOX.eyeHeightM, mode 미선언이라 'run' 기본값
+      // → 선 자세)에서 정확히 +x로 쏜다 — WALL_EAST(x:15~16, z:-5~5)의
+      // minX 면(x=15)에 z=0에서 진입한다(손으로 검산 가능한 배치,
+      // `sim-combat-wall-hit.test.ts`의 "x 슬랩이 tMin을 결정" 케이스와
+      // 동일한 기하를 15m 거리에서 재현한다).
+      connection.room.send('fire', { dirX: 1, dirY: 0, dirZ: 0 })
+
+      const afterHit = await waitForStoreCondition(
+        store,
+        (s) => s.bulletHoles.length > 0,
+        STORE_TIMEOUT_MS,
+        "GA-100(벽): store.bulletHoles에 탄흔이 반영되길 대기 — 반영되지 않으면 'hit' 배선이 없다는 뜻",
+      )
+
+      expect(afterHit.bulletHoles).toHaveLength(1)
+      const hole = afterHit.bulletHoles[0]!
+      expect(hole.point.x).toBeCloseTo(WALL_EAST.minX, 6)
+      expect(hole.point.y).toBeCloseTo(DEFAULT_HITBOX.eyeHeightM, 6)
+      expect(hole.point.z).toBeCloseTo(0, 6)
+      expect(hole.normal).toEqual({ x: -1, y: 0, z: 0 })
+
+      // 대상 종류 구분도 실 배선에서 성립한다 — 벽 명중은 피격 컬렉션으로 새지 않는다.
+      expect(store.getState().hitEffects).toHaveLength(0)
+
+      await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
+    },
+    20_000,
+  )
+})
+
+describe('20b/RQ-71/GA-100(플레이어): 실 사격으로 만들어진 플레이어 명중 이벤트가 connectToGame 경로로 도착해 store.hitEffects를 갱신한다', () => {
+  let server: RunningServer
+
+  beforeAll(async () => {
+    server = await startServer()
+  }, LISTEN_TIMEOUT_MS + 5_000)
+
+  afterAll(async () => {
+    await stopServer(server)
+  })
+
+  it(
+    "GA-100(플레이어): A가 B를 조준 사격해 명중하면, 서버가 target='player'인 'hit' 이벤트를 브로드캐스트하고 그것이 A의 connectToGame 핸들러를 통해 store.hitEffects에 실제로 쌓인다(store.bulletHoles는 비어 있다)",
+    async () => {
+      const storeA = createGameStore()
+      const connA: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'playerShooter', storeA),
+        CONNECT_TIMEOUT_MS,
+        "A: connectToGame(nickname: 'playerShooter')",
+      )
+      const storeB = createGameStore()
+      const connB: Connection = await withTimeout(
+        connectToGame(server.endpoint, 'playerTarget', storeB),
+        CONNECT_TIMEOUT_MS,
+        "B: connectToGame(nickname: 'playerTarget')",
+      )
+      await waitForSelfNickname(storeA, connA.sessionId)
+      await waitForSelfNickname(storeB, connB.sessionId)
+
+      const seam = getHitFeedbackSeam(connA.room)
+      seam.spreadTuningOverride = ZERO_SPREAD
+      const baselineA = storeA.getState().players.get(connA.sessionId)!
+      const baselineB = storeB.getState().players.get(connB.sessionId)!
+      // 반경-방사 탈출(`escapeSafeZone`) — 첫째·둘째 입장자는 인접 스폰
+      // 인덱스(각도차 24°)를 받으므로 탈출 후 현의 원점 최근접 거리는
+      // 28·cos(12°)≈27.4m로 WALL_EAST 등 벽 대역(15.8~16.8m)과 무관하다
+      // (`rq-12-wall-occlusion.test.ts` 상단 "회귀 사전 실측" 절과 동일
+      // 근거 — 이 파일이 그 결론을 재검산하지 않고 재사용한다).
+      const escapedA = escapeSafeZone(seam, connA.sessionId, baselineA)
+      const escapedB = escapeSafeZone(seam, connB.sessionId, baselineB)
+      seam.firedSinceSpawn.set(connB.sessionId, true) // RQ-16과 분리 — 이 시나리오는 GA-100 배선만 본다
+      await sleep(HIT_TELEPORT_SETTLE_MS)
+
+      const aim = aimAtBody(escapedA, escapedB)
+      connA.room.send('fire', aim)
+
+      const afterHit = await waitForStoreCondition(
+        storeA,
+        (s) => s.hitEffects.length > 0,
+        STORE_TIMEOUT_MS,
+        "GA-100(플레이어): store.hitEffects에 피격 효과가 반영되길 대기 — 반영되지 않으면 'hit' 배선이 없다는 뜻",
+      )
+
+      expect(afterHit.hitEffects).toHaveLength(1)
+      const effect = afterHit.hitEffects[0]!
+      // 정확한 명중점 산술(raycastHitbox)은 sim-combat.test.ts/RQ-12
+      // 통합 테스트가 이미 검증한다 — 여기서는 "B 근방"이라는 느슨한
+      // 위치만 확인해 배선(GA-100)과 판정 정확도(다른 골든)를 섞지 않는다.
+      const horizontalDistanceFromB = Math.hypot(effect.point.x - escapedB.x, effect.point.z - escapedB.z)
+      expect(horizontalDistanceFromB).toBeLessThanOrEqual(DEFAULT_HITBOX.bodyRadiusM + 0.05)
+
+      // 대상 종류 구분도 실 배선에서 성립한다 — 플레이어 명중은 탄흔 컬렉션으로 새지 않는다.
+      expect(storeA.getState().bulletHoles).toHaveLength(0)
+
+      await Promise.all([
+        withTimeout(connA.disconnect(), LEAVE_TIMEOUT_MS, 'A: disconnect'),
+        withTimeout(connB.disconnect(), LEAVE_TIMEOUT_MS, 'B: disconnect'),
+      ])
+    },
+    20_000,
   )
 })
