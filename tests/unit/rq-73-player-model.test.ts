@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { stepMovement, type MoveInput, type MoveState } from '@shared/sim/movement'
 import type { HitboxConfig } from '@shared/sim/combat'
-import { AUDIO } from '@shared/constants'
+import { AUDIO, NET } from '@shared/constants'
 import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { stepFootstepAccumulator } from '@shared/sim/footsteps'
 import {
+  applyGaitSwingInto,
   computePlayerModelLayout,
   isRemoteMeshVisible,
   type PartBox,
@@ -12,8 +13,10 @@ import {
   type PlayerModelLayout,
   type Vec3Like,
 } from '@client/scene/playerModelLayout'
-import { gaitPhase01, stepGaitDistance } from '@client/scene/gaitPhase'
+import { gaitPhase01, resolveRemoteGaitPhase01, stepGaitDistance } from '@client/scene/gaitPhase'
 import { GAIT_TUNING } from '@client/config/player-model-tuning'
+import { createRemoteEntityInterpolator, type RemoteSnapshot } from '@client/net/interpolation'
+import { remoteMeshHeightM } from '@client/scene/remoteMeshHeight'
 
 /**
  * RQ-73/ADR-0015(캐릭터 모델) — "배치·위상 계산" 층 단위 테스트(ADR-0015
@@ -29,10 +32,29 @@ import { GAIT_TUNING } from '@client/config/player-model-tuning'
  * 라운드가 두 번째 반례를 추가한다(이월 D4).
  *
  * **이 파일이 다루지 않는 것(렌더 배선, ADR-0015 결정 5 면제)**:
- * `PlayerMeshes.tsx`의 `THREE.Mesh` 생성·`useFrame` 갱신·지오메트리
- * 공유·스윙 오프셋을 실제 mesh에 적용하는 코드. 이 파일이 고정하는 것은
- * 배치·위상 **값**뿐이다 — 값이 맞으면 배선은 코드 정독·스크린샷이 대신
- * 확인한다(`harness/workflow/fe.md`).
+ * `PlayerMeshes.tsx`의 `THREE.Mesh` 생성·`useFrame` 갱신. 이 파일이
+ * 고정하는 것은 배치·위상 **값**뿐이다 — 값이 맞으면 배선은 코드 정독·
+ * 스크린샷이 대신 확인한다(`harness/workflow/fe.md`).
+ *
+ * ⚠️ **REV(독립 평가 FAIL, `_workspace/RQ-73/03_evaluator_report.md`) —
+ * 아래 세 절을 추가했다(전부 순증, 기존 단언 무변경).** 평가가 격리
+ * 워크트리에서 검출력 변이를 심어 확인한 공백:
+ * - **F1**: `getGaitDistance`(`@client/net/interpolation`)를 부르는 테스트가
+ *   0건이었다 — `stepGaitDistance`에 `mode` 인자가 없어 "자세 무관 누적"을
+ *   실제로 판별할 지점이 그 호출부뿐인데 비어 있었다(변이 M3 무검출:
+ *   `advanceGaitAccumulator`에 `mode!=='run'` 필터를 넣어도 통과). 같은
+ *   층위 결정("어느 접근자를 쓰는가")이 `PlayerMeshes.tsx`(렌더 배선, 면제)
+ *   안에만 있어 `getFootstepCount`로 바꿔치기해도 통과했다(변이 M8). 이
+ *   결정을 `resolveRemoteGaitPhase01`(`@client/scene/gaitPhase`, 순수
+ *   함수)로 뽑아 값으로 단언한다.
+ * - **F2**: RQ-73 "히트박스 내포"는 자세·애니메이션 예외가 없는데 스윙을
+ *   포함한 좌표는 값으로 단언되지 않았다(변이 M4 무검출: 다리 스윙 진폭을
+ *   0.1→5.0m로 바꿔도 통과). 스윙 산술을 `applyGaitSwingInto`(순수 함수,
+ *   `@client/scene/playerModelLayout`)로 뽑아 여러 위상 표본에서 코너
+ *   내포를 단언한다.
+ * - **F3**: `remoteMeshHeightM`(RQ-92, `@client/scene/remoteMeshHeight`)이
+ *   더 이상 프로덕션에서 호출되지 않아 그 값을 검증하는 GA-72·GA-75가
+ *   실물에서 분리됐다 — 모델 머리 상단과의 동치를 값으로 다시 연결한다.
  */
 
 // ---------------------------------------------------------------------------
@@ -328,5 +350,187 @@ describe('RQ-73/GA-95: 원격 1인의 모델은 정확히 6파츠이고, 자기 
     // 접속 초기(아직 selfSessionId가 서버로부터 확정되기 전) — null이면
     // 모두 렌더 대상이다(기존 PlayerMeshes.tsx 인라인 판정과 동일 근거).
     expect(isRemoteMeshVisible('any-session', null)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 평가 F1(원장 24bz 재호출) — getGaitDistance: 원격 배선(interpolation.ts)
+// 계약. `stepGaitDistance`(순수 함수)는 이미 GA-93/94 위에서 직접
+// 시험했지만, "자세 무관 누적"이 실제 배선(`advanceGaitAccumulator`)에서도
+// 성립하는지, 그리고 "어느 접근자를 쓰는가"(`resolveRemoteGaitPhase01`)가
+// `getFootstepCount`로 새지 않는지는 아무도 판별하지 않았다(평가 F1,
+// 변이 M3·M8).
+// ---------------------------------------------------------------------------
+
+const SELF = 'self-session'
+const REMOTE = 'remote-1'
+const GAIT_INTERPOLATOR_DELAY_MS = 50
+
+const GROUNDED_WALK_INPUT: MoveInput = { dirX: 1, dirZ: 0, mode: 'walk', jump: false }
+const GROUNDED_CROUCH_INPUT: MoveInput = { dirX: 1, dirZ: 0, mode: 'crouch', jump: false }
+
+/** 실제 `stepMovement`를 재생해 `RemoteSnapshot` 열을 만든다(원본:
+ * `rq-72-remote-footsteps.test.ts`의 `buildCornerPathSnapshots`와 동일한
+ * 이유 — 실제 위치 델타의 부동소수점 양상을 그대로 쓴다). 항상 접지·같은
+ * `mode`로만 이동하는 단순 경로(직선)라 GA-93처럼 코너를 낼 필요가 없다. */
+function buildGaitSnapshots(input: MoveInput, ticks: number): RemoteSnapshot[] {
+  const snapshots: RemoteSnapshot[] = []
+  let s: MoveState = originState()
+  snapshots.push({ x: s.x, y: s.y, z: s.z, receivedAt: 0, mode: input.mode, grounded: true })
+  for (let i = 1; i <= ticks; i++) {
+    s = stepMovement(s, input)
+    snapshots.push({ x: s.x, y: s.y, z: s.z, receivedAt: i * NET.TICK_MS, mode: input.mode, grounded: true })
+  }
+  return snapshots
+}
+
+describe('RQ-73(평가 F1): getGaitDistance/resolveRemoteGaitPhase01 — 원격 배선의 자세 무관 누적', () => {
+  it.each([
+    ['walk', GROUNDED_WALK_INPUT],
+    ['crouch', GROUNDED_CROUCH_INPUT],
+  ])(
+    '평가 F1: mode=%s로 접지 이동해도 getGaitDistance가 0보다 커진다(자세 필터가 있으면 이 값이 0에 머문다 — 변이 M3)',
+    (_label, input) => {
+      const snapshots = buildGaitSnapshots(input, 10)
+      const interpolator = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+      for (const snapshot of snapshots) interpolator.addSnapshot(REMOTE, snapshot)
+
+      expect(interpolator.getGaitDistance(REMOTE)).toBeGreaterThan(0)
+    },
+  )
+
+  it('평가 F1: 같은 이동 경로에 mode 라벨만 다르게 붙이면 getGaitDistance는 같지만(자세 무관) getFootstepCount는 다르다(RQ-72는 run만) — ADR-0015 결정 4 "갈리는 것이 의도다"', () => {
+    // 20틱 — `sim-footsteps.test.ts`가 실측한 것과 같은 이유(실제
+    // stepMovement 델타의 부동소수점 누적 양상): 10틱(≈2.0m)만으로는
+    // 누적이 2.0m 문턱에 아직 못 미친다(11번째 틱에서야 첫 발화). 발소리
+    // 1회 이상을 확실히 관측하려면 20틱이 필요하다.
+    const runSnapshots = buildGaitSnapshots(GROUNDED_RUN_INPUT, 20)
+    // 같은 좌표 열에 mode만 'walk'로 다시 라벨링한다 — 실제 walk 속도로
+    // 재시뮬레이션하면 이동 거리 자체가 달라 "자세만 갈랐을 때" 대조가
+    // 흐려진다.
+    const walkSnapshots: RemoteSnapshot[] = runSnapshots.map((snapshot) => ({ ...snapshot, mode: 'walk' }))
+
+    const runInterpolator = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+    for (const snapshot of runSnapshots) runInterpolator.addSnapshot(REMOTE, snapshot)
+
+    const walkInterpolator = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+    for (const snapshot of walkSnapshots) walkInterpolator.addSnapshot(REMOTE, snapshot)
+
+    const runGaitDistance = runInterpolator.getGaitDistance(REMOTE)
+    const walkGaitDistance = walkInterpolator.getGaitDistance(REMOTE)
+    expect(runGaitDistance).toBeDefined()
+    expect(walkGaitDistance).toBeCloseTo(runGaitDistance!, 9) // 걸음 위상 소스는 같다
+
+    expect(runInterpolator.getFootstepCount(REMOTE)).toBeGreaterThan(0) // run은 발소리가 난다
+    expect(walkInterpolator.getFootstepCount(REMOTE)).toBe(0) // walk는 발소리가 0회다 — 여기서 갈린다
+  })
+
+  it('평가 F1(GA-83 대응): getGaitDistance는 폴링 빈도·조회 시 renderTime과 무관하다 — addSnapshot 횟수에만 반응한다', () => {
+    const snapshots = buildGaitSnapshots(GROUNDED_WALK_INPUT, 12)
+    const interpolatorA = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+    const interpolatorB = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+
+    for (let i = 0; i < snapshots.length; i++) {
+      interpolatorA.addSnapshot(REMOTE, snapshots[i]!)
+      interpolatorB.addSnapshot(REMOTE, snapshots[i]!)
+
+      // A는 매 스냅샷마다 폴링하고, 그때마다 무관한 renderTime으로
+      // getMode도 함께 조회한다(위치·자세 조회가 걸음 누적에 새어들지
+      // 않는지 함께 본다). B는 3개마다 1번만 폴링한다.
+      interpolatorA.getGaitDistance(REMOTE)
+      interpolatorA.getMode(REMOTE, snapshots[i]!.receivedAt + 10_000)
+      if (i % 3 === 2) {
+        interpolatorB.getGaitDistance(REMOTE)
+      }
+    }
+
+    expect(interpolatorA.getGaitDistance(REMOTE)).toBeCloseTo(interpolatorB.getGaitDistance(REMOTE)!, 9)
+  })
+
+  it('평가 F1: 리스폰(hp 0→MAX) 스냅샷에서 getGaitDistance가 0으로 리셋되고, 자기 세션 조회는 undefined다(GA-39와 동일 계약)', () => {
+    const interpolator = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+    interpolator.addSnapshot(REMOTE, { x: 0, y: 0, z: 0, receivedAt: 0, mode: 'run', grounded: true, hp: 100 })
+    interpolator.addSnapshot(REMOTE, { x: 5, y: 0, z: 0, receivedAt: 100, mode: 'run', grounded: true, hp: 0 }) // 사망
+    expect(interpolator.getGaitDistance(REMOTE)).toBeGreaterThan(0)
+
+    // 리스폰 — 좌표가 순간이동하고 hp가 0 → MAX_HP로 바뀐다.
+    interpolator.addSnapshot(REMOTE, { x: -20, y: 0, z: 30, receivedAt: 200, mode: 'run', grounded: true, hp: 100 })
+    expect(interpolator.getGaitDistance(REMOTE)).toBe(0)
+
+    expect(interpolator.getGaitDistance(SELF)).toBeUndefined()
+  })
+
+  it('평가 F1(변이 M8 방어) — resolveRemoteGaitPhase01은 getGaitDistance에서 위상을 유도한다: walk 이동에서 위상이 0보다 크다(발소리 전용 접근자를 썼다면 0에 머문다)', () => {
+    const snapshots = buildGaitSnapshots(GROUNDED_WALK_INPUT, 10)
+    const interpolator = createRemoteEntityInterpolator(SELF, GAIT_INTERPOLATOR_DELAY_MS)
+    for (const snapshot of snapshots) interpolator.addSnapshot(REMOTE, snapshot)
+
+    const phase = resolveRemoteGaitPhase01(interpolator, REMOTE, GAIT_TUNING.CYCLE_DISTANCE_M)
+    expect(phase).toBeGreaterThan(0)
+    // 대조 — 발소리 전용 접근자(getFootstepCount)를 썼다면 walk에서 이
+    // 값이 0이라 위상도 0에 머물렀을 것이다.
+    expect(interpolator.getFootstepCount(REMOTE)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 평가 F2(원장 24bz 재호출) — applyGaitSwingInto: 스윙을 포함해도 히트
+// 볼륨 내포가 유지된다. RQ-73 "히트박스 내포"는 자세·애니메이션 예외를
+// 두지 않는다(변이 M4: 다리 스윙 진폭 0.1→5.0m가 무검출이었다).
+// ---------------------------------------------------------------------------
+
+describe('RQ-73(평가 F2): applyGaitSwingInto — 스윙(걷기 애니메이션)을 포함해도 모든 파츠가 히트 볼륨 안이다', () => {
+  it.each([
+    ['run(선 자세)', DEFAULT_HITBOX],
+    ['crouch(앉은 자세)', CROUCH_HITBOX],
+  ])('평가 F2: %s — 위상 0·0.25·0.5·0.75(스윙 진폭이 0·+최대·0·-최대가 되는 지점)에서도 6파츠 전부 내포된다', (_label, hitbox) => {
+    const layout = computePlayerModelLayout(hitbox)
+    const swayed = computePlayerModelLayout(hitbox) // 임의 초기값 — applyGaitSwingInto가 매번 전부 덮어쓴다(useFrame 스크래치 버퍼와 동일한 사용법)
+
+    for (const phase of [0, 0.25, 0.5, 0.75]) {
+      applyGaitSwingInto(layout, phase, swayed)
+
+      expect(isSphereWithinHeadVolume(swayed.head, hitbox)).toBe(true)
+      for (const partName of BOX_PARTS) {
+        const box = swayed[partName] as PartBox
+        for (const corner of boxCorners(box)) {
+          expect(isPointWithinHitVolume(corner, hitbox)).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('평가 F2 반례 — 다리 코너에 비정상적으로 큰 스윙 오프셋(5.0m 상당)이 있으면 컨테인먼트 판정이 실제로 거부한다(가드가 공허하지 않다는 자기 검증)', () => {
+    const layout = computePlayerModelLayout(DEFAULT_HITBOX)
+    const swayed = computePlayerModelLayout(DEFAULT_HITBOX)
+    applyGaitSwingInto(layout, 0.25, swayed) // 정상 진폭(sin=1) — 위 테스트가 이미 내포를 확인했다
+
+    // "진폭이 5.0m였다면"을 흉내낸다(변이 M4와 동일한 크기) — 정상 결과
+    // 코너에 큰 오프셋을 더해 판정기가 실제로 무언가를 거르는지 본다.
+    const inflatedCorner: Vec3Like = {
+      x: swayed.legLeft.center.x,
+      y: swayed.legLeft.center.y,
+      z: swayed.legLeft.center.z + 5.0,
+    }
+    expect(isPointWithinHitVolume(inflatedCorner, DEFAULT_HITBOX)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 평가 F3(원장 24bz 재호출) — GA-72/75의 verify(`remoteMeshHeightM`)를
+// 실물(computePlayerModelLayout)에 다시 연결한다. `remoteMeshHeightM`은
+// 더 이상 프로덕션 소비처가 없다(RQ-73 6파츠 재작성 이후) — 두 골든이
+// 지키려던 "메시 높이 = 히트박스 head top" 성질은 이제 이 동치로만
+// 지켜진다.
+// ---------------------------------------------------------------------------
+
+describe('RQ-73(평가 F3): 모델 머리 상단은 remoteMeshHeightM과 같다', () => {
+  it.each([
+    ['run', DEFAULT_HITBOX, 'run' as const],
+    ['crouch', CROUCH_HITBOX, 'crouch' as const],
+  ])('평가 F3: %s — layout.head.center.y + layout.head.radius === remoteMeshHeightM(mode)', (_label, hitbox, mode) => {
+    const layout = computePlayerModelLayout(hitbox)
+    const modelHeadTopM = layout.head.center.y + layout.head.radius
+    expect(modelHeadTopM).toBeCloseTo(remoteMeshHeightM(mode), 12)
   })
 })

@@ -10,11 +10,12 @@ import { CROUCH_HITBOX, DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 import { SCENE } from '@client/config/design-tokens'
 import { GAIT_TUNING } from '@client/config/player-model-tuning'
 import {
+  applyGaitSwingInto,
   computePlayerModelLayout,
   isRemoteMeshVisible,
   type PlayerModelLayout,
 } from '@client/scene/playerModelLayout'
-import { gaitPhase01 } from '@client/scene/gaitPhase'
+import { resolveRemoteGaitPhase01 } from '@client/scene/gaitPhase'
 
 /**
  * 플레이어를 **6파츠 절차적 지오메트리**(머리·몸통·팔2·다리2)로 표시한다
@@ -54,6 +55,16 @@ import { gaitPhase01 } from '@client/scene/gaitPhase'
 // 객체 그래프를 할당해 프레임 예산(ADR-0001)을 어긴다.
 const STANDING_LAYOUT: PlayerModelLayout = computePlayerModelLayout(DEFAULT_HITBOX)
 const CROUCH_LAYOUT: PlayerModelLayout = computePlayerModelLayout(CROUCH_HITBOX)
+
+// 평가 F2 대응 — `applyGaitSwingInto`(순수 함수, `playerModelLayout.ts`)의
+// `out` 인자로 재사용하는 스크래치 버퍼 하나. `copyPositionInto`의
+// `interpolatedRef`와 동일한 정신(할당 없는 프레임 루프) — 한 프레임 안에서
+// 파츠별로 즉시 읽어 `.position.set()`하고 다음 플레이어로 넘어가므로
+// 플레이어 전체가 이 버퍼 하나를 순차적으로 공유해도 안전하다(동시 사용
+// 없음). 초기값은 아무 유효한 배치면 되므로 `STANDING_LAYOUT`을 그대로
+// 얕은 재사용하지 않고 별도로 계산한다(같은 참조를 두 용도로 쓰면 나중에
+// `STANDING_LAYOUT`을 실수로 변형할 위험이 생긴다).
+const GAIT_SWING_SCRATCH: PlayerModelLayout = computePlayerModelLayout(DEFAULT_HITBOX)
 
 function layoutForMode(mode: MoveInput['mode'] | undefined): PlayerModelLayout {
   return mode === 'crouch' ? CROUCH_LAYOUT : STANDING_LAYOUT
@@ -119,19 +130,19 @@ function createPlayerModelInstance(isSelf: boolean): PlayerModelInstance {
  * 위상)에 맞춰 갱신한다. **할당 없음** — 전부 기존 `Vector3`의 `.set()`
  * 또는 숫자 대입이다(useFrame 안전).
  *
- * 머리·몸통은 스윙하지 않는다(사람의 걸음에서 흔들리는 것은 팔다리뿐).
- * 팔·다리는 로컬 **Z축으로만 평행이동**한다(회전이 아니다 — 진폭 안전
- * 마진 근거는 `player-model-tuning.ts` docblock). 같은 쪽 팔은 다리와
- * **반대** 위상(교차 보행)으로 움직인다.
+ * 스윙(팔·다리의 로컬 Z 평행이동) 산술은 이 함수가 직접 하지 않는다 —
+ * `applyGaitSwingInto`(순수 함수, `playerModelLayout.ts`, 평가 F2 대응)를
+ * `GAIT_SWING_SCRATCH`에 써넣게 하고 그 결과를 읽기만 한다. 진폭 상수를
+ * 이 파일에 다시 적으면(ADR-0010 값 복제) 테스트가 단언하는 함수와 실제
+ * 렌더가 서로 다른 수치를 쓰게 될 수 있다.
  */
 function updatePlayerModelPose(instance: PlayerModelInstance, layout: PlayerModelLayout, gaitPhase: number): void {
-  const swing = Math.sin(gaitPhase * Math.PI * 2)
-  const legSwingZ = GAIT_TUNING.LEG_SWING_AMPLITUDE_M * swing
-  const armSwingZ = GAIT_TUNING.ARM_SWING_AMPLITUDE_M * swing
+  applyGaitSwingInto(layout, gaitPhase, GAIT_SWING_SCRATCH)
+  const swayed = GAIT_SWING_SCRATCH
 
-  instance.head.position.set(layout.head.center.x, layout.head.center.y, layout.head.center.z)
+  instance.head.position.set(swayed.head.center.x, swayed.head.center.y, swayed.head.center.z)
 
-  instance.torso.position.set(layout.torso.center.x, layout.torso.center.y, layout.torso.center.z)
+  instance.torso.position.set(swayed.torso.center.x, swayed.torso.center.y, swayed.torso.center.z)
   const torsoScaleY = layout.torso.halfExtents.y / STANDING_LAYOUT.torso.halfExtents.y
   instance.torso.scale.y = torsoScaleY
 
@@ -140,22 +151,14 @@ function updatePlayerModelPose(instance: PlayerModelInstance, layout: PlayerMode
   // 몸통과 같다. 다리는 별도 높이 구간(엉덩이 아래)이라 따로 계산한다.
   instance.armLeft.scale.y = torsoScaleY
   instance.armRight.scale.y = torsoScaleY
-  instance.armLeft.position.set(layout.armLeft.center.x, layout.armLeft.center.y, layout.armLeft.center.z - armSwingZ)
-  instance.armRight.position.set(
-    layout.armRight.center.x,
-    layout.armRight.center.y,
-    layout.armRight.center.z + armSwingZ,
-  )
+  instance.armLeft.position.set(swayed.armLeft.center.x, swayed.armLeft.center.y, swayed.armLeft.center.z)
+  instance.armRight.position.set(swayed.armRight.center.x, swayed.armRight.center.y, swayed.armRight.center.z)
 
   const legScaleY = layout.legLeft.halfExtents.y / STANDING_LAYOUT.legLeft.halfExtents.y
   instance.legLeft.scale.y = legScaleY
   instance.legRight.scale.y = legScaleY
-  instance.legLeft.position.set(layout.legLeft.center.x, layout.legLeft.center.y, layout.legLeft.center.z + legSwingZ)
-  instance.legRight.position.set(
-    layout.legRight.center.x,
-    layout.legRight.center.y,
-    layout.legRight.center.z - legSwingZ,
-  )
+  instance.legLeft.position.set(swayed.legLeft.center.x, swayed.legLeft.center.y, swayed.legLeft.center.z)
+  instance.legRight.position.set(swayed.legRight.center.x, swayed.legRight.center.y, swayed.legRight.center.z)
 }
 
 interface PlayerMeshesProps {
@@ -253,13 +256,9 @@ export function PlayerMeshes({ store, connection }: PlayerMeshesProps) {
       // 시각과 무관한 계단/누적 값이다(위치처럼 보간하지 않는다).
       if (connection.interpolator.copyPositionInto(sessionId, renderTime, interpolated)) {
         const mode = connection.interpolator.getMode(sessionId, renderTime) ?? 'run'
-        const gaitDistanceM = connection.interpolator.getGaitDistance(sessionId) ?? 0
+        const gaitPhase = resolveRemoteGaitPhase01(connection.interpolator, sessionId, GAIT_TUNING.CYCLE_DISTANCE_M)
         instance.group.position.set(interpolated.x, interpolated.y, interpolated.z)
-        updatePlayerModelPose(
-          instance,
-          layoutForMode(mode),
-          gaitPhase01(gaitDistanceM, GAIT_TUNING.CYCLE_DISTANCE_M),
-        )
+        updatePlayerModelPose(instance, layoutForMode(mode), gaitPhase)
         continue
       }
       const player = state.players.get(sessionId)

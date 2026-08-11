@@ -62,3 +62,36 @@ export function gaitPhase01(distanceM: number, cycleDistanceM: number): number {
   const positive = wrapped < 0 ? wrapped + cycleDistanceM : wrapped
   return positive / cycleDistanceM
 }
+
+/**
+ * `getGaitDistance`만 필요한 최소 인터페이스 — `RemoteEntityInterpolator`
+ * 전체 타입을 이 파일이 임포트하지 않는다. `interpolation.ts`가 이미 이
+ * 파일의 `stepGaitDistance`를 가져다 쓰므로, 반대 방향 임포트(이 파일 →
+ * `interpolation.ts`)를 추가하면 순환 임포트가 된다 — 구조적 타이핑으로
+ * 그 순환을 피한다(`RemoteEntityInterpolator`는 `getGaitDistance` 메서드를
+ * 가지므로 이 인터페이스를 그대로 만족한다).
+ */
+export interface GaitDistanceSource {
+  getGaitDistance(sessionId: string): number | undefined
+}
+
+/**
+ * RQ-73(평가 F1, 원장 24bz 재호출) — 원격 플레이어 걸음 위상을
+ * **어느 접근자로 유도하는가**(`getGaitDistance`, RQ-72의
+ * `getFootstepCount`가 **아니다**)라는 결정 자체를 렌더 배선
+ * (`PlayerMeshes.tsx`, ADR-0015 결정 5 면제) 밖으로 뽑아 값으로 단언
+ * 가능하게 한다. ⚠️ **이 함수가 없으면 그 결정이 `useFrame` 안 한 줄로만
+ * 존재해 단위 테스트가 닿지 못한다** — 걸음 위상을 발소리 누적
+ * (`getFootstepCount × 상수`)으로 잘못 바꿔도 전 스위트가 통과하는 결함이
+ * 있었다(독립 평가 M8). `tests/unit/rq-73-player-model.test.ts`가 걷기
+ * 자세 이동에서 이 함수가 **양수**(발소리 전용 누적을 썼다면 0)를
+ * 반환함을 단언한다.
+ */
+export function resolveRemoteGaitPhase01(
+  source: GaitDistanceSource,
+  sessionId: string,
+  cycleDistanceM: number,
+): number {
+  const distanceM = source.getGaitDistance(sessionId) ?? 0
+  return gaitPhase01(distanceM, cycleDistanceM)
+}

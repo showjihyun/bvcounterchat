@@ -1,5 +1,5 @@
 import type { HitboxConfig } from '@shared/sim/combat'
-import { PLAYER_MODEL } from '@client/config/player-model-tuning'
+import { GAIT_TUNING, PLAYER_MODEL } from '@client/config/player-model-tuning'
 
 /**
  * RQ-73/ADR-0015 결정 5 — 6파츠(머리·몸통·팔2·다리2) 배치를 **순수 함수**로
@@ -118,6 +118,57 @@ export function computePlayerModelLayout(hitbox: HitboxConfig): PlayerModelLayou
       halfExtents: { x: legHalfWidthM, y: legHalfHeightM, z: legHalfDepthM },
     },
   }
+}
+
+function copyBoxWithZOffset(source: PartBox, dz: number, out: PartBox): void {
+  out.center.x = source.center.x
+  out.center.y = source.center.y
+  out.center.z = source.center.z + dz
+  out.halfExtents.x = source.halfExtents.x
+  out.halfExtents.y = source.halfExtents.y
+  out.halfExtents.z = source.halfExtents.z
+}
+
+/**
+ * RQ-73(평가 F2, 원장 24bz 재호출) — 걸음 스윙(팔·다리의 로컬 Z 평행이동)을
+ * 적용한 배치를 `out`에 써넣는다. **"배치·위상 계산" 층이다(ADR-0015 결정
+ * 5, 면제 없음)** — RQ-73 "히트박스 내포" 조항은 자세·애니메이션 예외를
+ * 두지 않으므로, 스윙을 포함한 좌표도 값으로 단언 가능해야 한다.
+ * `tests/unit/rq-73-player-model.test.ts`가 여러 위상 표본(0·0.25·0.5·0.75
+ * — `sin`이 0·+1·0·-1이 되는 지점, 즉 진폭이 최대로 걸리는 지점을 포함)에서
+ * `computePlayerModelLayout`과 같은 코너 내포 판정을 재사용해 단언한다.
+ *
+ * **할당 없음 — `out` 파라미터에 써넣는다(`copyPositionInto` 선례와 동일한
+ * 정신).** `useFrame`(렌더 배선, `PlayerMeshes.tsx`)이 모듈 스코프 스크래치
+ * 버퍼 하나를 재사용해 넘긴다 — 원격 플레이어 수만큼, 매 프레임 새 객체
+ * 그래프를 만들면 프레임 예산(ADR-0001)을 어긴다. 테스트는 프레임 예산
+ * 제약이 없으므로 매번 새 `out`(`computePlayerModelLayout`의 결과 등)을
+ * 만들어 호출해도 무방하다.
+ *
+ * 머리·몸통은 스윙하지 않는다(그대로 복사) — 사람의 걸음에서 흔들리는 것은
+ * 팔다리뿐이다. 같은 쪽 팔은 다리와 **반대** 위상(교차 보행)으로 움직인다.
+ *
+ * ⚠️ **이 함수가 `PlayerMeshes.tsx`가 실제로 스윙을 계산하는 유일한
+ * 자리다** — 진폭 상수(`GAIT_TUNING`)를 두 곳에 복제하면(테스트용 순수
+ * 함수 하나, 렌더 배선에 또 하나) 값이 갈릴 수 있다(ADR-0010). 렌더
+ * 배선은 이 함수를 호출만 한다.
+ */
+export function applyGaitSwingInto(layout: PlayerModelLayout, gaitPhase01: number, out: PlayerModelLayout): void {
+  out.head.center.x = layout.head.center.x
+  out.head.center.y = layout.head.center.y
+  out.head.center.z = layout.head.center.z
+  out.head.radius = layout.head.radius
+
+  copyBoxWithZOffset(layout.torso, 0, out.torso)
+
+  const swing = Math.sin(gaitPhase01 * Math.PI * 2)
+  const legSwingZ = GAIT_TUNING.LEG_SWING_AMPLITUDE_M * swing
+  const armSwingZ = GAIT_TUNING.ARM_SWING_AMPLITUDE_M * swing
+
+  copyBoxWithZOffset(layout.armLeft, -armSwingZ, out.armLeft)
+  copyBoxWithZOffset(layout.armRight, armSwingZ, out.armRight)
+  copyBoxWithZOffset(layout.legLeft, legSwingZ, out.legLeft)
+  copyBoxWithZOffset(layout.legRight, -legSwingZ, out.legRight)
 }
 
 /**
