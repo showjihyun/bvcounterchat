@@ -11,7 +11,7 @@
     정리됨** — 이 절은 28g 착수 시점(2026-08-08)의 실측을 그대로 남긴
     역사적 기록이다(append-only 원칙, `gate_spec_mirror.py`의 changelog
     제외 규칙과 같은 정신). **현재 상태는 6건 전부 정리돼 0건**이다 —
-    `test_real_track_a_zero_hard_fails_and_zero_warnings` 참고.
+    `test_real_track_a_zero_hard_fails_and_zero_done_warnings` 참고.
 
 실제 사례(GA-52) — ⚠️ **정정(원장 28g, PR #71 리뷰 blocker 1)**: 이 문단이
 한때 "`status`가 `done`이라 '검증됨'으로 잘못 읽혔다"고 적었으나 **거짓**이다
@@ -337,8 +337,12 @@ def test_verify_paths_are_trimmed_of_whitespace(tmp_path: Path) -> None:
 
 # ── 실제 저장소 골든 회귀 고정 (리뷰어 전수 조사 실측을 그대로 잠근다) ──
 
-def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
+def test_real_track_a_zero_hard_fails_and_zero_done_warnings() -> None:
     """원장 28i — 6건(GA-40·47·48·52·70·71) 정리 이후의 새 회귀 고정.
+
+    ⚠️ **이름·범위 갱신(원장 24bz, 2026-08-11)**: 고정 대상은 이제 `done`
+    골든의 경고뿐이다. `status: todo`의 깨진 경로는 허용한다 — 근거는 아래
+    `assert` 앞 주석과 위 섹션 코멘트에 있다.
 
     이 테스트가 한때 `test_real_track_a_zero_hard_fails_and_exactly_known_
     six_warnings`라는 이름으로 "경고 정확히 6건"을 단언했다. 그 6건은
@@ -348,7 +352,8 @@ def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
     문서에 이미 "경고 건수는 골든이 늘어난다고 저절로 바뀌지 않는다,
     바뀐다면 그게 진짜 신호"라고 적었고, 지금이 바로 그 신호다.
     """
-    ids_with_warnings: list[str] = []
+    done_with_warnings: list[str] = []
+    todo_with_warnings: list[str] = []
     total_hard_fails: list[str] = []
     for line in (GOLDEN_DIR / "track-a-product.jsonl").read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -358,13 +363,32 @@ def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
         hard_fails, warnings = gbg.check_entry(rec, root=ROOT)
         total_hard_fails += hard_fails
         if warnings:
-            ids_with_warnings.append(rec["id"])
+            bucket = todo_with_warnings if rec.get("status") == "todo" else done_with_warnings
+            bucket.append(rec["id"])
 
     # 리뷰어 전수 조사(원장 28g 착수 근거) — 76건 중 경로 부재 0건. 정리
     # 이후에도 그대로 유지된다(하드 실패 축은 이번 라운드가 건드리지 않았다).
     assert total_hard_fails == [], total_hard_fails
     # 역참조 부재 0건 — 6건 전부 GA-NN: 접두로 정리됐다(원장 28i).
-    assert ids_with_warnings == [], ids_with_warnings
+    #
+    # ⚠️ **고정을 두 종류로 가른다(원장 24bz — 사용자 결정 2026-08-11).**
+    # 이 단언은 한때 `done`·`todo`를 합쳐 "경고 0건"을 요구했다. 그런데 게이트
+    # 문서(A-③)가 "`status: todo` 골든이 현재 0건 — **정하는 것은 앞으로의
+    # 관행이다**"라고 그 관행을 미결로 남겨 뒀고, RQ-73 스펙 라운드가 그것을
+    # 처음 건드렸다: **스펙 PR이 구현 이전에 골든을 먼저 등록**하면 `verify`가
+    # 가리키는 테스트 파일이 아직 없다.
+    #
+    # 합쳐서 0으로 두면 **스펙이 골든 없이 머지되어** 「검증 기준 없는 스펙」이
+    # 한 라운드 동안 남는다. 그래서 **약화가 아니라 분리**를 택했다 — 정말
+    # 지켜야 할 축(`done`이라 "검증됨"으로 읽히는데 역참조가 없는 것)은 **0건
+    # 그대로**이고, `todo`의 깨진 경로만 허용한다. 위 docstring의 "경고 건수가
+    # 바뀌면 그게 진짜 신호"는 유효하다 — 신호를 무시한 게 아니라 **읽고
+    # 관행을 정했다.**
+    #
+    # ⚠️ `todo` 체류가 방치되는 것(GA-52가 약 10일)은 이 테스트가 막지 않는다.
+    # 그 축은 **원장 24bz**가 소유한다 — 구현 라운드가 GA-90~94를 `done`으로
+    # 승격하는 것이 그 행의 할 일에 적혀 있다.
+    assert done_with_warnings == [], done_with_warnings
 
 
 def test_real_track_b_entries_all_skipped_no_crash() -> None:
@@ -440,8 +464,19 @@ def test_cli_selftest_exits_zero_and_reports_block_allow_counts() -> None:
 # "달라졌는데 아무도 안 봤다"였다). ⚠️ **원장 28i 갱신** — 이 값이 한때
 # 6건(GA-40·47·48·52·70·71)이었으나, 그 6건을 `it()` 이름에 `GA-NN:` 접두를
 # 붙여 정리해 **0건**이 됐다(§`test_real_track_a_zero_hard_fails_and_zero_
-# warnings` docstring 참고). 값이 바뀐 것 자체가 "정확히 고정"이 의도대로
+# done_warnings` docstring 참고). 값이 바뀐 것 자체가 "정확히 고정"이 의도대로
 # 작동한 증거다 — 바뀌지 않았다면 정리가 반영 안 된 것이다.
+#
+# ⚠️ **원장 24bz 갱신(2026-08-11) — 고정을 종류별로 가른다.** 위 문단의 "총
+# 건수를 정확히 고정한다"는 이제 **거짓**이다. `done` 골든의 역참조 부재는
+# **0건 그대로** 고정하고, `status: todo` 골든의 깨진 `verify` 경로는 세지
+# 않는다(총계는 오늘 5건 — GA-90~94). 스펙 PR이 구현 이전에 골든을 등록하면
+# `verify`가 가리키는 테스트 파일이 아직 없기 때문이고, 합쳐서 0으로 두면
+# **스펙이 골든 없이 머지되어** "검증 기준 없는 스펙"이 한 라운드 남는다.
+# 게이트 문서 A-③이 이 관행을 미결로 남겨 뒀고 사용자 결정으로 확정했다.
+# ⚠️ 위 문단의 "달라졌는데 아무도 안 봤다"(GA-52) 취지는 **유효하다** — 신호를
+# 무시한 것이 아니라 읽고 관행을 정했다. `todo` 체류가 방치되는 축은 이 파일이
+# 아니라 **원장 24bz**가 소유한다.
 
 def test_iter_golden_entries_scans_both_tracks_with_realistic_floor() -> None:
     """스캔 표면(GOLDEN_DIR + glob) 직접 호출 — P5(글롭 축소) 축을 트랙별
@@ -480,6 +515,29 @@ def test_cli_check_reports_scan_count_floor_and_known_warning_count() -> None:
     # 83에 한참 못 미쳐 잡힌다.
     assert scanned >= 83, result.stdout
 
-    # 경고 건수는 정확히 고정한다(위 섹션 코멘트) — 원장 28i 정리 이후 0건
-    # (GA-40·47·48·52·70·71이 GA-NN: 접두로 채워졌다).
-    assert "경고 0건" in result.stdout, result.stdout
+    # 경고는 **종류별로** 고정한다(원장 24bz — 사용자 결정 2026-08-11). 한때
+    # `"경고 0건"` 문자열을 통째로 요구했는데, 그러면 `todo` 골든이 하나라도
+    # 생기는 순간 깨진다 — 그 관행을 게이트 문서 A-③이 미결로 남겨 뒀고
+    # RQ-73 스펙 라운드가 정했다(근거는 위 `test_real_track_a_...`의 주석).
+    #
+    # 게이트가 두 종류를 출력에서 구분한다 — `todo`의 깨진 경로 줄에는 GA-ID
+    # 뒤에 `(status: …)`가 붙고 `done`의 역참조 위반 줄에는 붙지 않는다.
+    # **`done` 쪽만 0건으로 고정한다.** 게이트가 그 표기를 없애면 아래 필터가
+    # `done` 줄로 오분류해 **더 엄격해질 뿐**이라(경고를 놓치는 방향이 아니다)
+    # 실패로 드러난다.
+    warning_lines = [
+        ln for ln in result.stdout.splitlines()
+        if re.search(r"\bGA-\d+\b", ln) and "verify" in ln
+    ]
+    # ⚠️ **줄 수와 헤더 건수를 대조한다**(PR #78 1차 리뷰 major M2). 위 필터만
+    # 두면 게이트가 **경고 상세 줄 출력을 끊는** 변이에서 `warning_lines`가 0이
+    # 되어 실제 위반이 있는데도 통과한다 — 삭제된 `assert "경고 0건" in stdout`은
+    # 그 변이에서 실패했으므로 그 축만은 **순수한 약화**였다(리뷰어 격리 실측).
+    # 헤더의 총 건수와 파싱한 줄 수가 어긋나면 출력 형식이 바뀐 것이고, 그때는
+    # 아래 `done` 단언이 무력해지므로 여기서 먼저 죽어야 한다.
+    m_warn = re.search(r"경고\s*(\d+)건", result.stdout)
+    assert m_warn, result.stdout
+    assert len(warning_lines) == int(m_warn.group(1)), (warning_lines, result.stdout)
+
+    done_warning_lines = [ln for ln in warning_lines if "(status:" not in ln]
+    assert done_warning_lines == [], result.stdout
