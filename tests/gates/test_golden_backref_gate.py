@@ -348,7 +348,8 @@ def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
     문서에 이미 "경고 건수는 골든이 늘어난다고 저절로 바뀌지 않는다,
     바뀐다면 그게 진짜 신호"라고 적었고, 지금이 바로 그 신호다.
     """
-    ids_with_warnings: list[str] = []
+    done_with_warnings: list[str] = []
+    todo_with_warnings: list[str] = []
     total_hard_fails: list[str] = []
     for line in (GOLDEN_DIR / "track-a-product.jsonl").read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -358,13 +359,32 @@ def test_real_track_a_zero_hard_fails_and_zero_warnings() -> None:
         hard_fails, warnings = gbg.check_entry(rec, root=ROOT)
         total_hard_fails += hard_fails
         if warnings:
-            ids_with_warnings.append(rec["id"])
+            bucket = todo_with_warnings if rec.get("status") == "todo" else done_with_warnings
+            bucket.append(rec["id"])
 
     # 리뷰어 전수 조사(원장 28g 착수 근거) — 76건 중 경로 부재 0건. 정리
     # 이후에도 그대로 유지된다(하드 실패 축은 이번 라운드가 건드리지 않았다).
     assert total_hard_fails == [], total_hard_fails
     # 역참조 부재 0건 — 6건 전부 GA-NN: 접두로 정리됐다(원장 28i).
-    assert ids_with_warnings == [], ids_with_warnings
+    #
+    # ⚠️ **고정을 두 종류로 가른다(원장 24bz — 사용자 결정 2026-08-11).**
+    # 이 단언은 한때 `done`·`todo`를 합쳐 "경고 0건"을 요구했다. 그런데 게이트
+    # 문서(A-③)가 "`status: todo` 골든이 현재 0건 — **정하는 것은 앞으로의
+    # 관행이다**"라고 그 관행을 미결로 남겨 뒀고, RQ-73 스펙 라운드가 그것을
+    # 처음 건드렸다: **스펙 PR이 구현 이전에 골든을 먼저 등록**하면 `verify`가
+    # 가리키는 테스트 파일이 아직 없다.
+    #
+    # 합쳐서 0으로 두면 **스펙이 골든 없이 머지되어** 「검증 기준 없는 스펙」이
+    # 한 라운드 동안 남는다. 그래서 **약화가 아니라 분리**를 택했다 — 정말
+    # 지켜야 할 축(`done`이라 "검증됨"으로 읽히는데 역참조가 없는 것)은 **0건
+    # 그대로**이고, `todo`의 깨진 경로만 허용한다. 위 docstring의 "경고 건수가
+    # 바뀌면 그게 진짜 신호"는 유효하다 — 신호를 무시한 게 아니라 **읽고
+    # 관행을 정했다.**
+    #
+    # ⚠️ `todo` 체류가 방치되는 것(GA-52가 약 10일)은 이 테스트가 막지 않는다.
+    # 그 축은 **원장 24bz**가 소유한다 — 구현 라운드가 GA-90~94를 `done`으로
+    # 승격하는 것이 그 행의 할 일에 적혀 있다.
+    assert done_with_warnings == [], done_with_warnings
 
 
 def test_real_track_b_entries_all_skipped_no_crash() -> None:
@@ -480,6 +500,19 @@ def test_cli_check_reports_scan_count_floor_and_known_warning_count() -> None:
     # 83에 한참 못 미쳐 잡힌다.
     assert scanned >= 83, result.stdout
 
-    # 경고 건수는 정확히 고정한다(위 섹션 코멘트) — 원장 28i 정리 이후 0건
-    # (GA-40·47·48·52·70·71이 GA-NN: 접두로 채워졌다).
-    assert "경고 0건" in result.stdout, result.stdout
+    # 경고는 **종류별로** 고정한다(원장 24bz — 사용자 결정 2026-08-11). 한때
+    # `"경고 0건"` 문자열을 통째로 요구했는데, 그러면 `todo` 골든이 하나라도
+    # 생기는 순간 깨진다 — 그 관행을 게이트 문서 A-③이 미결로 남겨 뒀고
+    # RQ-73 스펙 라운드가 정했다(근거는 위 `test_real_track_a_...`의 주석).
+    #
+    # 게이트가 두 종류를 출력에서 구분한다 — `todo`의 깨진 경로 줄에는 GA-ID
+    # 뒤에 `(status: …)`가 붙고 `done`의 역참조 위반 줄에는 붙지 않는다.
+    # **`done` 쪽만 0건으로 고정한다.** 게이트가 그 표기를 없애면 아래 필터가
+    # `done` 줄로 오분류해 **더 엄격해질 뿐**이라(경고를 놓치는 방향이 아니다)
+    # 실패로 드러난다.
+    warning_lines = [
+        ln for ln in result.stdout.splitlines()
+        if re.search(r"\bGA-\d+\b", ln) and "verify" in ln
+    ]
+    done_warning_lines = [ln for ln in warning_lines if "(status:" not in ln]
+    assert done_warning_lines == [], result.stdout
