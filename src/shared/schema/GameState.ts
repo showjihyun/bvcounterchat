@@ -39,7 +39,8 @@ export class Player extends Schema {
   /** 자세(RQ-92 v2.4, 원장 24az) — `grounded`(바로 위)와 동일한 관례:
    * 서버가 매 틱 권위 값을 싣는다(RQ-61) — 클라이언트가 원격 플레이어의
    * 자세를 자기 자신이든 남의 것이든 추정하지 않는다. 원격 플레이어의
-   * 렌더 높이(`remoteMeshHeightM`)·이름표 앵커·이름표 대상 판정(RQ-56,
+   * 렌더 배치(RQ-73 이후 `computePlayerModelLayout`, 그 전에는
+   * `remoteMeshHeightM`)·이름표 앵커·이름표 대상 판정(RQ-56,
    * `resolveNameplateTarget`)이 전부 이 필드를 그대로 읽는다. 기본값
    * `'run'`은 `IDLE_MOVE_INPUT.mode`와 동일한 안전한 초기값(아직 'move'를
    * 한 번도 보내지 않은 상태). **`grounded`와 다른 점**: 사망자의 `mode`
