@@ -8,6 +8,9 @@
   [ADR-0014](0014-audio-authority.md)(발소리는 **반대로** 클라 로컬 판정을
   택했다 — 갈린 이유를 결정 1에 적는다) ·
   [ADR-0015](0015-player-model-geometry.md)(모델이 히트박스를 따른다) ·
+  [ADR-0013](0013-movement-authority-layering.md)(⚠️ **벽=무한 기둥 / 박스=유한**
+  어휘 — 본문의 가장 강한 금지문(「`WallAABB`에 Y를 넣는 방향으로 읽지 마라」)이
+  이 ADR을 근거로 삼는다) ·
   [ADR-0001](0001-client-rendering-stack.md)(프레임 예산)
 
 ## 맥락
