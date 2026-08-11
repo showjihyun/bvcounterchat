@@ -517,6 +517,40 @@ describe('RQ-73(평가 F2): applyGaitSwingInto — 스윙(걷기 애니메이션
 })
 
 // ---------------------------------------------------------------------------
+// 평가 F5(재평가 신규 확인, `_workspace/RQ-73/05_evaluator_reeval.md`) —
+// "스윙이 실제로 일어난다"는 무증상이었다: `applyGaitSwingInto`의
+// `swing = Math.sin(...)`을 `swing = 0`(걷기 애니메이션 완전 소멸, 변이
+// M9)으로 바꿔도 F2의 내포 단언은 **더 쉽게** 통과한다(스윙이 없으면 코너가
+// 정적 배치 그대로라 여유가 더 크다) — 내포(포함되는가)와 발생(움직이는가)은
+// 서로 다른 성질이라 F2가 F5를 대신하지 못한다.
+// ---------------------------------------------------------------------------
+
+describe('RQ-73(평가 F5): applyGaitSwingInto — 스윙이 실제로 일어난다', () => {
+  it('평가 F5: 위상 0.25(sin=+1)에서 legLeft·armLeft가 원본과 달라지고 서로 반대 부호로 움직인다(교차 보행) — 위상 0에서는 원본과 정확히 같다(스윙 없음, 변이 M9를 잡는다)', () => {
+    const layout = computePlayerModelLayout(DEFAULT_HITBOX)
+    const atPhaseZero = computePlayerModelLayout(DEFAULT_HITBOX) // 임의 초기값 — applyGaitSwingInto가 덮어쓴다
+    const atPhaseQuarter = computePlayerModelLayout(DEFAULT_HITBOX)
+
+    applyGaitSwingInto(layout, 0, atPhaseZero)
+    applyGaitSwingInto(layout, 0.25, atPhaseQuarter)
+
+    // 위상 0 — 스윙 진폭이 0이므로 원본과 정확히 같다.
+    expect(atPhaseZero).toEqual(layout)
+
+    // 위상 0.25(sin=+1) — 다리·팔이 원본에서 실제로 움직인다. `swing`을
+    // 상수 0으로 붕괴시키는 변이(M9)라면 이 두 단언이 실패한다.
+    expect(atPhaseQuarter.legLeft.center.z).not.toBe(layout.legLeft.center.z)
+    expect(atPhaseQuarter.armLeft.center.z).not.toBe(layout.armLeft.center.z)
+
+    // 같은 쪽 팔은 다리와 반대 부호로 움직인다(교차 보행,
+    // `updatePlayerModelPose`의 기존 산술과 동일한 계약).
+    const legDeltaZ = atPhaseQuarter.legLeft.center.z - layout.legLeft.center.z
+    const armDeltaZ = atPhaseQuarter.armLeft.center.z - layout.armLeft.center.z
+    expect(Math.sign(legDeltaZ)).toBe(-Math.sign(armDeltaZ))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 평가 F3(원장 24bz 재호출) — GA-72/75의 verify(`remoteMeshHeightM`)를
 // 실물(computePlayerModelLayout)에 다시 연결한다. `remoteMeshHeightM`은
 // 더 이상 프로덕션 소비처가 없다(RQ-73 6파츠 재작성 이후) — 두 골든이
