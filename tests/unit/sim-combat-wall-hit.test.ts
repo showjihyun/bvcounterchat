@@ -189,4 +189,27 @@ describe('RQ-70/71 신규 — findClosestWallHit: 벽 명중 지점·법선 산�
 
     expect(findClosestWallHit(ray, [])).toBeUndefined()
   })
+
+  /**
+   * **평가자 03 보고서 O1/M5 대응**(`_workspace/RQ-70-71/03_evaluator_report.md`
+   * — "벽 명중점 y가 `origin.y` 고정" 변이가 1075/1075를 통과했다. 지금까지
+   * 이 파일의 모든 케이스가 `dir.y=0`이라 `point.y === origin.y`가 "우연히"도
+   * 성립해, `point.y`가 실제로 `origin.y + dir.y·t`로 레이에서 유도되는지가
+   * 무검증이었다).
+   *
+   * `dir.y≠0`인 레이로 같은 벽(x 슬랩 진입)을 맞힌다 — XZ 평면상 교차 지점·
+   * 진입 거리는 `dir.y`와 무관하므로(파일 상단 계약 "좌표=origin+dir·t", x·z
+   * 슬랩 산술 자체가 y를 참조하지 않는다) x는 여전히 `WALL_PLUS_X.minX`(5)에서
+   * 진입하지만, `point.y`는 `origin.y=5`가 **아니라** `5 + (-2/√5)·(5√5)=5-10=-5`여야
+   * 한다 — `origin.y`로 고정하는 변이라면 5가 나와 이 단언이 즉시 죽는다.
+   */
+  it('O1/M5: dir.y≠0인 레이 — 명중점의 y는 origin.y로 고정되지 않고 origin.y + dir.y·t로 레이를 따라간다', () => {
+    const ray: Ray = { origin: { x: 0, y: 5, z: 0 }, direction: { x: 1, y: -2, z: 0 } }
+    const hit = findClosestWallHit(ray, [WALL_PLUS_X])
+
+    expect(hit).toBeDefined()
+    expect((hit as WallHit).distance).toBeCloseTo(5 * Math.sqrt(5), 6)
+    expect((hit as WallHit).point).toEqual({ x: 5, y: -5, z: 0 }) // origin.y(5)가 아니라 -5 — dir.y가 실제로 반영됐다
+    expect((hit as WallHit).normal).toEqual({ x: -1, y: 0, z: 0 })
+  })
 })

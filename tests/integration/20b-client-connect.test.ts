@@ -1659,6 +1659,18 @@ describe('20b/RQ-71/GA-100(플레이어): 실 사격으로 만들어진 플레�
       // 대상 종류 구분도 실 배선에서 성립한다 — 플레이어 명중은 탄흔 컬렉션으로 새지 않는다.
       expect(storeA.getState().bulletHoles).toHaveLength(0)
 
+      // F1 재리뷰(`_workspace/RQ-70-71/03_evaluator_report.md` M1) — 플레이어
+      // 명중 법선이 서버→클라 경계를 실제로 건너오는지 확인한다. `normal`
+      // 자체의 값 정확성(부위별 공식)은 `sim-combat-hit-normal.test.ts`가
+      // 이미 순수 산술로 고정한다 — 여기서는 그 값이 **와이어를 타고
+      // 살아서 도착하는지**만 본다. 영벡터 변이라면 magnitude가 0이 되어
+      // 아래 첫 단언이 죽는다. `aimAtBody`는 바디 중심을 조준하므로
+      // (바디 명중, region 자체는 이 파일이 재검산하지 않는다) 법선의
+      // y 성분은 원통 측면 정의(`combat.ts`)상 정확히 0이어야 한다.
+      const normalMagnitude = Math.hypot(effect.normal.x, effect.normal.y, effect.normal.z)
+      expect(normalMagnitude).toBeCloseTo(1, 6) // 영벡터가 아니라 실제 단위 법선이 건너왔다
+      expect(effect.normal.y).toBe(0) // 바디 명중(aimAtBody) — 원통 측면 법선은 y를 버린다
+
       await Promise.all([
         withTimeout(connA.disconnect(), LEAVE_TIMEOUT_MS, 'A: disconnect'),
         withTimeout(connB.disconnect(), LEAVE_TIMEOUT_MS, 'B: disconnect'),
