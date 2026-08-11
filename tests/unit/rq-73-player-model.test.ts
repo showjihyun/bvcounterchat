@@ -207,6 +207,74 @@ describe('RQ-73/GA-92: 배치는 앞뒤(Z) 대칭이다 — 방향을 시사하�
 })
 
 // ---------------------------------------------------------------------------
+// 리뷰 major M1(PR #79 1차 리뷰) — GA-92는 **정적 배치**만 본다. 화면에
+// 실제로 나오는 것은 걸음 스윙이 적용된 포즈인데, 스윙 포즈는 단순 전후
+// (Z) 반전으로는 자기 자신과 일치하지 않는다(왼쪽 파츠의 스윙 오프셋과
+// 오른쪽 파츠의 스윙 오프셋이 서로 반대 부호라, 같은 파츠 슬롯의 Z만
+// 뒤집으면 원본과 달라진다 — 좌우를 **교환**해야 맞아떨어진다).
+//
+// 스윙 포즈에서 실제로 성립하는 성질은 **좌우 파츠를 교환한 뒤 Y축으로
+// 180도 회전**한 결과가 원본과 일치한다는 것이다(X·Z 부호를 뒤집고 왼쪽
+// ↔ 오른쪽 파츠를 맞바꾼다). `legLeft`↔`legRight`(그리고 `armLeft`↔
+// `armRight`)가 서로의 거울상이기 때문에 성립한다 — F5가 `legLeft`·
+// `armLeft`만 봐서(왼쪽 한정) `legRight`의 스윙 부호가 뒤집히는 변이
+// (동측 보행 — 왼발·오른발이 같은 방향으로 움직인다)를 놓쳤다.
+// ---------------------------------------------------------------------------
+
+function rotateY180WithLeftRightSwap(v: Vec3Like): Vec3Like {
+  // `-0`을 피한다(GA-92 `reflectZ`와 동일한 방어).
+  return { x: v.x === 0 ? 0 : -v.x, y: v.y, z: v.z === 0 ? 0 : -v.z }
+}
+
+/** 좌우를 교환한 뒤 Y축 180도 회전한 배치 — 스윙 포즈가 실제로 만족해야
+ * 하는 대칭이다(정적 배치는 좌우가 이미 개별적으로 대칭이라 이 변환과
+ * `reflectLayoutFrontBack`이 같은 결과를 낸다). */
+function rotateLayoutY180WithLeftRightSwap(layout: PlayerModelLayout): PlayerModelLayout {
+  return {
+    head: { kind: 'sphere', center: rotateY180WithLeftRightSwap(layout.head.center), radius: layout.head.radius },
+    torso: {
+      kind: 'box',
+      center: rotateY180WithLeftRightSwap(layout.torso.center),
+      halfExtents: layout.torso.halfExtents,
+    },
+    // 좌우 교환 — Y축 180도 회전은 왼쪽·오른쪽 라벨 자체를 맞바꾼다.
+    armLeft: {
+      kind: 'box',
+      center: rotateY180WithLeftRightSwap(layout.armRight.center),
+      halfExtents: layout.armRight.halfExtents,
+    },
+    armRight: {
+      kind: 'box',
+      center: rotateY180WithLeftRightSwap(layout.armLeft.center),
+      halfExtents: layout.armLeft.halfExtents,
+    },
+    legLeft: {
+      kind: 'box',
+      center: rotateY180WithLeftRightSwap(layout.legRight.center),
+      halfExtents: layout.legRight.halfExtents,
+    },
+    legRight: {
+      kind: 'box',
+      center: rotateY180WithLeftRightSwap(layout.legLeft.center),
+      halfExtents: layout.legLeft.halfExtents,
+    },
+  }
+}
+
+describe('RQ-73(리뷰 major M1, PR #79): 걸음 스윙 포즈는 좌우 교환+Y축 180도 회전 불변이다', () => {
+  it.each([0.25, 0.5, 0.75])(
+    '리뷰 M1: 위상 %s에서 스윙 포즈를 좌우 교환+Y축 180도 회전시키면 자기 자신과 정확히 일치한다(legRight·armRight의 스윙 부호가 뒤집혀 동측 보행이 되면 이 단언이 깨진다)',
+    (phase) => {
+      const layout = computePlayerModelLayout(DEFAULT_HITBOX)
+      const swayed = computePlayerModelLayout(DEFAULT_HITBOX) // 임의 초기값 — applyGaitSwingInto가 덮어쓴다
+      applyGaitSwingInto(layout, phase, swayed)
+
+      expect(rotateLayoutY180WithLeftRightSwap(swayed)).toEqual(swayed)
+    },
+  )
+})
+
+// ---------------------------------------------------------------------------
 // GA-93/94 — 걸음 위상: 접지 수평 이동 거리 누적, 자세 무관, 프레임률 무관
 // ---------------------------------------------------------------------------
 

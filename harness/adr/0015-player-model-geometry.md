@@ -6,7 +6,7 @@
 - 관련 ADR: [ADR-0014](0014-audio-authority.md)(절차적 생성·검증 3층 분리 —
   이 ADR은 그 형태를 시각 계층에 그대로 적용한다) ·
   [ADR-0003](0003-netcode-authority.md)(서버 권위) ·
-  [ADR-0001](0001-rendering-stack.md)(프레임 예산) ·
+  [ADR-0001](0001-client-rendering-stack.md)(프레임 예산) ·
   [ADR-0008](0008-test-strategy.md)(결정론·테스트 전략) ·
   [ADR-0007](0007-map-asset-pipeline.md)(에셋 출처)
 
