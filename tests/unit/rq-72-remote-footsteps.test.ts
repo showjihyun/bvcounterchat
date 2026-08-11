@@ -64,7 +64,7 @@ import {
  *   // mode 필드와 동일 패턴 — 기존 스냅샷 리터럴 전부와 호환).
  *   grounded?: boolean
  *
- *   // RQ-72 2/2(GA-83) — 위치 불연속(리스폰) 검출 신호. GameState.ts:56의
+ *   // RQ-72 2/2(GA-83) — 위치 불연속(리스폰) 검출 신호. GameState.ts:57의
  *   // hp와 동일한 의미. 옵셔널 — 생략하면 PLAYER.MAX_HP(GameState.hp 기본값과
  *   // 동일한 하위 호환 관례). 직전 스냅샷의 hp가 정확히 0이고 이번 스냅샷의
  *   // hp가 정확히 PLAYER.MAX_HP면 그 스냅샷 쌍은 discontinuous로 처리된다
