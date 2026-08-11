@@ -60,6 +60,12 @@ export interface HitscanResult {
   region?: HitRegion
   distance?: number
   point?: Vec3
+  /** 명중 표면의 바깥쪽 법선(RQ-70·71 공통 — ADR-0016 결정 1은 벽·플레이어
+   * 명중 둘 다 서버가 법선을 전달하라고 요구한다). 바디(원통)는 y축 기준
+   * 방사 방향, 헤드(구체)는 `headCenterM` 중심 기준 방사 방향 — 둘 다
+   * 이미 계산된 명중점에서 유도할 뿐 새 교차 판정을 만들지 않는다.
+   * `hit:false`면 없음. */
+  normal?: Vec3
 }
 
 /**
@@ -222,6 +228,16 @@ export function raycastHitbox(ray: Ray, target: TargetPose, hitbox: HitboxConfig
     return { hit: false }
   }
 
+  // 명중점(target 중심 기준 로컬 좌표) — RQ-70·71 법선 산출용. 바디는 원통
+  // 측면이라 y 성분을 버린 (x,z) 방사 방향이 바깥쪽 법선이고, 헤드는 구체라
+  // 중심(headCenterM 높이)에서 명중점으로의 방향이 곧 바깥쪽 법선이다.
+  const localX = o.x + dir.x * t
+  const localZ = o.z + dir.z * t
+  const normal: Vec3 =
+    region === 'body'
+      ? normalize({ x: localX, y: 0, z: localZ })
+      : normalize({ x: localX, y: o.y + dir.y * t - hitbox.headCenterM, z: localZ })
+
   return {
     hit: true,
     region,
@@ -231,6 +247,7 @@ export function raycastHitbox(ray: Ray, target: TargetPose, hitbox: HitboxConfig
       y: ray.origin.y + dir.y * t,
       z: ray.origin.z + dir.z * t,
     },
+    normal,
   }
 }
 
@@ -372,6 +389,101 @@ export function findClosestHit(
     }
   }
   return closest
+}
+
+export interface WallHit {
+  /** 레이 원점 ~ 명중 지점 거리(m) — raycastHitbox의 distance와 동일 단위. */
+  distance: number
+  /** origin + direction·distance(direction은 정규화된 단위 벡터 전제). */
+  point: Vec3
+  /** 벽 표면의 바깥쪽 법선 — tMin을 결정한 축(x면/z면)에서 유도한다. */
+  normal: Vec3
+}
+
+interface WallSlabHit {
+  t: number
+  axis: 'x' | 'z'
+}
+
+/**
+ * `intersectWallXZ`와 동일한 슬랩(slab) 알고리즘이지만, 최종 `tMin`을
+ * 결정한 축(x 슬랩 vs z 슬랩)도 함께 반환한다 — `findClosestWallHit`의
+ * 법선 산출 전용(RQ-70/71, ADR-0016 결정 1 후속 1 —
+ * `sim-combat-wall-hit.test.ts` "법선" 규칙: 진입면의 바깥쪽 법선은 그
+ * 축의 진행 방향과 반대다). 기존 `intersectWallXZ`(진입 거리만 필요한
+ * `computeWallEntryDistances`가 계속 쓴다)는 건드리지 않는다 — 이미 두
+ * 차례 결함 수정을 거친 부동소수점 경계 동작(위 코멘트)을 재검증 없이
+ * 재사용하는 대신 별도 함수로 둔다(회귀 위험 최소화).
+ */
+function intersectWallXZWithAxis(o: Vec3, dir: Vec3, wall: WallAABB): WallSlabHit | undefined {
+  let tMin = -Infinity
+  let tMax = Infinity
+  let axis: 'x' | 'z' | undefined
+
+  if (Math.abs(dir.x) < WALL_AXIS_PARALLEL_EPS) {
+    if (o.x <= wall.minX || o.x >= wall.maxX) return undefined
+  } else {
+    const t1 = (wall.minX - o.x) / dir.x
+    const t2 = (wall.maxX - o.x) / dir.x
+    const enter = Math.min(t1, t2)
+    if (enter > tMin) {
+      tMin = enter
+      axis = 'x'
+    }
+    tMax = Math.min(tMax, Math.max(t1, t2))
+  }
+
+  if (Math.abs(dir.z) < WALL_AXIS_PARALLEL_EPS) {
+    if (o.z <= wall.minZ || o.z >= wall.maxZ) return undefined
+  } else {
+    const t1 = (wall.minZ - o.z) / dir.z
+    const t2 = (wall.maxZ - o.z) / dir.z
+    const enter = Math.min(t1, t2)
+    if (enter > tMin) {
+      tMin = enter
+      axis = 'z'
+    }
+    tMax = Math.min(tMax, Math.max(t1, t2))
+  }
+
+  // intersectWallXZ와 동일한 배제 조건(tMax<tMin·tMax<=0, 위 결함 수정
+  // 코멘트 참고) + axis 미확정(레이가 두 축 모두에 평행 — 순수 수직 레이,
+  // sim-combat-wall-hit.test.ts 스코프 밖) 배제.
+  if (tMax < tMin || tMax <= 0 || axis === undefined) return undefined
+  return { t: Math.max(tMin, 0), axis }
+}
+
+/**
+ * `ray`가 지나는 `walls` 중 가장 가까이 교차하는 벽의 명중 지점·법선
+ * (RQ-70/71, ADR-0016 결정 1 후속 1 — `sim-combat-wall-hit.test.ts` 상단
+ * 계약이 정본). 플레이어 후보와 무관한 순수 벽 전용 함수다(`findClosestHit`
+ * 과 독립 — 호출자가 상황에 따라 골라 쓴다). 교차하는 벽이 없으면 undefined.
+ */
+export function findClosestWallHit(ray: Ray, walls: readonly WallAABB[]): WallHit | undefined {
+  const dirMagnitude = magnitude(ray.direction)
+  if (!Number.isFinite(dirMagnitude) || dirMagnitude < DEGENERATE_RADIAL_EPS) return undefined
+  const dir = scale(ray.direction, 1 / dirMagnitude)
+
+  let closest: WallSlabHit | undefined
+  for (const wall of walls) {
+    const entry = intersectWallXZWithAxis(ray.origin, dir, wall)
+    if (entry === undefined) continue
+    if (!closest || entry.t < closest.t) closest = entry
+  }
+  if (!closest) return undefined
+
+  const normal: Vec3 =
+    closest.axis === 'x' ? { x: -Math.sign(dir.x), y: 0, z: 0 } : { x: 0, y: 0, z: -Math.sign(dir.z) }
+
+  return {
+    distance: closest.t,
+    point: {
+      x: ray.origin.x + dir.x * closest.t,
+      y: ray.origin.y + dir.y * closest.t,
+      z: ray.origin.z + dir.z * closest.t,
+    },
+    normal,
+  }
 }
 
 /** region만으로 데미지를 유도한다 — WEAPON.DAMAGE_BODY·

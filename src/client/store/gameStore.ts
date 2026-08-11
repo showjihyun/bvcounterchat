@@ -2,6 +2,15 @@ import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
 import type { MoveInput, MoveState } from '@shared/sim/movement'
 import { UI } from '@shared/constants'
+import {
+  advanceHitFeedback as advanceHitFeedbackState,
+  applyHitEvent,
+  createHitFeedbackState,
+  type BulletHole,
+  type HitEffect,
+  type HitEvent,
+} from '@client/effects/hitFeedback'
+import { EFFECTS_TUNING } from '@shared/config/effects-tuning'
 
 /**
  * game state 레이어(`harness/workflow/fe.md`) — 서버 스냅샷의 클라이언트
@@ -92,6 +101,14 @@ export interface GameStoreState {
    * 누적을 막는다.
    */
   chatLog: ChatMessage[]
+  /** RQ-70 탄흔 — ADR-0016 결정 4 "판정·수집" 층(순수
+   * `@client/effects/hitFeedback` 감쌈). 서버 'hit' 이벤트(target='wall')만
+   * 채운다(RQ-61 — 클라가 스스로 만들지 않는다). 상한(`EFFECTS.BULLET_HOLE_CAP`)·
+   * FIFO 제거는 `addHitEvent`가 위임하는 `applyHitEvent`가 담당한다. */
+  bulletHoles: readonly BulletHole[]
+  /** RQ-71 피격 효과 — 위와 동일 층, target='player' 이벤트만 채운다.
+   * 지속 시간(TTL)이 지나면 `advanceHitFeedback`이 제거한다. */
+  hitEffects: readonly HitEffect[]
   setSelfSessionId(sessionId: string): void
   setSelfPredictedState(state: MoveState): void
   applyServerState(state: ServerStateSnapshot): void
@@ -100,6 +117,14 @@ export interface GameStoreState {
   /** 'chat-history' 이력 복원(접속·재접속 시 1회) — 로그 전체를 교체한다
    * (상한 적용, 서버가 이미 50개 이하로 보내지만 방어적으로 다시 자른다). */
   setChatLog(messages: ChatMessage[]): void
+  /** 서버 'hit' 브로드캐스트 1건을 반영한다(`connection.ts`가 구독). `nowMs`는
+   * 호출자가 조달한다(ADR-0008 — 이 store 자신은 실시간 API를 호출하지
+   * 않는다). */
+  addHitEvent(event: HitEvent, nowMs: number): void
+  /** 피격 효과의 TTL 경과분을 제거한다(탄흔은 시간으로 사라지지 않는다 —
+   * RQ-70). `nowMs`는 호출자(`connection.ts`의 `handleStateChange`, 서버 틱
+   * 기반)가 조달한다. */
+  advanceHitFeedback(nowMs: number): void
 }
 
 export function createGameStore(): StoreApi<GameStoreState> {
@@ -110,6 +135,7 @@ export function createGameStore(): StoreApi<GameStoreState> {
     spectators: new Map(),
     selfPredictedState: null,
     chatLog: [],
+    ...createHitFeedbackState(),
 
     setSelfSessionId(sessionId) {
       set({ selfSessionId: sessionId })
@@ -125,6 +151,14 @@ export function createGameStore(): StoreApi<GameStoreState> {
 
     setChatLog(messages) {
       set({ chatLog: messages.slice(-UI.CHAT_HISTORY) })
+    },
+
+    addHitEvent(event, nowMs) {
+      set((state) => applyHitEvent(state, event, nowMs, EFFECTS_TUNING.HIT_EFFECT_DURATION_MS))
+    },
+
+    advanceHitFeedback(nowMs) {
+      set((state) => advanceHitFeedbackState(state, nowMs))
     },
 
     // 스냅샷 전체 교체 계약 — 이전 호출엔 있었지만 이번 스냅샷에 없는

@@ -11,6 +11,8 @@ import {
 } from '@client/net/interpolation'
 import { createRttEstimator, type RttEstimator } from '@client/net/rttEstimator'
 import { NET } from '@shared/constants'
+import { ticksToMs } from '@shared/sim/clock'
+import type { HitEvent } from '@client/effects/hitFeedback'
 
 /** 서버 전역에 상설 세션은 이 룸 하나뿐이다(RQ-04 GA-29, `GameRoom` 참고). */
 const ROOM_NAME = 'game'
@@ -303,6 +305,15 @@ export async function connectToGame(
     store.getState().setChatLog(history)
   })
 
+  // RQ-70/71/ADR-0016 결정 1 — 서버 명중 이벤트 구독. `nowMs`는
+  // `performance.now()`(실시간)가 아니라 `room.state.tick`에서 유도한다
+  // (`ticksToMs`) — 아래 `handleStateChange`가 `advanceHitFeedback`에 넘기는
+  // 시각과 같은 축이어야 TTL 비교(GA-99)가 의미를 갖는다(둘이 서로 다른
+  // 시계를 쓰면 만료 판정이 어긋난다).
+  const unbindHit = room.onMessage<HitEvent>('hit', (event) => {
+    store.getState().addHitEvent(event, ticksToMs(room.state.tick))
+  })
+
   store.getState().setSelfSessionId(room.sessionId)
 
   // RQ-15/16: 서버가 스폰 로테이션 지점에서 시작하므로 권위 상태를 먼저
@@ -408,6 +419,10 @@ export async function connectToGame(
   // 보관하지 못했다).
   function handleStateChange(): void {
     store.getState().applyServerState(room.state)
+    // RQ-71: 매 패치마다 서버 틱 기반 시각으로 피격 효과 TTL을 진행한다 —
+    // 위 'hit' 핸들러가 같은 시각 축(ticksToMs(room.state.tick))으로
+    // expiresAtMs를 확정했으므로 여기서도 같은 유도식을 쓴다.
+    store.getState().advanceHitFeedback(ticksToMs(room.state.tick))
 
     const authoritative = readSelfAuthoritativeState(room)
     if (authoritative) {
@@ -461,6 +476,7 @@ export async function connectToGame(
       room.onStateChange.remove(handleStateChange)
       unbindChat()
       unbindChatHistory()
+      unbindHit()
       cleanupPingTimer() // RQ-64 평가 O-2: room.onLeave 구독과 공유하는 멱등 정리(위 정의 참고)
       await room.leave(true)
     },
