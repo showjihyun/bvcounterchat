@@ -52,8 +52,10 @@
  * ✅ **REV4(PR #68 리뷰 F1 blocker, 2026-08-08, 원장 24az 후속) — 앵커
  * "높이"에도 같은 시간축 문제가 있었다.** REV3이 대상 히트박스 축을 최신
  * `mode`로 닫았지만, **표시**(앵커 높이) 쪽은 여전히 최신 `mode`를 썼다 —
- * 몸은 `PlayerMeshes.tsx`가 `remoteMeshHeightM(interpolator.getMode(...))`로
- * **보간 지연된** 자세로 그리는데, 앵커 높이는 `nameplateAnchorHeightM
+ * 몸은 `PlayerMeshes.tsx`가 `interpolator.getMode(...)`로 얻은 **보간 지연된**
+ * 자세로 그리는데(⚠️ **RQ-73 이후 높이 산출이 `computePlayerModelLayout`로
+ * 바뀌었다** — 그 전에는 `remoteMeshHeightM(...)`였다. **시간축이 같다는 요지는
+ * 불변**이고 바뀐 것은 높이를 구하는 함수뿐이다), 앵커 높이는 `nameplateAnchorHeightM
  * (player.mode)`로 **최신** 자세를 썼다. 정지 상태에서는 두 값이 항상
  * 같아 드러나지 않고, 전환 직후 보간 지연 창(66.67ms) 안에서만 어긋난다
  * — 실측: 일어서는 순간 그려진 몸은 아직 1.35m인데 앵커는 2.05m(0.7m
@@ -142,8 +144,9 @@ const NAMEPLATE_HEAD_CLEARANCE_M = 0.25
 /**
  * **REV(RQ-92 v2.4, 2026-08-08, 원장 24az, GA-73)** — `mode` 파라미터
  * 추가(옵셔널, 기본값 `'run'` — 기존 0-인자 호출 전부 그대로 유효). 지금까지
- * 이 값은 선 자세 히트박스(2.05m)로 고정이었다 — 메시 높이(`remoteMeshHeightM`,
- * GA-72)만 앉은 자세로 줄이고 이 값을 그대로 두면 **앉은 대상의 이름표가
+ * 이 값은 선 자세 히트박스(2.05m)로 고정이었다 — 메시 높이(GA-72. 당시
+ * `remoteMeshHeightM`, **RQ-73 이후 `computePlayerModelLayout`**)만 앉은 자세로
+ * 줄이고 이 값을 그대로 두면 **앉은 대상의 이름표가
  * 줄어든 몸(1.35m) 위 0.7m 허공에 남는다**(PR #66에서 0.40m 오프셋이
  * blocker였던 것과 같은 축, 이번엔 더 크다). `hitboxForMode`(RQ-92 정본
  * 히트박스 선택 로직)를 그대로 재사용해 앉은 자세는 1.6m로 낮아진다.
@@ -190,7 +193,8 @@ export function nameplateAnchorHeightM(mode: MoveInput['mode'] = 'run'): number 
  *   `anchorPosition`(5번째)과 완전히 대칭인 위치·원칙 — "최신 스냅샷
  *   값"(그룹 판정, 위)과 "호출자가 보간기에서 얻어 넘기는 지연 값"(표시)을
  *   분리한다. 프로덕션 호출부는 `interpolator.getMode(id, now())`를
- *   넘긴다 — `PlayerMeshes.tsx`가 몸 높이(`remoteMeshHeightM`)에 쓰는 것과
+ *   넘긴다 — `PlayerMeshes.tsx`가 몸 높이(**RQ-73 이후
+ *   `computePlayerModelLayout`**, 그 전에는 `remoteMeshHeightM`)에 쓰는 것과
  *   **같은 호출**이라 몸과 앵커가 항상 같은 시간축을 본다. 생략하거나
  *   `undefined`를 반환하면(첫 프레임 등 보간 이력이 아직 없음)
  *   `player.mode`(후보의 최신 자세)로 떨어진다 — `anchorPosition`을
