@@ -496,9 +496,11 @@ describe("RQ-92 v2.4(GA-73) — nameplateAnchorHeightM(mode)", () => {
 
 /**
  * PR #68 리뷰 F1 blocker(평가자 실측, 원장 24az 후속) — **앵커 "높이"만
- * 시간축이 다르다.** 몸은 보간 지연된 자세로 그려지는데(`PlayerMeshes
- * .tsx:152` — `remoteMeshHeightM(interpolator.getMode(sessionId,
- * renderTime))`), 이름표 앵커 높이는 store의 **최신** 자세로 계산됐다
+ * 시간축이 다르다.** 몸은 보간 지연된 자세로 그려지는데(당시
+ * `PlayerMeshes.tsx`가 `remoteMeshHeightM(interpolator.getMode(sessionId,
+ * renderTime))` — ⚠️ **RQ-73 이후 `computePlayerModelLayout`으로 바뀌었고
+ * `getMode(...)` 호출은 그대로다**, 즉 시간축 논지는 불변이다),
+ * 이름표 앵커 높이는 store의 **최신** 자세로 계산됐다
  * (`nameplateTarget.ts:237` — `nameplateAnchorHeightM(player.mode)`).
  * 앵커 **위치**(x·z, 발 높이)는 이미 `anchorPosition` 콜백으로 보간기를
  * 쓴다(PR #66 수정) — **높이만** 짝이 안 맞았다. 정지 상태(자세 불변)에서는
