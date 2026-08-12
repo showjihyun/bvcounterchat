@@ -213,7 +213,7 @@ describe('RQ-70·71/GA-97: 같은 갱신 함수(advanceHitFeedback)가 탄흔·�
   })
 })
 
-describe("RQ-70·71/GA-98: 표시 위치는 이벤트 좌표 그대로이고, 대상 종류('wall'/'player')로 컬렉션이 갈린다", () => {
+describe("RQ-70·71/GA-98: 수집된 위치는 이벤트 좌표 그대로이고, 대상 종류('wall'/'player')로 컬렉션이 갈린다(원장 24cd — 「표시」가 아니라 「수집」이다, GA-98 then 문면과 표현을 맞춘다)", () => {
   it('GA-98: target=\'wall\'은 탄흔 컬렉션에만, target=\'player\'는 피격 컬렉션에만 들어가고, 좌표·법선이 이벤트 값 그대로다(재계산 없음)', () => {
     const wallHit: HitEvent = { point: { x: 1, y: 2, z: 3 }, normal: { x: 1, y: 0, z: 0 }, target: 'wall' }
     const playerHit: HitEvent = { point: { x: 4, y: 5, z: 6 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }

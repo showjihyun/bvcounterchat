@@ -13,12 +13,24 @@ import {
 } from '@client/scene/decalLayout'
 
 /**
- * RQ-70(탄흔)·RQ-71(피격 효과) 2/2 — **렌더 배선**의 판정 가능한 절반
- * (ADR-0016 결정 4 "렌더 배선"은 단위 테스트 면제이지만, 그 면제는
- * `useFrame`이 이 함수를 실제로 부르는가에만 걸린다 — **법선 정렬 산술**과
- * **컬렉션→인스턴스 카운트 환산**은 픽셀이 아니라 순수 수학·값 단언으로
- * 검증 가능하다, `24f-map-render-geometry.test.ts`가 "판정 AABB → 렌더 박스
- * 환산 산술"만 떼어 검증하는 것과 같은 분리).
+ * RQ-70(탄흔)·RQ-71(피격 효과) 2/2 — **렌더 배선** 중 순수 수학·값 단언으로
+ * 판정 가능한 부분만 검증한다(ADR-0016 결정 4 "렌더 배선"의 단위 테스트
+ * 면제 자체는 그대로다). **법선 정렬 산술**(`decalOrientation`/
+ * `decalPosition`)과 **컬렉션→인스턴스 카운트 환산**(`syncDecalInstances`)이
+ * 그 대상이다 — `24f-map-render-geometry.test.ts`가 "판정 AABB → 렌더 박스
+ * 환산 산술"만 떼어 검증하는 것과 같은 분리.
+ *
+ * ⚠️ **이 파일이 보는 것은 딱 이 세 함수 자신의 계약까지다.** F1 재리뷰
+ * (`_workspace/RQ-70-71-render/03_evaluator_report.md`) 실측 정정 — 초판
+ * docblock은 "남은 것은 `useFrame`이 이 함수를 실제로 부르는가 한 홉뿐"
+ * 이라고 적었으나 **거짓이었다**: `syncDecalInstances`를 실제로 부르는
+ * 컴포넌트(`HitDecals.tsx`/`GameScene.tsx` — 어느 sink에 어느 컬렉션을
+ * 연결하는지, `offsetM` 값, 마운트 여부)를 import하는 테스트가 **0건**이라
+ * 그 전체가 무방비다. 평가자가 두 sink를 뒤바꿔도·`offsetM` 부호를
+ * 뒤집어도·`<HitDecals>` 마운트를 통째로 지워도 전체 스위트가 그대로
+ * 통과함을 실증했다. 그 축은 "한 홉"이 아니라 **배선 전체**이고, 이
+ * 저장소의 판정 대상 밖이다(ADR-0016 결정 4 "렌더 배선" 면제) — 대가는
+ * 스크린샷(`harness/workflow/fe.md`)이다.
  *
  * **왜 1/2(`rq-70-71-hit-feedback.test.ts`)로는 부족한가**: 그 파일은
  * "수집"까지만 본다(GA-98 docblock이 스스로 "표시가 아니라 수집이다"라고
@@ -97,7 +109,7 @@ import {
  * |---|---|---|
  * | GA-112 | "decalOrientation" | +Z에 반환된 회전을 적용하면 정규화된 normal과 같은 방향이 나온다(축 정렬·오블리크·비단위벡터·-Z 특이점) |
  * | GA-112 | "decalPosition" | 변위(result-point)가 정규화된 normal과 평행하고 크기가 정확히 offsetM(접선 이동 0) |
- * | GA-113 | "syncDecalInstances" | 인스턴스 개수가 컬렉션 크기와 정확히 같다(2/1/0), 위치·회전이 decalPosition/decalOrientation과 일치, count 갱신·needsUpdate, 상한 방어, 스크래치 재사용 |
+ * | GA-113 | "syncDecalInstances" | 인스턴스 개수가 컬렉션 크기와 정확히 같다(2/1/0), 위치·회전이 decalPosition/decalOrientation과 일치, count 갱신·needsUpdate, 탄흔 방어적 상한, **피격은 상한 없이 CAP+6개도 전부 인스턴스화**(F1 재리뷰 순증), 스크래치 재사용 |
  *
  * ⚠️ **단언은 쿼터니언 성분이 아니다** — "그 회전을 +Z에 적용하면
  * 정규화된 normal이 나온다"로 검증한다. 성분 직접 비교는 동치인 다른
@@ -304,8 +316,8 @@ describe('RQ-70·71/GA-113: syncDecalInstances — 수집된 상태를 인스턴
     expect(hitEffects.sink.count).toBe(0)
   })
 
-  it('GA-113: state.bulletHoles가 상한 64를 넘도록(방어적으로) 조작돼도 인스턴스 수는 64를 넘지 않는다 — 피격에는 이 상한이 없다(ADR-0016 결정 2, 상한을 두면 위반)', () => {
-    const forgedBulletHoles: BulletHole[] = Array.from({ length: 70 }, (_, i) => wallHole(i))
+  it('GA-113: state.bulletHoles가 상한 64를 넘도록(방어적으로) 조작돼도 인스턴스 수는 64를 넘지 않는다(탄흔 쪽 방어적 상한 — 피격 쪽 "상한이 없다"는 아래 별도 케이스가 잠근다)', () => {
+    const forgedBulletHoles: BulletHole[] = Array.from({ length: EFFECTS.BULLET_HOLE_CAP + 6 }, (_, i) => wallHole(i))
     const state: Pick<HitFeedbackState, 'bulletHoles' | 'hitEffects'> = {
       bulletHoles: forgedBulletHoles,
       hitEffects: [],
@@ -322,6 +334,37 @@ describe('RQ-70·71/GA-113: syncDecalInstances — 수집된 상태를 인스턴
 
     expect(bulletHoles.sink.count).toBeLessThanOrEqual(EFFECTS.BULLET_HOLE_CAP)
     expect(bulletHoles.calls.every((c) => c.index < EFFECTS.BULLET_HOLE_CAP)).toBe(true)
+  })
+
+  it('GA-113/ADR-0016 결정 2(F1 재리뷰 순증 — 평가 실측 blocker): 피격에는 개수 상한이 없다 — EFFECTS.BULLET_HOLE_CAP보다 많은 피격 효과를 넣어도 전부(잘림 없이) 인스턴스가 된다', () => {
+    // ⚠️ 리터럴 금지(ADR-0010) — 탄흔 상한 상수에서 "+6만큼 넘는다"만
+    // 유도한다. 정확히 64/64보다 큰 임의의 값이면 되고, 상수 자체를
+    // 그대로 베끼지 않는다는 것이 핵심이다.
+    const forgedCount = EFFECTS.BULLET_HOLE_CAP + 6
+    const forgedHitEffects: HitEffect[] = Array.from({ length: forgedCount }, (_, i) => bloodEffect(i))
+    const state: Pick<HitFeedbackState, 'bulletHoles' | 'hitEffects'> = {
+      bulletHoles: [],
+      hitEffects: forgedHitEffects,
+    }
+    const bulletHoles = createRecordingSink()
+    const hitEffects = createRecordingSink()
+    const scratch = createDecalScratch()
+
+    syncDecalInstances(
+      state,
+      { bulletHoles: bulletHoles.sink, hitEffects: hitEffects.sink },
+      { offsetM: OFFSET_M, scratch },
+    )
+
+    // ⚠️ 탄흔과 달리 **잘리지 않고 입력 길이와 정확히 같아야 한다** — 이
+    // 자리에 64/2/1 같은 상한을 몰래 심는 변이(F1 재리뷰 실측, `Infinity`
+    // → `EFFECTS.BULLET_HOLE_CAP`/2/1 셋 다 기존 케이스들을 전부 생존시켰다)
+    // 는 아래 세 단언에서 죽는다.
+    expect(hitEffects.sink.count).toBe(forgedCount)
+    expect(hitEffects.calls).toHaveLength(forgedCount)
+    expect(hitEffects.calls.map((c) => c.index).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: forgedCount }, (_, i) => i),
+    )
   })
 
   it('GA-113/ADR-0001 프레임 예산: 같은 호출 안에서 여러 인스턴스에 넘기는 matrix 인자가 같은 객체(참조)다 — 인스턴스마다 new THREE.Matrix4()를 새로 할당하지 않는다(InstancedMesh 표준 관용구)', () => {
