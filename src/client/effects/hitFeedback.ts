@@ -94,10 +94,24 @@ export function applyHitEvent(
  * `Array.prototype.filter`는 제거 대상이 0건이어도 항상 새 배열을 만드는데,
  * `connection.ts`의 `handleStateChange`가 매 상태 패치(초당 20~30회)마다
  * 이 함수를 부르므로 만료 대상이 없는 대다수 호출에서도 `hitEffects` 참조가
- * 그 빈도로 바뀌었었다 — 렌더(`HitDecals.tsx`)가 이 컬렉션을 구독하는
- * 지금은 그 참조 변화가 그대로 불필요한 GPU 업로드·리렌더로 이어진다
- * (ADR-0001 프레임 예산). `bulletHoles`가 이미 "참조 그대로"를 보장하므로
- * (위 docblock), 이 대칭을 `hitEffects`에도 맞춘다.
+ * 그 빈도로 바뀌었었다.
+ *
+ * ⚠️ **무엇을 아끼는지 정확히 적는다**(델타 재평가 비블로커, 2026-08-12 —
+ * 이 docblock의 초안이 "GPU 업로드·리렌더"라고 적었으나 **둘 다 틀렸다**):
+ * 아끼는 것은 **zustand 스토어 알림 1회/패치**다. `gameStore`의
+ * `advanceHitFeedback`이 `set((state) => advanceHitFeedbackState(state, …))`
+ * 이고, zustand `vanilla.js`의 `setState`는 `Object.is(nextState, state)`가
+ * 참이면 **루트 객체 재생성(`Object.assign`)과 리스너 통지를 통째로
+ * 건너뛴다** — 즉 만료가 없는 패치에서 `PlayerMeshes`의 `store.subscribe`
+ * 같은 **다른 구독자들이 깨어나지 않는다**.
+ * **아끼지 않는 것 둘**: ① GPU 업로드 — `decalLayout.ts`의
+ * `syncDecalInstances`가 `instanceMatrix.needsUpdate = true`를 **매 프레임
+ * 무조건** 설정하므로 참조와 무관하다 ② `HitDecals.tsx`의 React 리렌더 —
+ * 그 컴포넌트는 **구독하지 않는다**(`useFrame` + `getState()`,
+ * `harness/workflow/fe.md` 레이어 규칙).
+ *
+ * `bulletHoles`가 이미 "참조 그대로"를 보장하므로(위 docblock), 이 대칭을
+ * `hitEffects`에도 맞춘다.
  */
 export function advanceHitFeedback(state: HitFeedbackState, nowMs: number): HitFeedbackState {
   const hasExpired = state.hitEffects.some((effect) => effect.expiresAtMs <= nowMs)
