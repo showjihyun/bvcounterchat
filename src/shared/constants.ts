@@ -154,6 +154,12 @@ export const UI = {
   KILLFEED_MAX_ROWS: 5,
 } as const
 
+/** 효과 (RQ-70) */
+export const EFFECTS = {
+  /** 탄흔 최대 개수 — 초과 시 가장 오래된 것부터 제거 (RQ-70) */
+  BULLET_HOLE_CAP: 64,
+} as const
+
 /** 오디오 (RQ-72, ADR-0014 결정 4) */
 export const AUDIO = {
   /** 가청 거리(m) — 발소리·착지음 공통. `WORLD.SIZE_M`에서 유도하지

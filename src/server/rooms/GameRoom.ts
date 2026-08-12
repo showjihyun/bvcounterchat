@@ -16,10 +16,12 @@ import {
   effectiveSpreadConeRadius,
   eyeOrigin,
   findClosestHit,
+  findClosestWallHit,
   hitboxForMode,
   type ClosestHit,
   type HitCandidate,
   type Ray,
+  type Vec3,
 } from '@shared/sim/combat'
 import { createRng } from '@shared/sim/rng'
 import { SPAWN_POINTS, isWithinSafeZone, nextSpawnIndex, type SpawnPoint } from '@shared/sim/spawn'
@@ -98,6 +100,16 @@ interface FireInput {
    * 유일한 입력. 정규화 후 항상 유한한 숫자다(방어는 `rewindTicksFor`가
    * 맡는다 — 이 필드 자체는 "숫자였는가"만 보장한다). */
   rttMs: number
+}
+
+/** RQ-70/71/ADR-0016 결정 1 — `broadcast('hit', ...)` payload. 클라이언트
+ * 쪽 동일 shape는 `@client/effects/hitFeedback`의 `HitEvent`다 — 서버는
+ * `@client`를 import하지 않으므로(레이어 경계, `ChatMessage`가 이미 세운
+ * 선례 — 아래 참고) 이 파일이 자신의 사본을 둔다. */
+interface HitEvent {
+  point: Vec3
+  normal: Vec3
+  target: 'wall' | 'player'
 }
 
 /**
@@ -829,10 +841,39 @@ export class GameRoom extends Room<GameState> {
     } else {
       closest = standingHit ?? crouchHit
     }
-    if (!closest || !closest.result.region) return
+    if (!closest || !closest.result.region) {
+      // RQ-70/ADR-0016 결정 1 후속 1 — 플레이어를 맞히지 못했다. 벽 명중은
+      // **여기서만** 계산한다: 기존 occlusion 판정(위 findClosestHit 호출,
+      // `isOccludedByWall`의 엄격 부등호 — "같은 거리는 차폐 아님")상
+      // `closest`가 존재한다는 것은 그보다 **엄격히** 가까운 벽이 없다는
+      // 뜻이므로(동률 경계는 스코프 밖 — `sim-combat-wall-hit.test.ts`
+      // "스코프 밖" 절과 동일 근거), `closest`가 없을 때만 벽 계산이
+      // 필요하다 — 있을 때 매번 다시 계산하지 않는다(틱 예산, RQ-60).
+      // `occlusionWalls`(위에서 이미 확정한 값)를 그대로 재사용해 벽 좌표를
+      // 복제하지 않는다.
+      const wallHit = findClosestWallHit(ray, occlusionWalls)
+      if (wallHit) {
+        const event: HitEvent = { point: wallHit.point, normal: wallHit.normal, target: 'wall' }
+        this.broadcast('hit', event)
+      }
+      return
+    }
 
     const victim = this.state.players.get(closest.id)
     if (!victim) return
+
+    // RQ-71/ADR-0016 결정 1 — 플레이어 명중. `raycastHitbox`(findClosestHit
+    // 내부)가 이미 계산한 point·normal을 그대로 옮긴다(재계산 없음 — GA-98
+    // "이벤트 값 그대로" 원칙의 발신측 대응). 스폰 보호로 피해가
+    // 무효화되더라도 레이 자체는 실제로 명중했으므로 이벤트는 그대로 보낸다
+    // (아래 보호 판정과 무관 — "맞았다"는 관측과 "피해가 들어갔다"는 서로
+    // 다른 사실이다).
+    const hitEvent: HitEvent = {
+      point: closest.result.point as Vec3,
+      normal: closest.result.normal as Vec3,
+      target: 'player',
+    }
+    this.broadcast('hit', hitEvent)
 
     const victimSpawnedAt = this.spawnedAtTick.get(closest.id)
     const victimFired = this.firedSinceSpawn.get(closest.id) ?? false
