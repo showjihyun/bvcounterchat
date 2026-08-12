@@ -1680,6 +1680,27 @@ describe('20b/RQ-71/GA-100(플레이어): 실 사격으로 만들어진 플레�
       expect(normalMagnitude).toBeCloseTo(1, 6) // 영벡터가 아니라 실제 단위 법선이 건너왔다
       expect(effect.normal.y).toBe(0) // 바디 명중(aimAtBody) — 원통 측면 법선은 y를 버린다
 
+      // 델타 재평가 FAIL / 델타 재리뷰 major D1 — **여기가 없으면 만료가
+      // 「너무 일찍」 와도 아무도 안 죽는다**. `waitForStoreCondition`은
+      // zustand 리스너 안에서 술어를 **동기 평가하고 그 자리의 스냅샷을
+      // 포획**하므로(위 172~199행), 앞의 `length > 0` 대기는 `addHitEvent`가
+      // `set`하는 순간 이미 resolve됐고 `afterHit`을 읽는 단언들은 **그 뒤의
+      // 변화를 원리적으로 못 본다**. 그래서 스토어를 **다시 읽는다**.
+      // ⚠️ 벽시계 `sleep`이 아니라 **틱 전진**을 기다리는 이유: 만료는
+      // `handleStateChange`(= 상태 패치)에서만 일어나므로, 러너가 굶어
+      // 패치가 안 온 사이 잠만 자면 변이를 **놓친다**(공허한 통과).
+      // `tick`은 패치로만 갱신되니 2틱 전진은 「패치가 최소 한 번 왔다」의
+      // 관측 가능한 증거다 — 그리고 2틱(≈67ms)은 TTL의 1/6이라 정상
+      // 코드에서는 아직 살아 있어야 한다.
+      const tickAtHit = afterHit.tick
+      await waitForStoreCondition(
+        storeA,
+        (s) => s.tick > tickAtHit + 1,
+        STORE_TIMEOUT_MS,
+        'GA-100(플레이어): 명중 이후 상태 패치가 최소 한 번 처리되길 대기(틱 2 전진)',
+      )
+      expect(storeA.getState().hitEffects).toHaveLength(1) // TTL 이전에는 살아 있다 — 즉시 만료 변이가 여기서 죽는다
+
       // 1차 리뷰 blocker B1 — ADR-0016 결정 4가 「피격 효과가 시간이 지나면
       // 사라지는가」를 **이름으로** 면제 대상에서 제외한다(면제되는 것은
       // 렌더 배선뿐이다). 순수 층의 만료는 GA-99가 이미 고정하므로 여기서
