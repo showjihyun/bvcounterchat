@@ -8,6 +8,7 @@ import type { UiStoreState } from '@client/store/uiStore'
 import { PlayerMeshes } from '@client/scene/PlayerMeshes'
 import { PlayerControls } from '@client/scene/PlayerControls'
 import { MapMeshes } from '@client/scene/MapMeshes'
+import { HitDecals } from '@client/scene/HitDecals'
 import { SCENE } from '@client/config/design-tokens'
 
 interface GameSceneProps {
@@ -61,6 +62,9 @@ export function GameScene({ store, connection, uiStore }: GameSceneProps) {
       {/* RQ-30 벽 · RQ-32 박스·사다리(원장 24f). 판정 전용이던 지오메트리가
           처음으로 화면에 나온다 — MapMeshes.tsx 상단 주석 참고. */}
       <MapMeshes />
+      {/* RQ-70·71 2/2(렌더) — 탄흔·피격 효과 InstancedMesh 배선(ADR-0016
+          결정 4, HitDecals.tsx 상단 주석 참고). */}
+      <HitDecals store={store} />
       <PlayerMeshes store={store} connection={connection} />
       <PlayerControls store={store} connection={connection} uiStore={uiStore} />
     </Canvas>

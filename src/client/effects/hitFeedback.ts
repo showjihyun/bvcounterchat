@@ -88,7 +88,19 @@ export function applyHitEvent(
  * ⚠️ 이 함수 자신은 `Date.now()`/`performance.now()`를 호출하지 않는다
  * (ADR-0008 정신 — 순수 함수는 시각을 인자로만 받는다). `nowMs`는
  * 호출자(배선 계층)가 서버 틱에서 유도한 값으로 조달해야 한다(GA-99).
+ *
+ * **참조 안정성(이월 24cg, 결함 수정)**: 만료 대상이 0건이면 `hitEffects`
+ * 배열 참조와 `state` 객체 참조를 **그대로**(동일성) 반환한다.
+ * `Array.prototype.filter`는 제거 대상이 0건이어도 항상 새 배열을 만드는데,
+ * `connection.ts`의 `handleStateChange`가 매 상태 패치(초당 20~30회)마다
+ * 이 함수를 부르므로 만료 대상이 없는 대다수 호출에서도 `hitEffects` 참조가
+ * 그 빈도로 바뀌었었다 — 렌더(`HitDecals.tsx`)가 이 컬렉션을 구독하는
+ * 지금은 그 참조 변화가 그대로 불필요한 GPU 업로드·리렌더로 이어진다
+ * (ADR-0001 프레임 예산). `bulletHoles`가 이미 "참조 그대로"를 보장하므로
+ * (위 docblock), 이 대칭을 `hitEffects`에도 맞춘다.
  */
 export function advanceHitFeedback(state: HitFeedbackState, nowMs: number): HitFeedbackState {
+  const hasExpired = state.hitEffects.some((effect) => effect.expiresAtMs <= nowMs)
+  if (!hasExpired) return state
   return { ...state, hitEffects: state.hitEffects.filter((effect) => effect.expiresAtMs > nowMs) }
 }
