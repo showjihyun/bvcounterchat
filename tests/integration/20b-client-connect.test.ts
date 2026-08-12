@@ -12,6 +12,7 @@ import { connectToGame } from '@client/net/connection'
 import { AUDIO, MOVEMENT, NET, PLAYER } from '@shared/constants'
 import { getStats, openStatsDb, type StatsDb, type StatsRow } from '@server/persistence/statsDb'
 import { DEFAULT_HITBOX, type SpreadTuning } from '@shared/config/combat-tuning'
+import { EFFECTS_TUNING } from '@shared/config/effects-tuning'
 import { WALL_EAST } from '@shared/sim/walls'
 import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
@@ -1589,6 +1590,14 @@ describe('20b/RQ-70/GA-100(벽): 실 사격으로 만들어진 벽 명중 이벤
       // 대상 종류 구분도 실 배선에서 성립한다 — 벽 명중은 피격 컬렉션으로 새지 않는다.
       expect(store.getState().hitEffects).toHaveLength(0)
 
+      // 1차 리뷰 blocker B1의 대칭 축 — RQ-70 「탄흔은 **시간으로는 사라지지
+      // 않는다**. 상한이 유일한 제거 규칙이다」를 **실 배선 위에서** 잠근다.
+      // 피격 효과와 같은 `advanceHitFeedback`을 통과하므로, 그 함수가 두
+      // 컬렉션을 같은 규칙으로 만료시키도록 바뀌면(RQ-70 위반) 여기서 죽는다.
+      // 순수 층은 GA-99가 고정하지만 배선 층에서 규칙이 섞이는 변경은 잡지 못한다.
+      await sleep(EFFECTS_TUNING.HIT_EFFECT_DURATION_MS * 3)
+      expect(store.getState().bulletHoles).toHaveLength(1)
+
       await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')
     },
     20_000,
@@ -1670,6 +1679,22 @@ describe('20b/RQ-71/GA-100(플레이어): 실 사격으로 만들어진 플레�
       const normalMagnitude = Math.hypot(effect.normal.x, effect.normal.y, effect.normal.z)
       expect(normalMagnitude).toBeCloseTo(1, 6) // 영벡터가 아니라 실제 단위 법선이 건너왔다
       expect(effect.normal.y).toBe(0) // 바디 명중(aimAtBody) — 원통 측면 법선은 y를 버린다
+
+      // 1차 리뷰 blocker B1 — ADR-0016 결정 4가 「피격 효과가 시간이 지나면
+      // 사라지는가」를 **이름으로** 면제 대상에서 제외한다(면제되는 것은
+      // 렌더 배선뿐이다). 순수 층의 만료는 GA-99가 이미 고정하므로 여기서
+      // 보는 것은 **`connectToGame`이 등록한 실 배선**(`handleStateChange`의
+      // `advanceHitFeedback` 호출)이 TTL을 실제로 진행시키는지다. 이 단언이
+      // 없으면 그 호출을 지워도 스위트가 전부 초록이고 제품에서는 피가
+      // 영원히 쌓인다(`applyHitEvent`의 'player' 분기는 개수 상한이 없다).
+      // 대기 상한(STORE_TIMEOUT_MS)은 `EFFECTS_TUNING.HIT_EFFECT_DURATION_MS`
+      // 보다 한 자릿수 이상 크다 — 값을 여기 복제하지 않는다(ADR-0010).
+      await waitForStoreCondition(
+        storeA,
+        (s) => s.hitEffects.length === 0,
+        STORE_TIMEOUT_MS,
+        'GA-100(플레이어): 피격 효과가 TTL 경과 후 실 배선을 통해 사라지길 대기 — 사라지지 않으면 advanceHitFeedback 배선이 없다는 뜻',
+      )
 
       await Promise.all([
         withTimeout(connA.disconnect(), LEAVE_TIMEOUT_MS, 'A: disconnect'),

@@ -439,6 +439,11 @@ function intersectWallXZWithAxis(o: Vec3, dir: Vec3, wall: WallAABB): WallSlabHi
     const t1 = (wall.minZ - o.z) / dir.z
     const t2 = (wall.maxZ - o.z) / dir.z
     const enter = Math.min(t1, t2)
+    // 엄격 부등호다 — 동률(정확한 모서리, `tMin_x === tMin_z`)이면 x축을
+    // 유지한다. `axis`의 계약은 「**실제로 `tMin`을 만든** 슬랩」이고 동률에서
+    // 그것을 만든 쪽은 x다(z는 값을 바꾸지 못한다). 모서리 법선은
+    // `sim-combat-wall-hit.test.ts` 상단이 **스코프 밖**으로 명시한 경계라
+    // 결함이 아니며, `>=`로 뒤집으면 테스트는 전부 초록인 채 법선만 바뀐다.
     if (enter > tMin) {
       tMin = enter
       axis = 'z'
