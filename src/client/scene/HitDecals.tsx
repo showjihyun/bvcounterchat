@@ -108,7 +108,21 @@ export function HitDecals({ store }: HitDecalsProps) {
       </instancedMesh>
       {/* RQ-71 피격 효과 — TTL만으로 제거된다(개수 상한 없음, ADR-0016 결정
           2). 아래 용량(HIT_EFFECT_INSTANCE_CAP)은 그 제거 규칙과 무관한
-          GPU 버퍼 크기일 뿐이다(이 파일 상단 docblock). */}
+          GPU 버퍼 크기일 뿐이다(이 파일 상단 docblock).
+          frustumCulled를 끄는 이유 — 근거는 위 탄흔과 같은 종류(맵 전역에
+          흩어지는 인스턴스라 InstancedMesh의 바운딩 스피어가 새 인스턴스
+          위치를 반영하도록 매번 다시 계산되지 않으면 화면 안 인스턴스가
+          잘못 컬링될 수 있다)이지만, 그대로 이전되지 않는다 — 이 버퍼의
+          상한(HIT_EFFECT_INSTANCE_CAP, 120)은 탄흔(EFFECTS.BULLET_HOLE_CAP,
+          64)의 2배다. 컬링을 끈 비용은 인스턴스 수에 비례해 늘어나므로
+          "탄흔은 개수가 적어 싸다"는 논거가 자동으로 옮겨오지 않는다.
+          그럼에도 120은 여전히 프레임 예산(iGPU 30fps 하한, ADR-0001)
+          안에서 컬링 없이 그리기 충분히 작은 수다 — TTL
+          (EFFECTS_TUNING.HIT_EFFECT_DURATION_MS)로 곧 만료돼 실제로 동시에
+          살아 있는 인스턴스는 상한보다 훨씬 적을 때가 대부분이고, 컬링을
+          켰다가 잘못 컬링돼 화면 안 피격 효과가 순간적으로 사라져 보이는
+          쪽이 인스턴스 최대 120개를 매 프레임 그리는 비용보다 사용자
+          체감 손실이 크다. */}
       <instancedMesh ref={hitEffectMeshRef} args={[undefined, undefined, HIT_EFFECT_INSTANCE_CAP]} frustumCulled={false}>
         <circleGeometry args={[DECAL.hitEffectRadiusM, 12]} />
         <meshStandardMaterial color={DECAL.hitEffectColor} />

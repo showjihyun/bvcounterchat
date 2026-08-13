@@ -27,33 +27,46 @@ export interface Quat {
   w: number
 }
 
-function vecLength(v: Vec3): number {
-  return Math.hypot(v.x, v.y, v.z)
-}
-
-function normalizeVec3(v: Vec3): Vec3 {
-  const len = vecLength(v)
-  return { x: v.x / len, y: v.y / len, z: v.z / len }
+/**
+ * `Math.hypot(...)`의 역수(스칼라) — 정규화를 "새 벡터 객체를 만들어
+ * 성분별로 나누는" 대신 "스칼라 하나를 구해 곱셈으로 적용"하는 형태로
+ * 바꾸기 위한 헬퍼. 반환값이 숫자 하나뿐이라 호출부에 중간 객체가
+ * 생기지 않는다(B1 결함 수정 — 아래 `decalOrientationInto`/
+ * `decalPositionInto`의 docblock 참고).
+ */
+function invLength3(x: number, y: number, z: number): number {
+  return 1 / Math.hypot(x, y, z)
 }
 
 /**
  * 평면의 기본 법선 +Z(0,0,1)를 `normal` 방향(정규화 후)으로 보내는 최단
- * 회전. three.js `Quaternion.setFromUnitVectors(vFrom, vTo)`와 동일한
- * 산술을 `vFrom=(0,0,1)`로 고정해 특수화한 것 — 결과는 그 함수와
- * 수학적으로 동일하지만, `THREE.Vector3`/`THREE.Quaternion` 객체를
- * 할당하지 않고 순수 숫자 연산만으로 낸다. `syncDecalInstances`가 인스턴스
- * (탄흔·피격 효과)마다 이 함수를 부르므로(ADR-0001) THREE 객체를 만들지
- * 않는 편이 프레임 예산에 유리하다.
+ * 회전을 `out`에 직접 써넣는다(반환값 없음). three.js
+ * `Quaternion.setFromUnitVectors(vFrom, vTo)`와 동일한 산술을
+ * `vFrom=(0,0,1)`로 고정해 특수화한 것 — 결과는 그 함수와 수학적으로
+ * 동일하다.
+ *
+ * **할당 없음(ADR-0001, B1 결함 수정)** — 이전 버전은 정규화된 법선을
+ * 담을 `{x,y,z}` 객체 1개(정규화 결과)와 반환용 `{x,y,z,w}` 객체 1개를
+ * 매 호출마다 새로 만들었다(둘 다 `THREE.Vector3`/`THREE.Quaternion`이
+ * 아니라 평범한 JS 객체 리터럴이었다 — 아래 `decalOrientation`
+ * docblock 참고). 이 함수는 정규화를 스칼라(`invLength3`, 곱셈)로 하고
+ * 성분을 지역 변수에 담아 계산한 뒤 `out.set(...)` 한 번으로 끝낸다 —
+ * 중간 객체가 전혀 생기지 않는다. `writeInstances`가 인스턴스(탄흔·피격
+ * 효과)마다 이 함수를 부르므로(상한 184개/프레임) 할당 없음이 프레임
+ * 예산에 유리하다.
  *
  * `normal`이 정확히 -Z인 특이점(`(0,0,1)`과 `n`의 외적이 0벡터가 되어
  * 회전축을 못 구하는 지점)에서는 three.js의 폴백 분기와 동일하게 임의의
  * 수직축(여기서는 Y축)으로 180도 회전한 유한한 값을 낸다 — NaN/Infinity가
  * 나오지 않는다.
  */
-export function decalOrientation(normal: Vec3): Quat {
-  const n = normalizeVec3(normal)
+export function decalOrientationInto(normal: Vec3, out: THREE.Quaternion): void {
+  const invLen = invLength3(normal.x, normal.y, normal.z)
+  const nx = normal.x * invLen
+  const ny = normal.y * invLen
+  const nz = normal.z * invLen
   // (0,0,1)·n = n.z
-  const r = n.z + 1
+  const r = nz + 1
   let x: number
   let y: number
   let z: number
@@ -69,27 +82,62 @@ export function decalOrientation(normal: Vec3): Quat {
     w = 0
   } else {
     // cross((0,0,1), n) = (0*n.z - 1*n.y, 1*n.x - 0*n.z, 0*n.y - 0*n.x) = (-n.y, n.x, 0)
-    x = -n.y
-    y = n.x
+    x = -ny
+    y = nx
     z = 0
     w = r
   }
-  const len = Math.hypot(x, y, z, w)
-  return { x: x / len, y: y / len, z: z / len, w: w / len }
+  const invQLen = 1 / Math.hypot(x, y, z, w)
+  out.set(x * invQLen, y * invQLen, z * invQLen, w * invQLen)
 }
 
 /**
- * `point`에서 정규화된 `normal` 방향으로만 `offsetM`만큼 이동한 위치.
- * 접선(법선에 수직인) 방향 성분은 0이다 — 데칼이 표면에서 살짝 떠서
- * z-fighting을 피하되 옆으로는 밀리지 않는다.
+ * `decalOrientationInto`의 값 반환 래퍼 — B1 결함 수정 전에 있던 API
+ * 형태를 유지한다(`tests/unit/rq-70-71-decal-layout.test.ts`의 GA-112
+ * 단언이 이 함수를 대상으로 계속 돈다). ⚠️ **이 docblock은 이전 버전의
+ * 부정확한 주장을 정정한다** — 이전 버전은 "`THREE.Vector3`/
+ * `THREE.Quaternion` 객체를 할당하지 않고 순수 숫자 연산만으로 낸다"고
+ * 적었지만, 실제로는 THREE 객체 대신 **평범한 JS 객체 리터럴**을 그
+ * 자리에 그대로 만들고 있었다(독립 리뷰 지적). 진짜 할당 없는 구현은
+ * 위 `decalOrientationInto`이고, 렌더 핫 패스(`writeInstances`)는 이제
+ * 그 함수를 직접 부른다 — 이 래퍼는 매 호출 `THREE.Quaternion` 1개 +
+ * 반환용 평범한 객체 1개를 여전히 만들지만, 렌더 루프 밖(테스트·구
+ * API 호환)에서만 쓰인다.
+ */
+export function decalOrientation(normal: Vec3): Quat {
+  const scratch = new THREE.Quaternion()
+  decalOrientationInto(normal, scratch)
+  return { x: scratch.x, y: scratch.y, z: scratch.z, w: scratch.w }
+}
+
+/**
+ * `point`에서 정규화된 `normal` 방향으로만 `offsetM`만큼 이동한 위치를
+ * `out`에 직접 써넣는다(반환값 없음). 접선(법선에 수직인) 방향 성분은
+ * 0이다 — 데칼이 표면에서 살짝 떠서 z-fighting을 피하되 옆으로는 밀리지
+ * 않는다.
+ *
+ * **할당 없음(ADR-0001, B1 결함 수정)** — 정규화를 스칼라(`invLength3`)로
+ * 하고 `out.set(...)` 한 번으로 끝낸다. `decalOrientationInto`와 동일한
+ * 이유로 중간 객체를 만들지 않는다.
+ */
+export function decalPositionInto(point: Vec3, normal: Vec3, offsetM: number, out: THREE.Vector3): void {
+  const invLen = invLength3(normal.x, normal.y, normal.z)
+  out.set(
+    point.x + normal.x * invLen * offsetM,
+    point.y + normal.y * invLen * offsetM,
+    point.z + normal.z * invLen * offsetM,
+  )
+}
+
+/**
+ * `decalPositionInto`의 값 반환 래퍼 — `decalOrientation`과 동일한 이유로
+ * 유지한다(GA-112 원 단언 대상). 렌더 핫 패스는 `decalPositionInto`를
+ * 직접 부른다 — 이 래퍼는 테스트·구 API 호환에서만 쓰인다.
  */
 export function decalPosition(point: Vec3, normal: Vec3, offsetM: number): Vec3 {
-  const n = normalizeVec3(normal)
-  return {
-    x: point.x + n.x * offsetM,
-    y: point.y + n.y * offsetM,
-    z: point.z + n.z * offsetM,
-  }
+  const scratch = new THREE.Vector3()
+  decalPositionInto(point, normal, offsetM, scratch)
+  return { x: scratch.x, y: scratch.y, z: scratch.z }
 }
 
 /** 실 `THREE.InstancedMesh`가 구조적으로 만족하는 최소 인터페이스. */
@@ -134,6 +182,10 @@ export interface SyncDecalInstancesOptions {
  * 같은 함수로 표현해 두 sink를 대칭적으로 다룬다. 인스턴스마다
  * `scratch.matrix`(단일 참조)를 다시 `.compose()`해 `setMatrixAt`에
  * 넘긴다 — 인스턴스 수만큼 `new THREE.Matrix4()`를 만들지 않는다.
+ * 위치·회전은 `decalPositionInto`/`decalOrientationInto`(할당 없음)가
+ * `scratch.position`/`scratch.quaternion`에 직접 써넣는다 — 값 반환
+ * 버전(`decalPosition`/`decalOrientation`)과 수치는 같지만 이 루프는
+ * 그쪽을 부르지 않는다(B1 결함 수정).
  */
 function writeInstances(
   items: readonly { point: Vec3; normal: Vec3 }[],
@@ -145,10 +197,14 @@ function writeInstances(
   const count = Math.min(items.length, capacity)
   for (let i = 0; i < count; i += 1) {
     const item = items[i]!
-    const position = decalPosition(item.point, item.normal, offsetM)
-    const orientation = decalOrientation(item.normal)
-    scratch.position.set(position.x, position.y, position.z)
-    scratch.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w)
+    // B1 결함 수정(ADR-0001) — 이전에는 여기서 `decalPosition`/
+    // `decalOrientation`(값 반환)을 부르고 그 결과를 `scratch.position`/
+    // `scratch.quaternion`에 `.set()`으로 복사했다 — 인스턴스마다 중간
+    // 객체 4개(각 함수의 반환 객체 + 내부 정규화 객체)가 생겼다. 이제
+    // `*Into` 변형이 스크래치에 직접 써넣으므로 이 루프는 인스턴스당
+    // 새 객체를 만들지 않는다.
+    decalPositionInto(item.point, item.normal, offsetM, scratch.position)
+    decalOrientationInto(item.normal, scratch.quaternion)
     scratch.matrix.compose(scratch.position, scratch.quaternion, scratch.scale)
     sink.setMatrixAt(i, scratch.matrix)
   }
@@ -160,9 +216,10 @@ function writeInstances(
 
 /**
  * `state.bulletHoles`/`state.hitEffects`를 각각 `sinks.bulletHoles`/
- * `sinks.hitEffects`로 옮긴다. 인스턴스 i의 위치는
- * `decalPosition(item.point, item.normal, options.offsetM)`, 회전은
- * `decalOrientation(item.normal)`로 유도한다.
+ * `sinks.hitEffects`로 옮긴다. 인스턴스 i의 위치·회전은
+ * `decalPositionInto`/`decalOrientationInto`가 유도한다 —
+ * `decalPosition(item.point, item.normal, options.offsetM)`/
+ * `decalOrientation(item.normal)`(값 반환 버전)과 수치가 정확히 같다.
  *
  * 탄흔은 `EFFECTS.BULLET_HOLE_CAP`(64)을 **방어적으로** 넘지 않는다 —
  * `applyHitEvent`(`@client/effects/hitFeedback`)가 이미 그 이하로 자르지만,
