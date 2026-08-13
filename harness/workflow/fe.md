@@ -109,7 +109,7 @@ HUD 레이어는 이 규칙의 예외다 — HUD는 캔버스 밖 일반 DOM이�
 | 효과 | 제거 규칙 | 정본 |
 |---|---|---|
 | 탄흔(RQ-70) | **개수 상한**이 유일한 제거 규칙 — 넘으면 가장 오래된 것부터. **시간으로는 사라지지 않는다** | `EFFECTS.BULLET_HOLE_CAP`(`@shared/constants`) |
-| 피격(RQ-71) | **TTL만** — 짧은 시간 뒤 스스로 사라진다. **개수 상한을 두지 않는다** | `EFFECTS_TUNING.HIT_EFFECT_DURATION_MS`(`@client/config/effects-tuning`) |
+| 피격(RQ-71) | **TTL만** — 짧은 시간 뒤 스스로 사라진다. **개수 상한을 두지 않는다** | `EFFECTS_TUNING.HIT_EFFECT_DURATION_MS`(`@shared/config/effects-tuning`) |
 
 ⚠️ **피격에 링버퍼 상한을 두면 ADR-0016 결정 2 위반이다.** 이 절은 한때 "탄흔
 200개·혈흔 100개" 링버퍼를 지시하고 RQ-70의 옛 문면("개수 상한을 두고 오래된
