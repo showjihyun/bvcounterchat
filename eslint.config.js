@@ -3,7 +3,11 @@ import tseslint from 'typescript-eslint'
 import globals from 'globals'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**'] },
+  // `_workspace/`는 `.gitignore`(16행)에 있는 에이전트 작업 디렉터리다 —
+  // 보고서와 일회성 관측 스크립트만 들어가고 저장소에 실리지 않는다.
+  // lint 대상에 두면 커밋되지도 않을 스크래치가 `npm run check`를 막는다
+  // (원장 28ah — RQ-70·71 2/2 시각 확인 보조 `shoot.mjs`에서 실제로 발생).
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '_workspace/**'] },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,

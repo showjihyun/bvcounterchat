@@ -14,6 +14,7 @@ import { getStats, openStatsDb, type StatsDb, type StatsRow } from '@server/pers
 import { DEFAULT_HITBOX, type SpreadTuning } from '@shared/config/combat-tuning'
 import { EFFECTS_TUNING } from '@shared/config/effects-tuning'
 import { WALL_EAST } from '@shared/sim/walls'
+import { msToTicks } from '@shared/sim/clock'
 import { escapeSafeZone, getSafeZoneSeam, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
@@ -1595,7 +1596,22 @@ describe('20b/RQ-70/GA-100(벽): 실 사격으로 만들어진 벽 명중 이벤
       // 피격 효과와 같은 `advanceHitFeedback`을 통과하므로, 그 함수가 두
       // 컬렉션을 같은 규칙으로 만료시키도록 바뀌면(RQ-70 위반) 여기서 죽는다.
       // 순수 층은 GA-99가 고정하지만 배선 층에서 규칙이 섞이는 변경은 잡지 못한다.
-      await sleep(EFFECTS_TUNING.HIT_EFFECT_DURATION_MS * 3)
+      //
+      // ⚠️ 이월 24ci — 벽시계 `sleep`이 아니라 **틱 전진**을 기다린다(플레이어
+      // 시나리오가 이미 이 형태다, 위 `tickAtHit`/`s.tick > tickAtHit + 1`
+      // 참고). 만료 여부 판정은 `handleStateChange`(= 상태 패치)에서만
+      // 일어나므로, 러너가 굶어 그 sleep 동안 패치가 충분히 안 온 채 잠만
+      // 자면 "탄흔에도 TTL을 심는" 변이가 조용히 생존한다(공허한 통과) —
+      // `s.tick`은 패치로만 갱신되니 목표 틱만큼 전진했다는 것 자체가 "그만큼의
+      // 시간이 실제로 서버 틱에서 흘렀다"는 관측 가능한 증거다.
+      const tickAtHit = afterHit.tick
+      const ticksFor3xDuration = msToTicks(EFFECTS_TUNING.HIT_EFFECT_DURATION_MS * 3)
+      await waitForStoreCondition(
+        store,
+        (s) => s.tick > tickAtHit + ticksFor3xDuration,
+        STORE_TIMEOUT_MS,
+        `GA-100(벽): TTL의 3배(${EFFECTS_TUNING.HIT_EFFECT_DURATION_MS * 3}ms ≈ ${ticksFor3xDuration}틱)에 해당하는 만큼 상태 패치가 실제로 진행되길 대기(틱 전진 관측)`,
+      )
       expect(store.getState().bulletHoles).toHaveLength(1)
 
       await withTimeout(connection.disconnect(), LEAVE_TIMEOUT_MS, 'connection.disconnect()')

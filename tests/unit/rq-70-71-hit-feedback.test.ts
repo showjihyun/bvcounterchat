@@ -213,7 +213,7 @@ describe('RQ-70·71/GA-97: 같은 갱신 함수(advanceHitFeedback)가 탄흔·�
   })
 })
 
-describe("RQ-70·71/GA-98: 표시 위치는 이벤트 좌표 그대로이고, 대상 종류('wall'/'player')로 컬렉션이 갈린다", () => {
+describe("RQ-70·71/GA-98: 수집된 위치는 이벤트 좌표 그대로이고, 대상 종류('wall'/'player')로 컬렉션이 갈린다(원장 24cd — 「표시」가 아니라 「수집」이다, GA-98 then 문면과 표현을 맞춘다)", () => {
   it('GA-98: target=\'wall\'은 탄흔 컬렉션에만, target=\'player\'는 피격 컬렉션에만 들어가고, 좌표·법선이 이벤트 값 그대로다(재계산 없음)', () => {
     const wallHit: HitEvent = { point: { x: 1, y: 2, z: 3 }, normal: { x: 1, y: 0, z: 0 }, target: 'wall' }
     const playerHit: HitEvent = { point: { x: 4, y: 5, z: 6 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }
@@ -280,5 +280,59 @@ describe('RQ-71/GA-99: 피격 효과는 지속 시간 이전에는 남아 있고
     state = applyHitEvent(state, { point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }, 5, 10)
     expect(advanceHitFeedback(state, 14).hitEffects).toHaveLength(1)
     expect(advanceHitFeedback(state, 16).hitEffects).toHaveLength(0)
+  })
+})
+
+/**
+ * 이월 24cg — `advanceHitFeedback` 참조 안정성(결함 재현, ADR-0011 Red-first
+ * 대상: 실측 결함).
+ *
+ * 현재 구현은 `Array.prototype.filter`를 무조건 호출한다. `filter`는
+ * 제거 대상이 **0건이어도 항상 새 배열**을 반환한다(원소가 그대로여도
+ * 참조는 새것). `connection.ts`의 `handleStateChange`가 매 상태 패치
+ * (초당 20~30회)마다 이 함수를 부르므로, 만료 대상이 없는 대다수의
+ * 호출에서도 `hitEffects` 배열 참조가 그 빈도로 바뀐다. 2/2 라운드가
+ * 이 컬렉션을 구독해 렌더링하는 순간 그 빈도의 불필요한 리렌더·GPU
+ * 업로드로 이어진다(ADR-0001 프레임 예산).
+ *
+ * **요구 계약**: 만료 대상이 0건이면 `hitEffects` 배열 참조와 반환
+ * `state` 객체 참조를 **그대로**(동일성, `toBe`) 반환한다. 만료 대상이
+ * 있으면(양성 대조군) 새 배열/새 객체를 반환한다. `bulletHoles`는 만료
+ * 여부와 무관하게 **항상** 참조 그대로다(파일 상단 `advanceHitFeedback`
+ * docblock이 이미 "bulletHoles를 건드리지 않는다(내용·순서·참조 그대로)"를
+ * 선언한다 — 이 describe는 그 계약에 "hitEffects도 무변화 시엔 참조가
+ * 안정적이어야 한다"는 대칭 축을 더한다).
+ */
+describe('RQ-70·71/이월 24cg: advanceHitFeedback 참조 안정성 — 만료 대상이 없으면 배열·상태 참조를 그대로 반환한다', () => {
+  it('만료할 피격 효과가 없으면(아직 살아있는 효과 1개) hitEffects 배열 참조와 state 객체 참조를 그대로 반환한다', () => {
+    let state = createHitFeedbackState()
+    state = applyHitEvent(state, { point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }, 0, DURATION_MS)
+    const beforeExpiry = advanceHitFeedback(state, DURATION_MS - 1) // 아직 만료 전
+    expect(beforeExpiry.hitEffects).toBe(state.hitEffects)
+    expect(beforeExpiry).toBe(state)
+  })
+
+  it('hitEffects가 애초에 비어 있으면(만료 대상 자체가 없음) advanceHitFeedback을 아무리 진행시켜도 참조가 그대로다', () => {
+    const state = createHitFeedbackState()
+    const advanced = advanceHitFeedback(state, 999_999)
+    expect(advanced).toBe(state)
+    expect(advanced.hitEffects).toBe(state.hitEffects)
+  })
+
+  it('양성 대조군 — 만료 대상이 실제로 있으면 새 배열·새 state를 반환한다(참조 안정성이 "절대 안 바뀐다"를 뜻하지 않는다는 것을 함께 고정)', () => {
+    let state = createHitFeedbackState()
+    state = applyHitEvent(state, { point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }, 0, DURATION_MS)
+    const afterExpiry = advanceHitFeedback(state, DURATION_MS + 1)
+    expect(afterExpiry).not.toBe(state)
+    expect(afterExpiry.hitEffects).not.toBe(state.hitEffects)
+    expect(afterExpiry.hitEffects).toHaveLength(0)
+  })
+
+  it('만료가 실제로 일어나는 호출에서도 bulletHoles 참조는 그대로다(RQ-70 "시간으로는 사라지지 않는다"를 참조 동일성 수준까지 재확인)', () => {
+    let state = createHitFeedbackState()
+    state = applyHitEvent(state, wallEvent(1), 0, DURATION_MS)
+    state = applyHitEvent(state, { point: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 1, z: 0 }, target: 'player' }, 0, DURATION_MS)
+    const afterExpiry = advanceHitFeedback(state, DURATION_MS + 1)
+    expect(afterExpiry.bulletHoles).toBe(state.bulletHoles)
   })
 })

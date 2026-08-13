@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { boxRenderBox, ladderRenderBox, wallRenderBox } from '@client/scene/mapGeometry'
 import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 import { SCENE } from '@client/config/design-tokens'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
+import { MOVEMENT } from '@shared/constants'
 
 /**
  * 원장 24f — 맵 정적 지오메트리 렌더 치수 환산.
@@ -73,12 +75,20 @@ describe('24f: 맵 지오메트리 렌더 치수 환산', () => {
     }
   })
 
-  it('벽 렌더 높이가 도달 가능한 최고 지점 이상이다 — 벽 위가 뚫려 보이지 않는다', () => {
-    // 사다리 꼭대기가 현재 맵의 최고 도달점이다. 벽이 그보다 낮으면 사다리를
-    // 다 오른 플레이어가 벽 윗면 위에 서서 맵 밖이 보인다. 사다리가 높아지면
-    // 이 단언이 실패해 `SCENE.wallRenderHeightM`을 함께 올리라고 알린다.
-    const highestReachable = Math.max(...PRODUCTION_GEOMETRY.ladders.map((l) => l.maxY))
-    expect(SCENE.wallRenderHeightM).toBeGreaterThanOrEqual(highestReachable)
+  it('벽 렌더 높이가 도달 가능한 최고 "눈" 높이(발이 아니다) 이상이다 — 벽 위가 뚫려 보이지 않는다(RQ-70·71 v2.7/ADR-0016 결정 후속 2, 원장 24g)', () => {
+    // ⚠️ 기준은 사다리 꼭대기의 **발** 높이가 아니라 **눈** 높이다.
+    // 카메라는 발이 아니라 눈에 있고(`PlayerControls`가 발 위치 +
+    // `DEFAULT_HITBOX.eyeHeightM`으로 카메라를 둔다), 점프(RQ-92
+    // `MOVEMENT.JUMP_HEIGHT`)로 한 번 더 뜬다. 발 높이만 기준으로 삼으면
+    // "벽 렌더 높이 ≥ 사다리 발 높이"는 통과해도 사다리 꼭대기에 선
+    // 플레이어의 실제 시점(그 위 eyeHeightM, 점프하면 JUMP_HEIGHT만큼
+    // 더)이 렌더된 벽 상단보다 높아 벽 너머가 보이고, 그 방향으로 쏜
+    // 탄흔(RQ-70, 판정은 무한 높이 기둥)은 보이는 벽보다 위 허공에 뜬다
+    // (ADR-0016 결정 후속 2가 "판정 무한 높이 ↔ 렌더 4m 괴리"로 지적한
+    // 바로 그 결함 — 이 케이스는 그 눈높이 여유를 기준식에 반영해 재정의한다).
+    const highestReachableFootY = Math.max(...PRODUCTION_GEOMETRY.ladders.map((l) => l.maxY))
+    const highestReachableEyeY = highestReachableFootY + DEFAULT_HITBOX.eyeHeightM + MOVEMENT.JUMP_HEIGHT
+    expect(SCENE.wallRenderHeightM).toBeGreaterThanOrEqual(highestReachableEyeY)
   })
 
   it('그릴 지오메트리가 실제로 존재한다 — 빈 배열이면 화면은 여전히 비어 있다', () => {
