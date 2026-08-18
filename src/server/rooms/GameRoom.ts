@@ -102,14 +102,23 @@ interface FireInput {
   rttMs: number
 }
 
-/** RQ-70/71/ADR-0016 결정 1 — `broadcast('hit', ...)` payload. 클라이언트
- * 쪽 동일 shape는 `@client/effects/hitFeedback`의 `HitEvent`다 — 서버는
- * `@client`를 import하지 않으므로(레이어 경계, `ChatMessage`가 이미 세운
- * 선례 — 아래 참고) 이 파일이 자신의 사본을 둔다. */
+/** RQ-70/71/ADR-0016 결정 1(2026-08-15 개정, 원장 24ct) —
+ * `broadcast('hit', ...)` payload. 클라이언트 쪽 동일 shape는
+ * `@client/effects/hitFeedback`의 `HitEvent`다 — 서버는 `@client`를
+ * import하지 않으므로(레이어 경계, `ChatMessage`가 이미 세운 선례 — 아래
+ * 참고) 이 파일이 자신의 사본을 둔다.
+ *
+ * `shooterId`는 항상 채운다(RQ-57·58·59 공통 절 요구 1). `victimId`는
+ * 대상이 플레이어일 때만 채운다(요구 2) — 벽 명중이면 필드 자체를 payload에
+ * 넣지 않는다(클라이언트에서 `undefined`로 동일하게 관측된다). 클라이언트는
+ * 이 두 식별자로 "나와의 관계"만 가르고(`classifyHitRelation`) HP·킬·
+ * 데미지는 계산하지 않는다(RQ-61 — 그 값은 서버 스냅샷에서만 온다). */
 interface HitEvent {
   point: Vec3
   normal: Vec3
   target: 'wall' | 'player'
+  shooterId: string
+  victimId?: string
 }
 
 /**
@@ -853,7 +862,9 @@ export class GameRoom extends Room<GameState> {
       // 복제하지 않는다.
       const wallHit = findClosestWallHit(ray, occlusionWalls)
       if (wallHit) {
-        const event: HitEvent = { point: wallHit.point, normal: wallHit.normal, target: 'wall' }
+        // RQ-57·58·59 공통 요구 1 — 벽 명중에도 사수 식별자는 담긴다.
+        // 요구 2 — 대상이 벽이므로 victimId 필드는 아예 넣지 않는다.
+        const event: HitEvent = { point: wallHit.point, normal: wallHit.normal, target: 'wall', shooterId }
         this.broadcast('hit', event)
       }
       return
@@ -872,6 +883,10 @@ export class GameRoom extends Room<GameState> {
       point: closest.result.point as Vec3,
       normal: closest.result.normal as Vec3,
       target: 'player',
+      // RQ-57·58·59 공통 요구 1·2 — 사수 식별자는 항상, 대상이 플레이어이므로
+      // 피격자 식별자도 함께 담는다.
+      shooterId,
+      victimId: closest.id,
     }
     this.broadcast('hit', hitEvent)
 

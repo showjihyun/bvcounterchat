@@ -14,12 +14,44 @@ import { EFFECTS } from '@shared/constants'
 
 export type HitTargetKind = 'wall' | 'player'
 
-/** 서버 'hit' 브로드캐스트 payload와 동일 shape(ADR-0016 결정 1 — "명중
- * 좌표·표면 법선·명중 대상의 종류"). */
+/** 서버 'hit' 브로드캐스트 payload와 동일 shape(ADR-0016 결정 1 개정,
+ * 2026-08-15, 원장 24ct — "명중 좌표·표면 법선·명중 대상의 종류"에 사수·
+ * 피격자 식별자를 더한다).
+ *
+ * `shooterId`·`victimId`는 TS 레벨에서 **선택 필드**다 — 런타임 보장은
+ * 다르다: 서버는 항상 `shooterId`를 채우고, 대상이 플레이어일 때만
+ * `victimId`를 채운다(RQ-57·58·59 공통 절 요구 1·2). TS 옵셔널로 둔 것은
+ * 오직 `rq-70-71-hit-feedback.test.ts`의 기존 리터럴(식별자 없이
+ * `{ point, normal, target }`만 있는 `wallEvent`류)이 그대로 컴파일되게
+ * 하려는 하위호환 조치다 — 런타임 값 자체는
+ * `tests/integration/rq-57-59-hit-event-identity.test.ts`가 검증한다. */
 export interface HitEvent {
   point: Vec3
   normal: Vec3
   target: HitTargetKind
+  shooterId?: string
+  victimId?: string
+}
+
+/** GA-119 then의 3분기 — "나와의 관계"만 표현하는 값이다. HP·킬·데미지
+ * 필드를 가질 수 있는 객체가 아니라 원시 문자열 리터럴 유니온이다(RQ-61 —
+ * 그런 값은 서버 스냅샷에서만 온다). */
+export type HitRelation = 'shooter' | 'victim' | 'bystander'
+
+/**
+ * 명중 이벤트의 식별자로 "나와의 관계"만 가른다(ADR-0016 결정 4 "판정" 층,
+ * 면제 없음). `event.shooterId`/`event.victimId`를 `selfSessionId`와
+ * **문자열 그대로** 비교할 뿐, 좌표(`point`/`normal`)를 읽지도 재구성하지도
+ * 않는다(GA-98이 좌표에 대해 세운 "재계산 금지" 원칙을 관계 판정에 그대로
+ * 적용 — GA-120). HP·킬·데미지 등 다른 어떤 상태도 이 함수의 입력에도
+ * 출력에도 없다 — 시그니처 자체가 "가르기만 하고 계산하지 않는다"의 구조적
+ * 보장이다. 순수 함수(외부 상태 참조 없음, RQ-61: 확정값은 서버 스냅샷에서만
+ * 온다).
+ */
+export function classifyHitRelation(event: HitEvent, selfSessionId: string): HitRelation {
+  if (event.shooterId === selfSessionId) return 'shooter'
+  if (event.victimId === selfSessionId) return 'victim'
+  return 'bystander'
 }
 
 export interface BulletHole {
