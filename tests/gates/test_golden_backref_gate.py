@@ -797,3 +797,146 @@ def test_cli_check_paths_reads_from_stdin_when_no_argv() -> None:
         input="tests/gates/test_golden_backref_gate.py\n",
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 24cm 2차 — PR #88 1차 리뷰 blocker·major 대응 (team-lead 위임, pytest 층)
+# ══════════════════════════════════════════════════════════════════════
+#
+# 구현은 team-lead가 이미 했다(`.claude/hooks/gate_golden_backref.py`·
+# `scripts/check.sh`·`.github/workflows/ci.yml`) — 이 절은 그 처방을 pytest로
+# 독립 검증한다(검증 격리). 아래 각 테스트는 리뷰가 지목한 지적 하나씩과
+# 대응한다:
+#
+#   - blocker: 배선(`check.sh`)이 준 입력(마지막 커밋 하나의 diff)만으로는
+#     승격을 잊는 "탈출 커밋"에서 **0경로**를 받는다 — 테스트는 앞선 Red
+#     커밋에 이미 있어서다. 실측(리뷰): 사고 1의 탈출 커밋 `1e1f57c`,
+#     사고 2의 탈출 커밋 `6440e4d` 둘 다 `tests/`를 한 개도 안 건드린다.
+#     처방: `.github/workflows/ci.yml`에 three-dot(PR 전체) diff 스텝을 더한다.
+#   - major M2: 경고 0건이면 아무 출력도 없어서 "정상"(스펙 전용 PR)과
+#     "고장"(경로 조달 파이프 붕괴)이 구분되지 않았다. 처방: 경고 0건에도
+#     `변경 경로 N개 중 tests/ M개 검사` 생존 신호를 낸다.
+#   - major M3: "항상 exit 0" 단언이 공허했다 — 기존 CLI 테스트 3건이 전부
+#     경고 0건 입력만 줘서 「경고가 있으면 return 1」(M4)·「경고 출력 제거」
+#     (M9) 변이가 pytest 전체 통과·selftest exit 0으로 살아남았다.
+
+
+def test_incident_reproduction_single_commit_diff_yields_zero_but_three_dot_yields_two(
+        tmp_path: Path) -> None:
+    """리뷰 blocker 처방 — check.sh 배선(마지막 커밋 하나의 diff)만으로는
+    승격을 잊는 "탈출 커밋"에서 0경로를 받는다. 실제 커밋 SHA(`1e1f57c`·
+    `6440e4d`)에는 의존하지 않고 그 **형태**를 합성 fixture로 고정한다 —
+    테스트 파일은 디스크에 이미 있다(이전 Red 커밋에서 커밋됨). "탈출
+    커밋"의 변경 경로 목록에는 `src/`만 있다 → 0건. 같은 파일 상태에서
+    three-dot diff가 주는 전체 집합(테스트 파일 포함)을 넘기면 → 2건.
+
+    check_changed_paths는 git 이력을 모른다 — 순전히 `paths` 인자가 준
+    경계를 지키는지가 이 함수의 책임이고, 이 테스트가 그 경계를 직접
+    단언한다(같은 골든·같은 파일 상태에서 입력 목록만 바꾼다).
+    """
+    _write(
+        tmp_path / "tests" / "unit" / "hit-decal-instancing.test.ts",
+        "// GA-112: 데칼 인스턴싱 렌더 배선\n// GA-113: 피격 무상한 단언\n",
+    )
+    _write(
+        tmp_path / "src" / "client" / "effects" / "hitDecal.ts",
+        "// 데칼 렌더 배선 구현 — 이 파일 자체는 GA-ID를 언급하지 않는다\n",
+    )
+    _write_golden(
+        tmp_path,
+        {"id": "GA-112", "status": "todo", "verify": ""},
+        {"id": "GA-113", "status": "todo", "verify": ""},
+    )
+
+    single_commit_diff = ["src/client/effects/hitDecal.ts"]
+    three_dot_diff = [
+        "src/client/effects/hitDecal.ts",
+        "tests/unit/hit-decal-instancing.test.ts",
+    ]
+
+    escape_commit_warnings = gbg.check_changed_paths(single_commit_diff, root=tmp_path)
+    three_dot_warnings = gbg.check_changed_paths(three_dot_diff, root=tmp_path)
+
+    assert escape_commit_warnings == [], escape_commit_warnings
+    assert len(three_dot_warnings) == 2, three_dot_warnings
+
+
+def test_run_check_paths_exits_zero_and_prints_when_warnings_present(monkeypatch, capsys) -> None:
+    """major M3 처방 — 「경고가 있으면 return 1」(M4)·「경고 출력 제거」
+    (M9) 변이를 한 테스트로 죽인다. 기존 CLI 테스트 3건은 전부 경고 0건인
+    입력만 줘서 이 두 변이가 살아남았다(리뷰 관측). `check_changed_paths`를
+    스텁으로 바꿔 `run_check_paths`의 배선(exit code·출력)만 격리해서
+    본다 — 리뷰가 monkeypatch + capsys를 제안했다."""
+    monkeypatch.setattr(
+        gbg, "check_changed_paths",
+        lambda paths: ["GA-9001 (status: todo) — 스텁 경고: 승격을 잊었는지 확인하라"],
+    )
+
+    rc = gbg.run_check_paths(["tests/unit/whatever.test.ts"])
+    captured = capsys.readouterr()
+
+    assert rc == 0, "M4 — 경고가 있어도 exit 0이어야 한다(경고 게이트)"
+    assert "GA-9001" in captured.out, "M9 — 경고 내용이 실제로 출력돼야 한다"
+
+
+def test_run_check_paths_emits_survival_signal_even_with_empty_input(capsys) -> None:
+    """major M2 처방(생존 신호) — 빈 입력에서도 조용히 return하지 않고
+    한 줄을 낸다. 게이트 소스 주석("조기 return을 없앴다")이 명시하는
+    바로 그 축 — 예전 코드가 `if not paths: return 0`으로 일찍 빠졌다면
+    이 테스트가 죽는다."""
+    rc = gbg.run_check_paths([])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert captured.out.strip() != "", "경고 0건에도 생존 신호가 나와야 한다"
+    assert "변경 경로 0개" in captured.out
+    assert "tests/ 0개" in captured.out
+
+
+def test_run_check_paths_survival_signal_distinguishes_total_from_tests_count(capsys) -> None:
+    """major M2 처방 — 생존 신호가 N(변경 경로 총수)과 M(tests/ 경로 수)을
+    **구분해서** 담는지 확인한다. 그래야 "N=0"(경로 조달 파이프 고장)과
+    "M=0"(스펙 전용 PR, tests/를 안 건드림 — 정상)이 출력만으로 갈린다.
+    tests/ 경로는 실존하지 않는 파일명을 쓴다 — `run_check_paths`의 `tested`
+    집계는 문자열 접두사만 보므로(파일 존재 여부와 무관) 실 저장소 골든
+    상태에 의존하지 않고도 N≠M을 확인할 수 있다."""
+    rc = gbg.run_check_paths([
+        "harness/specs/requirements.md",
+        "src/client/x.ts",
+        "tests/unit/does-not-exist-fixture-24cm.test.ts",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "변경 경로 3개" in captured.out, captured.out
+    assert "tests/ 1개" in captured.out, captured.out
+
+
+def test_ci_workflow_wires_check_paths_with_three_dot_diff() -> None:
+    """blocker 처방의 배선 축 — `check.sh`(로컬 마지막 커밋 diff)만으로는
+    탈출 커밋에서 0경로가 된다(위 테스트가 그 형태를 고정한다). 실제
+    방어선은 `.github/workflows/ci.yml`의 three-dot(PR 전체) diff 스텝이다.
+    YAML 파서 대신 텍스트 근접도로 본다 — 인프라 배선이라 정확한 블록
+    경계 파싱은 이 테스트 범위 밖이다(`gate_trigger_due.py`의 마크다운 표
+    파싱과 같은 정신 — 완전한 파서 없이 필요한 구조만 본다).
+
+    ⚠️ **판단(team-lead 위임 4번 항목)**: 포함하기로 했다 — three-dot 스텝이
+    이 사고의 유일한 실질 방어선이고(`check_changed_paths` 자체는 입력
+    경계를 안 가린다 — 위 테스트가 그것을 보여 준다), 그 스텝을 되돌리는
+    변경을 잡는 자동 그물이 이 저장소 다른 어디에도 없다. 과하다고 판단되면
+    (예: YAML 구조가 자주 리팩터링돼 이 텍스트 근접 검사가 소음이 되면)
+    떼어내도 좋다 — 그 판단은 리뷰어에게 넘긴다.
+    """
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    m = re.search(r"golden_backref\.py --check-paths", text)
+    assert m, "ci.yml에 gate_golden_backref.py --check-paths 호출이 없다"
+
+    # 호출 근방(같은 run: 블록 안)에 three-dot(...HEAD) diff가 있는지 —
+    # 400자 앞 window로 본다(정확한 YAML 블록 경계 파싱은 범위 밖).
+    window = text[max(0, m.start() - 400):m.start()]
+    assert "...HEAD" in window, (
+        "gate_golden_backref.py --check-paths 호출 근방에 three-dot diff가 없다"
+        " — check.sh와 같은 단일 커밋 diff로 배선됐다면 탈출 커밋에서 다시 "
+        "0경로가 된다(리뷰 blocker가 지목한 바로 그 형태)"
+    )
