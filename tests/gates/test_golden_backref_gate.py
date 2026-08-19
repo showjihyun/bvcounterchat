@@ -541,3 +541,259 @@ def test_cli_check_reports_scan_count_floor_and_known_warning_count() -> None:
 
     done_warning_lines = [ln for ln in warning_lines if "(status:" not in ln]
     assert done_warning_lines == [], result.stdout
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 24cm — 골든 승격 게이트 사각: 빈 verify가 status와 무관하게 완전 스킵된다
+# ══════════════════════════════════════════════════════════════════════
+#
+# 같은 사고가 두 라운드 연속으로 났다(원장 24cm 전문 참고):
+#   ① RQ-70·71 라운드 — GA-112·113이 `status: "todo"` + `verify: ""`인 채로
+#      구현 커밋(`1e1f57c`)까지 갔다. 커밋 `307c957`이 뒤늦게 닫았다.
+#   ② 24cu 라운드 — GA-119·120이 같은 상태로 구현 커밋까지 갔다. 커밋
+#      `8d24dd0`이 뒤늦게 닫았다.
+# 두 번 다 `gate_golden_backref.py --check`는 「경고 0건」을 냈다 — `check_entry`가
+# 빈 `verify`를 `status`와 무관하게 완전 스킵하기 때문이다(위 §"검사 대상
+# 경계" 참고, 216~225행). 독립 평가가 대신 잡았다.
+#
+# 채택안 ③(원장 24cm, 사용자 결정 2026-08-19): 변경 경로 중 `tests/**`인
+# 파일을 읽어 거기 언급된 GA-ID를 모으고, 그 골든의 `verify`가 비어 있으면
+# **경고**한다(하드 실패 아님 — "실패하는 소음 게이트는 꺼진다",
+# `gate_trigger_due.py`가 이미 못박은 것과 같은 이유). Red 커밋에서도 짖는
+# 것이 의도된 동작이다 — Red-first 영역은 테스트가 먼저 커밋되고 승격은
+# Green 뒤라, 그 사이가 정확히 「빈 verify + GA 언급」 구간이다.
+#
+# ## API 계약(test-writer 결정, 원장 24cm이 위임) — `gate_golden_backref.py`에
+# 아직 없어 이 라운드에서 새로 정한다. `gate_map_asset_provenance.scan_path`·
+# `gate_spec_mirror.read_constants`·이 파일 자신의 `check_entry`와 같은 정신 —
+# **행동만 규정**하고 내부 구현(정규식이냐 문자열 검색이냐)은 코더의 자유다.
+#
+#     def check_changed_paths(paths: list[str], root: Path = ROOT) -> list[str]:
+#         '''paths: 변경된 파일 경로 리스트(gate_trigger_due.py의 --check-paths와
+#         같은 조달 형태 — CLI가 인자 없이 불리면 호출자가 stdin에서 채운다).
+#
+#         paths 중 `tests/`로 시작하는(디렉터리 접두) 경로만 골라 root 기준으로
+#         읽는다. 각 파일 본문에서 `\\bGA-\\d+\\b` 패턴으로 언급된 GA-ID를 전부
+#         모은다(한 파일에 여럿이어도, 여러 파일에 걸쳐도 합집합). `tests/`로
+#         시작하지 않는 경로는 파일을 열지 않는다 — 본문에 GA-ID가 아무리
+#         많아도 무시한다(harness/ 문서·원장이 그런 경우다).
+#
+#         모은 GA-ID 각각에 대해 root/harness/evals/golden/*.jsonl 전체(모든
+#         트랙)에서 그 id의 entry를 찾는다. entry가 없는 id(오타·미래 ID)는
+#         무시한다 — 죽지 않는다. entry가 있고 그 verify 필드가 없거나 빈
+#         문자열이면(status와 무관하게) 경고 문자열 하나를 반환 리스트에
+#         담는다(그 문자열은 최소한 GA-ID를 포함한다). verify가 채워져 있으면
+#         (그 경로가 실재하는지는 이 함수의 책임이 아니다 — A-①이 이미
+#         담당한다) 무시한다.
+#
+#         반환값은 경고 문자열 리스트 **하나뿐**이다(check_entry의
+#         (hard_fails, warnings) 튜플과 다르다 — 이 모드에 하드 실패 축이
+#         없다).'''
+#
+#     def run_check_paths(paths: list[str]) -> int:
+#         '''CLI 배선. 인자가 없으면 stdin에서 줄 단위로 읽는다
+#         (gate_trigger_due.run_check_paths와 동일 조달 형태). 경고가 있으면
+#         사람이 읽는 형태로 출력한다. 반환값은 **항상 0**이다(경고 게이트 —
+#         하드 실패 없음).'''
+#
+# **CLI 모드 이름: `--check-paths`** — `gate_trigger_due.py`의 동명 모드와
+# 조달 형태(인자 없으면 stdin 줄 단위)·항상 exit 0 계약을 그대로 맞춘다
+# (team-lead 지시: "입력 조달은 gate_trigger_due.py --check-paths와 같은
+# 형태를 쓴다"). 같은 하네스 안에서 "변경 경로를 받아 원장/골든을 대조하는"
+# 두 게이트가 같은 어휘를 쓰면 다음 사람이 배선을 유추하기 쉽다.
+#
+# ⚠️ **합성 fixture로 격리한다** — 순수 함수 테스트(`check_changed_paths` 직접
+# 호출)는 전부 `tmp_path`에 골든·테스트 파일을 직접 써서 실제 저장소 골든
+# 상태에 의존하지 않는다. 오늘 GA-119·120은 이미 승격돼 있어(원장 24cm) 그
+# 상태에 의존하는 테스트는 내일 깨진다. CLI 경계 테스트만 실 저장소를 쓰되
+# **exit code만** 단언한다(경고 내용은 단언하지 않는다 — 승격이 있을 때마다
+# 깨지는 것을 피한다).
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_golden(root: Path, *entries: dict, fname: str = "track-a-product.jsonl") -> None:
+    golden_dir = root / "harness" / "evals" / "golden"
+    golden_dir.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(e) for e in entries]
+    (golden_dir / fname).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ── 반드시 덮을 것 1: 사고 1 재현(GA-112·113, RQ-70·71 라운드) ──────────
+
+def test_promotion_gap_incident1_ga112_113_decal_test_warns(tmp_path: Path) -> None:
+    """사고 1 재현(원장 24cm) — 데칼 렌더 배선 테스트가 GA-112·113을 본문에
+    23회 언급했는데(실측) 그 골든이 `status: todo` + `verify: ""`로 남아
+    있었다. 실제로는 이 상태가 구현 커밋(`1e1f57c`)까지 조용히 통과했고
+    커밋 `307c957`이 뒤늦게 닫았다 — 이 테스트는 그 순간을 재현한다.
+    """
+    _write(
+        tmp_path / "tests" / "unit" / "hit-decal-instancing.test.ts",
+        "// GA-112: 데칼 인스턴싱 렌더 배선\n// GA-113: 피격 무상한 단언\n",
+    )
+    _write_golden(
+        tmp_path,
+        {"id": "GA-112", "status": "todo", "verify": ""},
+        {"id": "GA-113", "status": "todo", "verify": ""},
+    )
+
+    warnings = gbg.check_changed_paths(
+        ["tests/unit/hit-decal-instancing.test.ts"], root=tmp_path)
+
+    assert any("GA-112" in w for w in warnings), warnings
+    assert any("GA-113" in w for w in warnings), warnings
+
+
+# ── 반드시 덮을 것 2: 사고 2 재현(GA-119·120, 24cu 라운드) ──────────────
+
+def test_promotion_gap_incident2_ga119_120_new_test_warns(tmp_path: Path) -> None:
+    """사고 2 재현(24cu 라운드, 커밋 `8d24dd0`) — 같은 형태의 재발. 신규
+    테스트가 GA-119를 16회·GA-120을 5회 언급하는데(실측) 그 골든이 todo +
+    빈 verify인 채로 구현 커밋까지 갔다. GA-112·113(사고 1)과 **같은 형태의
+    2연속**임을 이 테스트가 고정한다.
+    """
+    _write(
+        tmp_path / "tests" / "integration" / "24cu-feature.test.ts",
+        ("// GA-119\n" * 16) + ("// GA-120\n" * 5),
+    )
+    _write_golden(
+        tmp_path,
+        {"id": "GA-119", "status": "todo", "verify": ""},
+        {"id": "GA-120", "status": "todo", "verify": ""},
+    )
+
+    warnings = gbg.check_changed_paths(
+        ["tests/integration/24cu-feature.test.ts"], root=tmp_path)
+
+    assert any("GA-119" in w for w in warnings), warnings
+    assert any("GA-120" in w for w in warnings), warnings
+
+
+# ── 반드시 덮을 것 3: 승격 후 침묵 ───────────────────────────────────────
+
+def test_promotion_after_verify_filled_is_silent(tmp_path: Path) -> None:
+    """승격 후 침묵 — 같은 tests/** 변경, 같은 GA-ID 언급이지만 verify가
+    채워지면(승격 완료) 더 이상 경고가 나지 않는다. "Red 커밋에서는 짖고
+    승격 후에는 조용해진다"는 의도된 동작(원장 24cm)의 반대쪽 절반이다.
+    """
+    _write(
+        tmp_path / "tests" / "unit" / "hit-decal-instancing.test.ts",
+        "// GA-112: 데칼 인스턴싱 렌더 배선\n// GA-113: 피격 무상한 단언\n",
+    )
+    _write_golden(
+        tmp_path,
+        {"id": "GA-112", "status": "done",
+         "verify": "tests/unit/hit-decal-instancing.test.ts"},
+        {"id": "GA-113", "status": "done",
+         "verify": "tests/unit/hit-decal-instancing.test.ts"},
+    )
+
+    warnings = gbg.check_changed_paths(
+        ["tests/unit/hit-decal-instancing.test.ts"], root=tmp_path)
+
+    assert warnings == []
+
+
+# ── 반드시 덮을 것 4: 스펙 전용 PR 침묵 ──────────────────────────────────
+
+def test_spec_only_pr_with_no_tests_paths_is_silent(tmp_path: Path) -> None:
+    """스펙 전용 PR 침묵 — 변경 경로에 `tests/**`가 전혀 없으면(스펙·ADR
+    문서만 바뀐 PR) 골든에 빈 verify가 있어도 경고 0건이다 — `tests/`를 안
+    건드리므로 애초에 훑을 대상이 없다."""
+    _write_golden(
+        tmp_path,
+        {"id": "GA-112", "status": "todo", "verify": ""},
+    )
+
+    warnings = gbg.check_changed_paths(
+        ["harness/specs/requirements.md", "harness/adr/0015-player-model-geometry.md"],
+        root=tmp_path)
+
+    assert warnings == []
+
+
+# ── 반드시 덮을 것 6: tests/ 밖 파일의 GA-ID 언급은 무시 ────────────────
+
+def test_non_tests_path_mentioning_ga_id_is_ignored(tmp_path: Path) -> None:
+    """`tests/` 밖 파일이 GA-ID를 언급해도 무시한다 — `harness/` 문서·원장은
+    GA-ID를 수없이 언급한다. 그것으로 짖으면 소음 게이트가 된다(원장 24cm
+    "반드시 덮을 것" 6)."""
+    _write(
+        tmp_path / "harness" / "progress.md",
+        "GA-112 GA-113 " * 20,
+    )
+    _write_golden(
+        tmp_path,
+        {"id": "GA-112", "status": "todo", "verify": ""},
+        {"id": "GA-113", "status": "todo", "verify": ""},
+    )
+
+    warnings = gbg.check_changed_paths(["harness/progress.md"], root=tmp_path)
+
+    assert warnings == []
+
+
+# ── 방어 — 골든에 없는 GA-ID를 언급해도 죽지 않는다 ─────────────────────
+
+def test_mentioned_ga_id_without_golden_entry_is_ignored_not_crashed(tmp_path: Path) -> None:
+    """골든에 아예 없는 GA-ID(오타·아직 등록 안 된 미래 ID)를 언급해도
+    KeyError 없이 무시한다 — "실패하는 소음 게이트는 꺼진다"는 크래시에도
+    적용된다(운영 중 크래시하는 게이트는 경고보다 나쁘다)."""
+    _write(tmp_path / "tests" / "unit" / "future.test.ts", "// GA-999\n")
+    _write_golden(tmp_path, {"id": "GA-1", "status": "done", "verify": "x.test.ts"})
+
+    warnings = gbg.check_changed_paths(["tests/unit/future.test.ts"], root=tmp_path)
+
+    assert warnings == []
+
+
+# ── 반환 타입 계약 ────────────────────────────────────────────────────
+
+def test_check_changed_paths_returns_a_plain_list_of_warnings(tmp_path: Path) -> None:
+    """계약 — 반환은 `list[str]` 하나다(`check_entry`의 `(hard_fails,
+    warnings)` 튜플과 다르다 — 이 모드에 하드 실패 축이 없다). 빈 입력은
+    빈 리스트를 낸다."""
+    result = gbg.check_changed_paths([], root=tmp_path)
+    assert result == []
+
+
+# ── 반드시 덮을 것 5: exit code가 항상 0이다(CLI 경계) ──────────────────
+#
+# 아래 CLI 테스트는 **실 저장소**를 대상으로 돈다(subprocess가 새 프로세스를
+# 띄우므로 모듈 상수 ROOT를 monkeypatch로 격리할 수 없다 — `--check`·
+# `--selftest`의 기존 CLI 테스트와 같은 제약). 그래서 **exit code만**
+# 단언하고 경고 *내용*은 단언하지 않는다 — 실 골든이 승격될 때마다 이
+# 테스트가 깨지는 것을 피한다(team-lead 지시).
+
+def test_cli_check_paths_mode_exists_and_exits_zero_with_empty_stdin() -> None:
+    result = subprocess.run(
+        [sys.executable, str(GATE_PATH), "--check-paths"],
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
+        input="",
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def test_cli_check_paths_mode_exits_zero_with_argv_path() -> None:
+    """인자로 경로를 직접 준 형태(`gate_trigger_due.py --check-paths P...`와
+    같은 조달 형태) — 경고 유무와 무관하게 exit 0이어야 한다."""
+    result = subprocess.run(
+        [sys.executable, str(GATE_PATH), "--check-paths",
+         "tests/gates/test_golden_backref_gate.py"],
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def test_cli_check_paths_reads_from_stdin_when_no_argv() -> None:
+    """인자 없이 stdin으로 경로를 받는 조달 형태 — `gate_trigger_due.py
+    --check-paths`와 동일 계약(위 파일 131~139행)."""
+    result = subprocess.run(
+        [sys.executable, str(GATE_PATH), "--check-paths"],
+        cwd=ROOT, capture_output=True, timeout=30, text=True, encoding="utf-8",
+        input="tests/gates/test_golden_backref_gate.py\n",
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
