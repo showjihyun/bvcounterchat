@@ -58,6 +58,19 @@ jobs:
           git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
             | python .claude/hooks/gate_trigger_due.py --check-paths
 
+      # 골든 승격 누락 검출(A-④, 원장 24cm) — **경고만, 머지를 막지 않는다**.
+      # ⚠️ check.sh 배선(로컬 작업분 `git diff HEAD` + untracked)만으로는
+      # **사고가 확정되는 순간에 0경로를 받는다**(PR #88 리뷰 blocker). 실측:
+      # 두 사고의 탈출 커밋(1e1f57c·6440e4d)은 `tests/`를 **한 개도** 안
+      # 건드린다 — 테스트는 앞선 Red 커밋에서 이미 커밋됐기 때문이다. 즉
+      # 배선된 A-④는 Red에서 한 번 짖고 정작 승격을 잊는 커밋에서는 침묵한다.
+      # PR에서 의미 있는 집합은 base와의 three-dot diff이므로 트리거 검출기와
+      # **같은 형태**로 여기 한 번 더 돌린다(그 스텝의 주석이 같은 이유를 적는다).
+      - name: 골든 승격 누락 검출 (원장 24cm — 경고)
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | python .claude/hooks/gate_golden_backref.py --check-paths
+
       - name: 맵 에셋 출처 게이트 (RQ-30 · ADR-0007 결정 1)
         # 커밋된 전 파일의 **경로와 내용**을 훑는다. PreToolUse 훅은 쓰기 **전**이라
         # 파일이 없어 내용 검사가 성립하지 않는다 — 내용 그물은 여기가 유일하다.

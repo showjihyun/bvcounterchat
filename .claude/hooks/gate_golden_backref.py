@@ -326,6 +326,10 @@ def _iter_golden_entries() -> list[tuple[str, int, dict]]:
 # GA 언급」 구간이다. 소음이 아니라 **아직 안 끝났다는 표시**다. 출력 문면이
 # 그것을 직접 말한다 — 안 적어 두면 다음 사람이 소음으로 읽고 규칙을 끈다.
 
+# selftest 요약이 인용하는 A-④ 케이스 수 — 하드코딩하면 케이스를 늘리고도
+# 문면이 낡는다(PR #88 리뷰 minor). run_selftest가 실행 시점에 채운다.
+_A4_CASE_COUNT = 0
+
 GA_ID_RE = re.compile(r"\bGA-\d+\b")
 
 
@@ -422,10 +426,21 @@ def run_check_paths(paths: list[str]) -> int:
             ]
         except (OSError, ValueError):
             paths = []
-    if not paths:
-        return 0
+    tested = [p for p in paths if p == "tests" or p.startswith("tests/")]
     warnings = check_changed_paths(paths)
     if not warnings:
+        # ⚠️ **생존 신호**(PR #88 리뷰 major M2). 경고 0건에 아무것도 출력하지
+        # 않으면 **정상**(스펙 전용 PR — tests/ 변경이 없다)과 **고장**(경로
+        # 조달 파이프가 깨져 0줄이 들어온다)이 구분되지 않는다. 이 저장소는
+        # 「고장 난 센서는 없는 센서보다 나쁘다」를 못박았고, 실제로 판정
+        # 함수는 정확한데 스캔 표면이 0건을 훑어 조용히 초록을 낸 사고가
+        # 있었다(run_check의 blocker 1 방어가 그것이다). N=0과 M=0을 갈라
+        # 적는다 — 같은 이유로 gate_trigger_due는 생존 줄을, --check는
+        # 「골든 N건 검사」를 낸다.
+        print(
+            "[골든 승격 게이트] 변경 경로 %d개 중 tests/ %d개 검사 — 승격 누락 없음."
+            % (len(paths), len(tested))
+        )
         return 0
     print(
         "[골든 승격 게이트] 변경된 테스트가 언급하는 골든의 `verify`가 비어 있다 "
@@ -642,6 +657,8 @@ def run_selftest() -> int:
             ("혼합 입력 — tests/ 것만 골라 읽는다",
              ["harness/progress.md", "tests/unit/red.test.ts"], 2),
         ]
+        global _A4_CASE_COUNT
+        _A4_CASE_COUNT = len(a4_cases)
         for name, paths, want in a4_cases:
             got = check_changed_paths(paths, root=r4)
             if len(got) != want:
@@ -678,8 +695,8 @@ def run_selftest() -> int:
         )
         return 1
     print(
-        "[골든 역참조 게이트 selftest] 통과 — 차단 %d건·허용 %d건·승격 누락(A-④) 8건 확인."
-        % (len(must_block), len(must_pass))
+        "[골든 역참조 게이트 selftest] 통과 — 차단 %d건·허용 %d건·승격 누락(A-④) %d건 확인."
+        % (len(must_block), len(must_pass), _A4_CASE_COUNT)
     )
     return 0
 
