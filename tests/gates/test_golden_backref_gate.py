@@ -808,9 +808,10 @@ def test_cli_check_paths_reads_from_stdin_when_no_argv() -> None:
 # 독립 검증한다(검증 격리). 아래 각 테스트는 리뷰가 지목한 지적 하나씩과
 # 대응한다:
 #
-#   - blocker: 배선(`check.sh`)이 준 입력(마지막 커밋 하나의 diff)만으로는
-#     승격을 잊는 "탈출 커밋"에서 **0경로**를 받는다 — 테스트는 앞선 Red
-#     커밋에 이미 있어서다. 실측(리뷰): 사고 1의 탈출 커밋 `1e1f57c`,
+#   - blocker: 배선(`check.sh`)이 준 입력(`git diff --name-only HEAD` +
+#     untracked = 미커밋 작업분)만으로는 승격을 잊는 "탈출 커밋"에서
+#     **0경로**를 받는다 — 테스트는 앞선 Red 커밋에 이미 있어서다.
+#     실측(리뷰): 사고 1의 탈출 커밋 `1e1f57c`,
 #     사고 2의 탈출 커밋 `6440e4d` 둘 다 `tests/`를 한 개도 안 건드린다.
 #     처방: `.github/workflows/ci.yml`에 three-dot(PR 전체) diff 스텝을 더한다.
 #   - major M2: 경고 0건이면 아무 출력도 없어서 "정상"(스펙 전용 PR)과
@@ -823,8 +824,9 @@ def test_cli_check_paths_reads_from_stdin_when_no_argv() -> None:
 
 def test_incident_reproduction_single_commit_diff_yields_zero_but_three_dot_yields_two(
         tmp_path: Path) -> None:
-    """리뷰 blocker 처방 — check.sh 배선(마지막 커밋 하나의 diff)만으로는
-    승격을 잊는 "탈출 커밋"에서 0경로를 받는다. 실제 커밋 SHA(`1e1f57c`·
+    """리뷰 blocker 처방 — check.sh 배선(`git diff --name-only HEAD` +
+    untracked = 미커밋 작업분)만으로는 승격을 잊는 "탈출 커밋"에서 0경로를
+    받는다. 실제 커밋 SHA(`1e1f57c`·
     `6440e4d`)에는 의존하지 않고 그 **형태**를 합성 fixture로 고정한다 —
     테스트 파일은 디스크에 이미 있다(이전 Red 커밋에서 커밋됨). "탈출
     커밋"의 변경 경로 목록에는 `src/`만 있다 → 0건. 같은 파일 상태에서
@@ -913,8 +915,9 @@ def test_run_check_paths_survival_signal_distinguishes_total_from_tests_count(ca
 
 
 def test_ci_workflow_wires_check_paths_with_three_dot_diff() -> None:
-    """blocker 처방의 배선 축 — `check.sh`(로컬 마지막 커밋 diff)만으로는
-    탈출 커밋에서 0경로가 된다(위 테스트가 그 형태를 고정한다). 실제
+    """blocker 처방의 배선 축 — `check.sh`(로컬 `git diff --name-only HEAD` +
+    untracked = 미커밋 작업분)만으로는 탈출 커밋에서 0경로가 된다(위 테스트가
+    그 형태를 고정한다). 실제
     방어선은 `.github/workflows/ci.yml`의 three-dot(PR 전체) diff 스텝이다.
     YAML 파서 대신 텍스트 근접도로 본다 — 인프라 배선이라 정확한 블록
     경계 파싱은 이 테스트 범위 밖이다(`gate_trigger_due.py`의 마크다운 표
@@ -937,6 +940,6 @@ def test_ci_workflow_wires_check_paths_with_three_dot_diff() -> None:
     window = text[max(0, m.start() - 400):m.start()]
     assert "...HEAD" in window, (
         "gate_golden_backref.py --check-paths 호출 근방에 three-dot diff가 없다"
-        " — check.sh와 같은 단일 커밋 diff로 배선됐다면 탈출 커밋에서 다시 "
+        " — check.sh와 같은 미커밋 작업분 diff로 배선됐다면 탈출 커밋에서 다시 "
         "0경로가 된다(리뷰 blocker가 지목한 바로 그 형태)"
     )
