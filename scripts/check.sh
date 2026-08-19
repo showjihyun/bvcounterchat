@@ -128,6 +128,18 @@ PYTHONUTF8=1 python -m pytest tests/gates/ -q
 # 트리거가 **세 번** 조용히 미발화했다(원장 26af·26x·26ae/26ak). 변경 경로와 이어진
 # ⬜ 행을 알려 준다. 실패로 만들지 않는 이유: 참조 파일 일치는 트리거 발화의 근사일
 # 뿐이라 소음이 필연이고, 실패하는 소음 게이트는 꺼진다.
+# 승격 누락 검출(A-④, 원장 24cm) — **경고만 낸다(항상 exit 0)**. 위 --check는
+# 전 대상을 스캔하지만 빈 verify를 status와 무관하게 스킵하므로 「구현이 끝났는데
+# 골든 승격을 잊은」 상태를 못 본다. 그 사각에 두 라운드 연속으로 걸렸다
+# (GA-112·113 · GA-119·120 — 두 번 다 독립 평가가 대신 잡았다). 이 모드는 입력이
+# 다르다: 전 대상이 아니라 **이번 변경이 건드린 경로**를 받아, 변경된 테스트가
+# 언급하는 골든의 verify가 비었으면 경고한다. 조달 형태는 아래 트리거 검출기와
+# 같다(변경 파일 목록을 stdin으로).
+# ⚠️ Red 커밋에서는 이 경고가 정상이다 — 테스트가 먼저 커밋되고 승격은 Green
+# 뒤다(ADR-0011). 소음으로 읽고 끄지 마라.
+{ git diff --name-only HEAD 2>/dev/null;
+  git ls-files --others --exclude-standard; }   | sort -u | python .claude/hooks/gate_golden_backref.py --check-paths
+
 python .claude/hooks/gate_trigger_due.py --selftest
 { git diff --name-only HEAD 2>/dev/null;
   git ls-files --others --exclude-standard; } \

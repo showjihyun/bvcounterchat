@@ -161,6 +161,9 @@ r"""골든 역참조 게이트 — `status: done` 골든이 자신이 주장하�
 실행 모드
 ---------
   --check          전 대상 검사. 하드 실패가 있으면 exit 1, 경고만 있으면 exit 0.
+  --check-paths [P...]  변경 경로(없으면 stdin 줄 단위)를 받아 **승격 누락**을
+                   경고한다(A-④). **항상 exit 0** — `gate_trigger_due.py`의
+                   동명 모드와 조달 형태·계약을 맞췄다.
   --selftest       내장 검증. 게이트 자체가 고장 났는지 확인한다.
 
 PreToolUse 훅으로는 두지 않는다 — 골든을 `todo`→`done`으로 바꾸는 편집 중에는
@@ -170,6 +173,7 @@ PreToolUse 훅으로는 두지 않는다 — 골든을 `todo`→`done`으로 바
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -296,6 +300,143 @@ def _iter_golden_entries() -> list[tuple[str, int, dict]]:
                 continue
             out.append((jsonl.name, lineno, rec))
     return out
+
+
+
+# ── A-④ 승격 누락 검출(원장 24cm) ─────────────────────────────────────────
+#
+# 이 게이트의 A-①~③은 전부 `verify`가 **채워져 있을 때** 그 값을 검사한다.
+# 빈 `verify`는 `check_entry`가 status와 무관하게 스킵하는데(「작성 중 골든의
+# 정상 상태다」), 그 전제가 **「테스트와 구현을 둘 다 만든 뒤 승격만 잊은」**
+# 상태를 못 가른다. 실제로 그 사각에 **두 라운드 연속**으로 걸렸다 —
+# GA-112·113(RQ-70·71 라운드)과 GA-119·120(24cu 라운드)이 `todo` + 빈 `verify`
+# 인 채 구현 커밋까지 갔고, 두 번 다 게이트는 「경고 0건」을 내고 **독립 평가가
+# 대신 잡았다**.
+#
+# A-④는 다른 입력을 쓴다: 전 대상 스캔이 아니라 **이번 변경이 건드린 경로**다.
+# 「이번에 테스트를 건드렸는데 그 테스트가 언급하는 골든의 `verify`가 비어
+# 있다」가 승격을 잊은 자리의 관측 가능한 형태이기 때문이다.
+#
+# ⚠️ **하드 실패로 만들지 않는다.** 「실패하는 소음 게이트는 꺼진다」 —
+# `gate_trigger_due.py`가 못박았고 이 파일의 `todo` 분기도 같은 이유로 경고다.
+# ⚠️ **`tests/` 밖 파일은 열지 않는다.** `harness/` 문서와 원장은 GA-ID를
+# 수없이 언급하므로 그것으로 짖으면 즉시 소음 게이트가 된다.
+# ⚠️ **Red 커밋에서도 짖는다 — 의도된 동작이다.** Red-first 영역(ADR-0011)은
+# 테스트가 먼저 커밋되고 승격은 Green 뒤라, 그 사이가 정확히 「빈 `verify` +
+# GA 언급」 구간이다. 소음이 아니라 **아직 안 끝났다는 표시**다. 출력 문면이
+# 그것을 직접 말한다 — 안 적어 두면 다음 사람이 소음으로 읽고 규칙을 끈다.
+
+GA_ID_RE = re.compile(r"\bGA-\d+\b")
+
+
+def _golden_by_id(root: Path) -> dict[str, dict]:
+    """`root` 기준 골든 전체를 `id -> entry`로 모은다.
+
+    `_iter_golden_entries()`와 달리 **`root`를 인자로 받는다** — selftest·pytest가
+    임시 디렉터리를 격리해 넘기기 때문이다(그 함수는 모듈 상수 `GOLDEN_DIR`를
+    직접 읽어 격리가 안 된다). 파싱 실패 줄은 조용히 건너뛴다(이 게이트 스코프
+    밖 — 위 docblock). 같은 id가 여러 트랙에 있으면 **먼저 읽은 것**을 쓴다.
+    """
+    out: dict[str, dict] = {}
+    for jsonl in sorted((root / "harness" / "evals" / "golden").glob("*.jsonl")):
+        try:
+            text = jsonl.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            gid = rec.get("id")
+            if isinstance(gid, str) and gid not in out:
+                out[gid] = rec
+    return out
+
+
+def _ga_sort_key(gid: str) -> tuple[int, str]:
+    m = re.search(r"(\d+)$", gid)
+    return (int(m.group(1)) if m else 0, gid)
+
+
+def check_changed_paths(paths: list[str], root: Path = ROOT) -> list[str]:
+    r"""A-④ — 변경 경로에서 승격 누락을 찾는다. 반환은 **경고 리스트 하나뿐**.
+
+    `check_entry`의 `(hard_fails, warnings)` 튜플과 형태가 다른 것은 의도다 —
+    이 모드에 **하드 실패 축이 없다**(위 주석).
+
+    판정: `paths` 중 `tests/` 아래인 것만 열어 `GA-\d+`를 모으고, 그 id의 골든이
+    실재하면서 `verify`가 비어 있으면 경고 1건. 골든에 없는 id(오타·미래 ID)는
+    **무시한다** — 이 게이트가 죽을 이유가 아니다.
+    """
+    mentioned: dict[str, set[str]] = {}
+    for raw_path in paths:
+        rel = raw_path.strip().replace("\\", "/")
+        while rel.startswith("./"):
+            rel = rel[2:]
+        if not rel or not (rel == "tests" or rel.startswith("tests/")):
+            continue
+        target = root / rel
+        if not target.is_file():
+            # 삭제된 테스트 파일 등 — 열 수 없으면 판정 대상이 아니다.
+            continue
+        try:
+            body = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for gid in GA_ID_RE.findall(body):
+            mentioned.setdefault(gid, set()).add(rel)
+
+    if not mentioned:
+        return []
+
+    golden = _golden_by_id(root)
+    warnings: list[str] = []
+    for gid in sorted(mentioned, key=_ga_sort_key):
+        entry = golden.get(gid)
+        if entry is None:
+            continue
+        verify = entry.get("verify")
+        if isinstance(verify, str) and verify.strip():
+            continue
+        warnings.append(
+            "%s (status: %s) — 변경된 테스트가 이 골든을 언급하는데 `verify`가 "
+            "비어 있다. 승격을 잊었는지 확인하라. 언급: %s"
+            % (gid, entry.get("status"), ", ".join(sorted(mentioned[gid])))
+        )
+    return warnings
+
+
+def run_check_paths(paths: list[str]) -> int:
+    """**항상 0을 돌려준다**(경고 게이트). 인자가 없으면 stdin 줄 단위로 읽는다 —
+    `gate_trigger_due.run_check_paths`와 같은 조달 형태다."""
+    if not paths:
+        try:
+            paths = [
+                l.strip()
+                for l in sys.stdin.buffer.read().decode("utf-8", errors="replace").splitlines()
+                if l.strip()
+            ]
+        except (OSError, ValueError):
+            paths = []
+    if not paths:
+        return 0
+    warnings = check_changed_paths(paths)
+    if not warnings:
+        return 0
+    print(
+        "[골든 승격 게이트] 변경된 테스트가 언급하는 골든의 `verify`가 비어 있다 "
+        "— 승격을 잊었는지 확인하라(경고, 실패 아님):\n%s\n"
+        "이 사각으로 **GA-112·113과 GA-119·120이 두 라운드 연속** 승격을 놓쳤고 "
+        "두 번 다 독립 평가가 대신 잡았다(원장 24cm).\n"
+        "⚠️ **Red 커밋에서는 이 경고가 정상이다** — 테스트가 먼저 커밋되고 승격은 "
+        "Green 뒤다(ADR-0011). 소음이 아니라 아직 안 끝났다는 표시다."
+        % "\n".join("  " + w for w in warnings)
+    )
+    return 0
 
 
 def run_check() -> int:
@@ -445,6 +586,76 @@ def run_selftest() -> int:
                 "원장 28i 표지 — todo 승격 경고 문면에 'todo' 표지가 없다: %r" % todo_warn
             )
 
+    # ── A-④ 승격 누락(원장 24cm) ───────────────────────────────────────
+    # `check_entry`와 달리 이 축은 **파일 시스템 상태**(변경 경로의 실제 내용)를
+    # 읽으므로 임시 디렉터리에 합성 fixture를 세워 격리한다. 위 A-①~③ 블록이
+    # 쓰는 `root`와 같은 임시 트리를 재사용한다.
+    with tempfile.TemporaryDirectory() as td:
+        r4 = Path(td)
+        gdir = r4 / "harness" / "evals" / "golden"
+        gdir.mkdir(parents=True)
+        gdir.joinpath("track-a-product.jsonl").write_text(
+            "\n".join(
+                json.dumps(e, ensure_ascii=False)
+                for e in [
+                    {"id": "GA-9020", "status": "todo", "verify": ""},
+                    {"id": "GA-9021", "status": "todo", "verify": ""},
+                    {"id": "GA-9022", "status": "done",
+                     "verify": "tests/unit/promoted.test.ts"},
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tdir = r4 / "tests" / "unit"
+        tdir.mkdir(parents=True)
+        tdir.joinpath("red.test.ts").write_text(
+            "// GA-9020 · GA-9021 을 덮는다\nit('x', () => {})\n", encoding="utf-8"
+        )
+        tdir.joinpath("promoted.test.ts").write_text(
+            "// GA-9022\nit('y', () => {})\n", encoding="utf-8"
+        )
+        tdir.joinpath("unknown.test.ts").write_text(
+            "// GA-9999 는 골든에 없다\n", encoding="utf-8"
+        )
+        ledger = r4 / "harness"
+        ledger.joinpath("progress.md").write_text(
+            "GA-9020 GA-9021 GA-9022 를 수없이 언급하는 문서다\n", encoding="utf-8"
+        )
+
+        a4_cases = [
+            # (이름, 입력 경로, 기대 경고 수)
+            ("사고 재현 — 변경 테스트가 언급한 골든 둘의 verify가 비었다",
+             ["tests/unit/red.test.ts"], 2),
+            ("승격 후 침묵 — verify가 채워지면 경고 없음",
+             ["tests/unit/promoted.test.ts"], 0),
+            ("스펙 전용 PR 침묵 — tests/ 경로가 없다",
+             ["harness/specs/requirements.md", "harness/progress.md"], 0),
+            ("tests/ 밖 문서의 GA 언급은 무시한다 — 원장이 셋 다 언급해도 0건",
+             ["harness/progress.md"], 0),
+            ("골든에 없는 GA-ID는 무시한다 — 죽지 않는다",
+             ["tests/unit/unknown.test.ts"], 0),
+            ("빈 입력 — 경고 0건",
+             [], 0),
+            ("삭제된 테스트 경로 — 열 수 없으면 판정 대상이 아니다",
+             ["tests/unit/deleted.test.ts"], 0),
+            ("혼합 입력 — tests/ 것만 골라 읽는다",
+             ["harness/progress.md", "tests/unit/red.test.ts"], 2),
+        ]
+        for name, paths, want in a4_cases:
+            got = check_changed_paths(paths, root=r4)
+            if len(got) != want:
+                failed.append(
+                    "A-④ %s: 경고 %d건(기대 %d) — %r" % (name, len(got), want, got)
+                )
+        # 문면 검사 — 개수만으로는 「어느 골든인지」를 못 잡는다.
+        msgs = check_changed_paths(["tests/unit/red.test.ts"], root=r4)
+        if not any("GA-9020" in m for m in msgs) or not any("GA-9021" in m for m in msgs):
+            failed.append("A-④ 문면에 대상 GA-ID가 없다: %r" % msgs)
+        # 반환 형태 — check_entry의 튜플과 다르다(하드 실패 축 없음).
+        if not isinstance(msgs, list) or not all(isinstance(m, str) for m in msgs):
+            failed.append("A-④ 반환이 list[str]이 아니다: %r" % type(msgs))
+
     # 독립 평가 blocker 1 — 스캔 표면(`GOLDEN_DIR` 상수 + `_iter_golden_entries()`
     # 자신) 자체가 고장 나면 `check_entry`가 아무리 정확해도 판정 대상이 0건이
     # 되어 조용히 초록이 난다. `check_entry`와 달리 `_iter_golden_entries()`는
@@ -467,7 +678,7 @@ def run_selftest() -> int:
         )
         return 1
     print(
-        "[골든 역참조 게이트 selftest] 통과 — 차단 %d건·허용 %d건 확인."
+        "[골든 역참조 게이트 selftest] 통과 — 차단 %d건·허용 %d건·승격 누락(A-④) 8건 확인."
         % (len(must_block), len(must_pass))
     )
     return 0
@@ -478,13 +689,15 @@ def main() -> None:
     argv = sys.argv[1:]
     if not argv:
         _stderr(
-            "이 게이트는 PreToolUse 훅으로 쓰지 않는다 — `--check` 또는 "
+            "이 게이트는 PreToolUse 훅으로 쓰지 않는다 — `--check`·`--check-paths` 또는 "
             "`--selftest`를 지정하라.\n%s" % __doc__
         )
         sys.exit(64)
     mode = argv[0]
     if mode == "--check":
         sys.exit(run_check())
+    if mode == "--check-paths":
+        sys.exit(run_check_paths(argv[1:]))
     if mode == "--selftest":
         sys.exit(run_selftest())
     _stderr("알 수 없는 모드: %s\n%s" % (mode, __doc__))
