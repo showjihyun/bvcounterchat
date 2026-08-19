@@ -140,7 +140,7 @@ PYTHONUTF8=1 python -m pytest tests/gates/ -q
 # ⚠️ **이 배선만으로는 부족하다**(PR #88 리뷰 blocker) — 승격을 잊는 커밋은
 # 보통 tests/ 를 안 건드려(테스트는 앞선 Red 커밋에 있다) 여기서 0경로가
 # 된다. PR 단위의 three-dot 입력은 .github/workflows/ci.yml 이 별도 스텝으로
-# 준다 — 트리거 검출기가 같은 이유로 같은 형태를 쓴다.
+# 준다 — 트리거 검출기가 같은 이유로 같은 형태를 쓴다. **바로 아래 파이프**:
 { git diff --name-only HEAD 2>/dev/null;
   git ls-files --others --exclude-standard; }   | sort -u | python .claude/hooks/gate_golden_backref.py --check-paths
 
