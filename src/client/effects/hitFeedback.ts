@@ -66,13 +66,34 @@ export interface HitEffect {
   expiresAtMs: number
 }
 
+/** RQ-57 히트마커 신호(원장 24cv) — "내 총알이 플레이어에 명중했다"는 사실
+ * 하나만 담는다. 그릴 위치가 필요 없다(크로스헤어 위에 겹치는 고정 위치라
+ * `point`·`normal`을 옮기지 않는다) — TTL만 있으면 충분하다. */
+export interface HitMarkerSignal {
+  expiresAtMs: number
+}
+
+/** RQ-58 피격 방향 원시 신호(원장 24cv) — "내가 맞았다"는 사실과 이벤트의
+ * `normal`을 **그대로** 옮긴다(재계산 금지, GA-98과 같은 원칙). 화면
+ * 가장자리로의 변환(카메라 yaw가 필요하다)은 이 층의 책임이 아니다 — 이
+ * 파일은 카메라를 모른다. 변환은 `@client/hud/hitDirectionEdge`가 scene
+ * 레이어(카메라 접근 가능)를 통해 담당한다. */
+export interface HitDirectionSignal {
+  normal: Vec3
+  expiresAtMs: number
+}
+
 export interface HitFeedbackState {
   bulletHoles: readonly BulletHole[]
   hitEffects: readonly HitEffect[]
+  /** RQ-57 — 사수 자신에게만 채워진다(`applyHitReaction`). */
+  hitMarker: HitMarkerSignal | null
+  /** RQ-58 — 피격자 자신에게만 채워진다(`applyHitReaction`). */
+  hitDirection: HitDirectionSignal | null
 }
 
 export function createHitFeedbackState(): HitFeedbackState {
-  return { bulletHoles: [], hitEffects: [] }
+  return { bulletHoles: [], hitEffects: [], hitMarker: null, hitDirection: null }
 }
 
 /**
@@ -112,6 +133,61 @@ export function applyHitEvent(
 }
 
 /**
+ * RQ-57(히트마커)·RQ-58(피격 방향) — ADR-0016 결정 1 개정(원장 24ct)이 실은
+ * 식별자로 "나와의 관계"만 가른다. `classifyHitRelation`을 그대로 재사용한다
+ * (새 판정을 만들지 않는다 — team-lead 지시, ADR-0010) — HP·킬·데미지는
+ * 여전히 계산하지 않는다(RQ-61).
+ *
+ * `applyHitEvent`(탄흔·피격 효과 수집)와는 **독립적인 신호**다 — 같은 'hit'
+ * 이벤트를 두 함수에 각각 통과시켜도 서로 간섭하지 않는다(호출 순서 무관,
+ * `gameStore.addHitEvent`가 둘 다 호출한다). 이 함수를 분리한 이유:
+ * `applyHitEvent`의 4-인자 시그니처는 기존 테스트(`rq-70-71-hit-feedback
+ * .test.ts`)가 다수 호출하므로 시그니처를 바꾸면(예: `selfSessionId` 추가)
+ * 그 파일 전체가 깨진다 — test-after 영역이라도 기존 단언은 건드리지 않는다
+ * (coder 작업 규약).
+ *
+ * ⚠️ **자격이 없는 이벤트는 기존 신호를 그대로 둔다** — 예를 들어 남이 남을
+ * 맞힌 이벤트(bystander)가 도착해도 내가 방금 맞힌 것에 대한 아직 살아있는
+ * `hitMarker`를 지우면 안 된다. TTL 만료는 오직 `advanceHitFeedback`의
+ * 책임이다(관심사 분리 — 이 함수는 "새 신호를 켤지"만 판단한다).
+ *
+ * @param hitMarkerDurationMs RQ-57 히트마커 지속 시간(ms) — 스펙이 "일시적"
+ *   만 규정한 튜닝값이라 호출자가 주입한다(`applyHitEvent`의
+ *   `hitEffectDurationMs`와 동일한 규율 — sim이 config를 모른다).
+ * @param hitDirectionDurationMs RQ-58 피격 방향 지속 시간(ms) — 위와 동일.
+ */
+export function applyHitReaction(
+  state: HitFeedbackState,
+  event: HitEvent,
+  nowMs: number,
+  selfSessionId: string,
+  hitMarkerDurationMs: number,
+  hitDirectionDurationMs: number,
+): HitFeedbackState {
+  const relation = classifyHitRelation(event, selfSessionId)
+
+  // RQ-57/GA-122 — 히트마커는 "내 총알이 **플레이어**에 명중"에만 뜬다.
+  // shooterId는 벽 명중에도 항상 채워지므로(RQ-57·58·59 공통 요구 1)
+  // relation === 'shooter'만으로는 벽 명중을 걸러내지 못한다 —
+  // event.target === 'player'를 함께 요구해야 한다.
+  const hitMarker: HitMarkerSignal | null =
+    relation === 'shooter' && event.target === 'player'
+      ? { expiresAtMs: nowMs + hitMarkerDurationMs }
+      : state.hitMarker
+
+  // RQ-58 — 피격 방향은 "내가 맞았을 때"(relation === 'victim')만. victimId는
+  // 대상이 플레이어일 때만 채워지므로(공통 요구 2) target 재확인이 불필요하다
+  // — relation이 'victim'이면 target은 이미 'player'다.
+  const hitDirection: HitDirectionSignal | null =
+    relation === 'victim' ? { normal: event.normal, expiresAtMs: nowMs + hitDirectionDurationMs } : state.hitDirection
+
+  // 참조 안정성(advanceHitFeedback의 관례와 동일한 정신) — 아무것도 안
+  // 바뀌었으면 새 객체를 만들지 않는다(불필요한 zustand 알림 방지).
+  if (hitMarker === state.hitMarker && hitDirection === state.hitDirection) return state
+  return { ...state, hitMarker, hitDirection }
+}
+
+/**
  * 만료된(`expiresAtMs <= nowMs`) 피격 효과를 제거한다(GA-97/GA-99, RQ-71
  * "일시적"). `bulletHoles`는 **시간으로는 절대 사라지지 않는다**(RQ-70
  * "상한이 유일한 제거 규칙") — 이 함수는 `bulletHoles`를 건드리지 않는다
@@ -144,9 +220,25 @@ export function applyHitEvent(
  *
  * `bulletHoles`가 이미 "참조 그대로"를 보장하므로(위 docblock), 이 대칭을
  * `hitEffects`에도 맞춘다.
+ *
+ * ⚠️ **원장 24cv 확장 — `hitMarker`·`hitDirection`(RQ-57·58)도 같은 갱신
+ * 함수가 다룬다**(GA-97이 세운 "같은 갱신 함수가 여러 컬렉션을 함께 다룬다"
+ * 선례를 그대로 확장). 두 신호는 원소가 아니라 단일 `... | null` 값이라
+ * `filter` 대신 만료 시 `null`로 되돌린다. 참조 안정성 규칙은 동일하게
+ * 적용된다 — 셋(`hitEffects`·`hitMarker`·`hitDirection`) 중 **무엇도 만료
+ * 대상이 없으면** `state`를 그대로 반환한다(`rq-70-71-hit-feedback.test.ts`의
+ * 기존 24cg 테스트는 `hitMarker`/`hitDirection`이 항상 `null`인 시나리오만
+ * 쓰므로 이 확장으로 깨지지 않는다 — `null`은 만료 대상이 될 수 없다).
  */
 export function advanceHitFeedback(state: HitFeedbackState, nowMs: number): HitFeedbackState {
-  const hasExpired = state.hitEffects.some((effect) => effect.expiresAtMs <= nowMs)
-  if (!hasExpired) return state
-  return { ...state, hitEffects: state.hitEffects.filter((effect) => effect.expiresAtMs > nowMs) }
+  const hitEffectsExpired = state.hitEffects.some((effect) => effect.expiresAtMs <= nowMs)
+  const hitMarkerExpired = state.hitMarker !== null && state.hitMarker.expiresAtMs <= nowMs
+  const hitDirectionExpired = state.hitDirection !== null && state.hitDirection.expiresAtMs <= nowMs
+  if (!hitEffectsExpired && !hitMarkerExpired && !hitDirectionExpired) return state
+  return {
+    ...state,
+    hitEffects: hitEffectsExpired ? state.hitEffects.filter((effect) => effect.expiresAtMs > nowMs) : state.hitEffects,
+    hitMarker: hitMarkerExpired ? null : state.hitMarker,
+    hitDirection: hitDirectionExpired ? null : state.hitDirection,
+  }
 }

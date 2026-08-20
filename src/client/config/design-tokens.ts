@@ -187,6 +187,47 @@ export const SCENE = {
  * 상수다(ADR-0016 결정 2 — 피격 효과에 개수 상한을 두면 위반이므로 그
  * 상수는 "제거 규칙"이 아니라 "버퍼 보호"임을 그 파일이 스스로 밝힌다).
  */
+/**
+ * 히트마커(RQ-57, 원장 24cv) — 크로스헤어(RQ-54) 위에 겹치는 일시적 X 표시.
+ * `Crosshair.tsx`의 4선(`hud__crosshair-line`)과 대칭인 형태 — 두 짧은
+ * 대각선을 겹쳐 X를 만든다. 지속 시간은 **디자인 값이 아니라 튜닝값**이라
+ * 여기 없다 — 정본은 `@shared/config/effects-tuning`의
+ * `EFFECTS_TUNING.HIT_MARKER_DURATION_MS`(ADR-0016 결정 3, "지속 시간은
+ * 스펙이 규정하지 않은 구현 세부").
+ */
+export const HIT_MARKER = {
+  /** 대각선 한 변 길이(px) — 크로스헤어 선 길이(6px)보다 살짝 커서 겹쳐도
+   * 구분된다. */
+  sizePx: 14,
+  thicknessPx: 3,
+  /** `--danger`(빨강 계열) 재사용 — "명중=피해 확인"이라는 의미가
+   * 저HP·헤드샷과 같은 색 계열이라 새 색을 발명하지 않는다. */
+  color: COLOR.danger,
+} as const
+
+/**
+ * 피격 방향(RQ-58, 원장 24cv) — 화면 가장자리 방향성 그라데이션. 지속
+ * 시간은 튜닝값이라 여기 없다(정본은
+ * `EFFECTS_TUNING.HIT_DIRECTION_DURATION_MS`).
+ */
+export const HIT_DIRECTION = {
+  /** 가장자리에서 안쪽으로 번지는 폭 — **그 가장자리가 놓인 축의 화면 변**
+   * 대비 비율(%). 정밀 좌표가 아니라 "가장자리가 물든다"는 느낌만 준다
+   * (RQ-58 "정밀 각도·좌표를 주지 않는다").
+   *
+   * ⚠️ **"짧은 변 대비"가 아니다**(PR #89 리뷰 minor m1 — 초판 주석과
+   * `DESIGN.md` 미러가 **같은 오류를 공유**해 "코드가 이긴다" 규칙으로도
+   * 자동 해소되지 않았다). 축 정렬 그라데이션의 그라데이션 선 길이는
+   * **그 축의 박스 변**이고 요소가 `inset: 0`(뷰포트 전체)이므로,
+   * 위/아래는 **높이**의 35%, 좌/우는 **너비**의 35%다 — 1920×1080에서
+   * 378px 대 672px로 약 1.8배 차이가 난다. 동작은 그대로 두고 문면만
+   * 사실에 맞춘다(짧은 변으로 통일하려면 `calc(min(100vw,100vh)*…)`가
+   * 필요하고 그것은 동작 변경이라 렌더 재관측을 다시 요구한다). */
+  spreadPercent: 35,
+  color: COLOR.danger,
+  maxOpacity: 0.45,
+} as const
+
 export const DECAL = {
   /** 표면에서 띄우는 거리(m) — z-fighting 방지. `syncDecalInstances`의
    * `offsetM` 인자로 그대로 넘어간다. 탄흔·피격 효과 공용(같은 코드 경로). */
@@ -238,6 +279,12 @@ export function applyDesignTokens(root: HTMLElement): void {
     '--crosshair-thickness': `${CROSSHAIR.thicknessPx}px`,
     '--crosshair-gap': `${CROSSHAIR.gapPx}px`,
     '--chat-bottom-offset': `${CHAT.bottomOffsetPx}px`,
+    '--hit-marker-size': `${HIT_MARKER.sizePx}px`,
+    '--hit-marker-thickness': `${HIT_MARKER.thicknessPx}px`,
+    '--hit-marker-color': HIT_MARKER.color,
+    '--hit-direction-spread': `${HIT_DIRECTION.spreadPercent}%`,
+    '--hit-direction-color': HIT_DIRECTION.color,
+    '--hit-direction-max-opacity': `${HIT_DIRECTION.maxOpacity}`,
   }
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value)

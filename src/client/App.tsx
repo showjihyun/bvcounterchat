@@ -11,6 +11,8 @@ import { Crosshair } from '@client/hud/Crosshair'
 import { LockHint } from '@client/hud/LockHint'
 import { Nameplate } from '@client/hud/Nameplate'
 import { ChatPanel } from '@client/hud/ChatPanel'
+import { HitMarker } from '@client/hud/HitMarker'
+import { HitDirectionIndicator } from '@client/hud/HitDirectionIndicator'
 
 /**
  * 클라이언트 → Colyseus 접속 엔드포인트.
@@ -113,6 +115,12 @@ export function App() {
                 그 값은 `@client/hud/crosshairSpread`가 계산한다. 22b의 임시 점을
                 대체한다. `aria-hidden` — 조준점은 스크린리더에 의미가 없다. */}
             <Crosshair uiStore={uiStore} />
+            {/* RQ-57 히트마커(원장 24cv) — 크로스헤어 위에 겹치는 일시적
+                표시. HitMarker.tsx 참고. */}
+            <HitMarker uiStore={uiStore} />
+            {/* RQ-58 피격 방향(원장 24cv) — 화면 가장자리 그라데이션.
+                HitDirectionIndicator.tsx 참고. */}
+            <HitDirectionIndicator uiStore={uiStore} />
             {/* RQ-56 이름표(원장 24ab) — 조준 시에만 뜬다. Nameplate.tsx 참고. */}
             <Nameplate uiStore={uiStore} />
             <LockHint uiStore={uiStore} />
