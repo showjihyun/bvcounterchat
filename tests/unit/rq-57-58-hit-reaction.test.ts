@@ -6,6 +6,8 @@ import {
   type HitEvent,
 } from '@client/effects/hitFeedback'
 import { deriveHitDirectionEdge } from '@client/hud/hitDirectionEdge'
+import { createGameStore } from '@client/store/gameStore'
+import { EFFECTS_TUNING } from '@shared/config/effects-tuning'
 
 /**
  * RQ-57(히트마커)·RQ-58(피격 방향) — 원장 24cv, ADR-0016 결정 1 개정.
@@ -30,7 +32,18 @@ import { deriveHitDirectionEdge } from '@client/hud/hitDirectionEdge'
  * ADR-0008 §6 렌더 계층 면제 대상이라 이 파일의 대상이 아니다 — 스크린샷이
  * 대신한다(`harness/workflow/fe.md`). 이 파일은 판단 층만 값으로 검증한다:
  * `applyHitReaction`(관계+대상 종류로 신호를 켤지) · `advanceHitFeedback`
- * (TTL) · `deriveHitDirectionEdge`(카메라 yaw로 가장자리를 고르는 산술).
+ * (TTL) · `deriveHitDirectionEdge`(카메라 yaw로 가장자리를 고르는 산술) ·
+ * **`gameStore.addHitEvent` 배선**(PR #89 1차 리뷰 blocker B1 — 아래 참고).
+ *
+ * ⚠️ **PR #89 1차 리뷰 blocker B1 대응(순증)**: 초판은 순수 함수 3개만
+ * 직접 호출해 `gameStore.addHitEvent`가 `applyHitReaction`을 **부르는지
+ * 자체를 검증하지 않았다** — ADR-0016 결정 4가 "접근자를 실제로 부르는
+ * 테스트"를 명문으로 요구하는데도(RQ-73 라운드의 재발 방지 조항) 배선에
+ * 테스트가 0건이라 호출 삭제·인자 순서 뒤바뀜·가드 오작동이 전부 안
+ * 죽었다. 맨 아래 describe가 `createGameStore()` → `addHitEvent(...)` →
+ * `store.getState().hitMarker/hitDirection`을 직접 확인한다 — 기대값은
+ * 리터럴이 아니라 `EFFECTS_TUNING`을 임포트해 쓴다(ADR-0010 값 복제 금지 —
+ * 그래야 인자 순서가 뒤바뀌면 단언이 깨진다).
  *
  * **결정론**: 모든 시각 값은 리터럴이다 — `Date.now()`·`performance.now()`
  * 어디서도 호출하지 않는다(ADR-0008).
@@ -222,5 +235,39 @@ describe('RQ-58/GA-123: deriveHitDirectionEdge — 표면 법선과 자신의 �
     const high = deriveHitDirectionEdge({ x: -1, y: 5, z: 0 }, 0)
     expect(low).toBe(high)
     expect(low).toBe('left')
+  })
+})
+
+describe('RQ-57·58/PR #89 1차 리뷰 blocker B1: gameStore.addHitEvent — 배선이 applyHitReaction을 실제로 부르는지 store 층에서 확인한다', () => {
+  it('사수 자신이 플레이어 명중 이벤트를 받으면 store.hitMarker가 켜진다 — 만료 시각은 EFFECTS_TUNING.HIT_MARKER_DURATION_MS 기준이다(리터럴이 아니라 정본 임포트 — 인자 순서가 뒤바뀌면 이 단언이 깨진다)', () => {
+    const store = createGameStore()
+    store.getState().setSelfSessionId(SHOOTER_ID)
+    store.getState().addHitEvent(playerHitEvent(), 1000)
+
+    expect(store.getState().hitMarker).toEqual({ expiresAtMs: 1000 + EFFECTS_TUNING.HIT_MARKER_DURATION_MS })
+    expect(store.getState().hitDirection).toBeNull() // 사수 자신은 피격자가 아니다
+  })
+
+  it('피격자 자신이 이벤트를 받으면 store.hitDirection이 켜진다 — normal은 이벤트 값 그대로이고, 만료 시각은 EFFECTS_TUNING.HIT_DIRECTION_DURATION_MS 기준이다', () => {
+    const store = createGameStore()
+    store.getState().setSelfSessionId(VICTIM_ID)
+    const event = playerHitEvent()
+    store.getState().addHitEvent(event, 2000)
+
+    expect(store.getState().hitDirection).toEqual({
+      normal: event.normal,
+      expiresAtMs: 2000 + EFFECTS_TUNING.HIT_DIRECTION_DURATION_MS,
+    })
+    expect(store.getState().hitMarker).toBeNull() // 피격자 자신은 사수가 아니다
+  })
+
+  it('selfSessionId가 아직 없으면(접속 직전 방어 가드) hitMarker·hitDirection은 켜지지 않지만, 탄흔·피격 효과 수집(applyHitEvent 몫)은 그대로 진행된다 — 가드가 컬렉션 전체를 날리면 안 된다', () => {
+    const store = createGameStore()
+    // setSelfSessionId를 호출하지 않는다 — 기본값 null 그대로 addHitEvent를 부른다.
+    store.getState().addHitEvent(playerHitEvent(), 1000)
+
+    expect(store.getState().hitMarker).toBeNull()
+    expect(store.getState().hitDirection).toBeNull()
+    expect(store.getState().hitEffects).toHaveLength(1) // applyHitEvent는 selfSessionId와 무관하게 항상 실행된다
   })
 })
