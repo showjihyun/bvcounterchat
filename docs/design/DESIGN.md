@@ -135,7 +135,7 @@
 |---|---|---|
 | 링 반지름(바깥→중심 원) | `0.5 / 0.35 / 0.2 / 0.08`m | `TARGET.ringRadiiM` |
 | 링 색(바깥→중심 원) | `#f2f2f2`(`--fg-strong`) / `#e07a7a`(`--danger`) 교대 | `TARGET.ringColors` |
-| 표면 오프셋 | `0.01`m | `TARGET.offsetM` |
+| 표면 오프셋 | `0.005`m | `TARGET.offsetM` |
 | 원 세그먼트 수 | `32` | `TARGET.segments` |
 
 ⚠️ **판정에 참여하지 않는다**(RQ-34 핵심 결정) — 총알은 여전히 벽에 명중하고
@@ -143,6 +143,12 @@
 명중은 벽 명중이다(GA-122 "벽 명중엔 표시하지 않는다"가 그대로 적용된다). 배치
 산술(안쪽면 판정·중심 좌표·회전)은 `@client/scene/targetLayout`이 하고
 `tests/unit/rq-34-target-layout.test.ts`가 값으로 고정한다.
+
+⚠️ **표면 오프셋은 `DECAL.offsetM`(탄흔·피격 효과, `0.01`m)과 값이 같지
+않다 — 층 규칙이다**(PR #90 리뷰 blocker B1): `0 < TARGET.offsetM <
+DECAL.offsetM`이어야 같은 벽면에서 탄흔이 과녁 **위에** 그려진다. 과거 두
+값이 우연히 같아 두 평면이 겹쳤고, 어느 쪽이 이기는지가 컴포넌트 마운트
+순서라는 문서화되지 않은 우연에 맡겨져 있었다.
 
 ### 2.2 타이포
 
