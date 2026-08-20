@@ -13,6 +13,7 @@ import { applyLookToCamera } from '@client/input/cameraLook'
 import { createChatGatedActions } from '@client/input/chatInputGate'
 import { crosshairGapPx } from '@client/hud/crosshairSpread'
 import { resolveNameplateTarget, type NameplateCandidate } from '@client/hud/nameplateTarget'
+import { deriveHitDirectionEdge } from '@client/hud/hitDirectionEdge'
 import { PRODUCTION_WALLS } from '@shared/sim/walls'
 import * as THREE from 'three'
 import type { InterpolationPosition } from '@client/net/interpolation'
@@ -127,6 +128,15 @@ interface PlayerControlsProps {
  * 없다(⚠️ 초안이 「ADR-0008 §6 면제 대상(렌더·오디오 배선)」이라 적었으나
  * §6은 오디오를 면제한 적이 없다 — 결정 5가 그 공백을 메운 절이다) — 판정·재생 횟수 계산 자체는 `selfFootstepTracker`·
  * `footstepPlayback`의 순수 함수 테스트가 값으로 검증한다.
+ *
+ * RQ-57·58(원장 24cv) — 히트마커·피격 방향도 이 30Hz 루프가 `uiStore`로
+ * 옮긴다: `gameStore.hitMarker`/`hitDirection`은 TTL까지 이미 순수 층
+ * (`applyHitReaction`/`advanceHitFeedback`)이 관리하므로, 이 컴포넌트는
+ * "지금 신호가 있는가"만 읽는다. 방향 신호(`hitDirection.normal`)만은
+ * 화면 가장자리로 바꾸려면 **피격자 자신의** 카메라 yaw가 필요해 여기서
+ * 처음 변환된다(`@client/hud/hitDirectionEdge` — `gameStore`는 카메라를
+ * 모른다, 레이어 경계). ⚠️ 사수의 좌표는 이 변환 어디에도 들어가지 않는다
+ * — ADR-0016 결정 1의 재현 금지를 지키는 지점이다.
  */
 export function PlayerControls({ store, connection, uiStore }: PlayerControlsProps) {
   const { camera, gl } = useThree()
@@ -241,6 +251,20 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       // 판정 자체는 `@client/hud/nameplateTarget`이 서버 hitscan과 **같은 함수**로
       // 수행한다 — "쏠 수 있으면 보인다"(RQ-56)가 구조적으로 성립해야 한다.
       const state = store.getState()
+
+      // RQ-57·58(원장 24cv) — 히트마커·피격 방향. TTL 만료 자체는
+      // `gameStore.advanceHitFeedback`(connection.ts의 `handleStateChange`,
+      // 매 상태 패치)이 이미 처리한다 — 여기서는 "지금 신호가 있는가"만
+      // uiStore로 옮긴다(크로스헤어·이름표와 같은 이유: 30Hz 루프이지
+      // `useFrame`이 아니다). 방향 신호는 카메라 yaw가 필요해 이 루프에서
+      // 처음 변환된다 — `gameStore`는 카메라를 모른다(레이어 경계,
+      // `hitDirectionEdge.ts` docblock).
+      uiStore.getState().setHitMarkerVisible(state.hitMarker !== null)
+      uiStore
+        .getState()
+        .setHitDirectionEdge(
+          state.hitDirection ? deriveHitDirectionEdge(state.hitDirection.normal, mouseLook.getAngles().yaw) : null,
+        )
       const selfId = state.selfSessionId
       const selfFoot = predicted ?? (selfId ? state.players.get(selfId) : undefined)
       if (!selfFoot || !selfId) {

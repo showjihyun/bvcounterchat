@@ -1,6 +1,7 @@
 import { createStore } from 'zustand/vanilla'
 import type { StoreApi } from 'zustand/vanilla'
 import { CROSSHAIR } from '@client/config/design-tokens'
+import type { HitDirectionEdge } from '@client/hud/hitDirectionEdge'
 
 /**
  * 순수 클라이언트 UI 상태(`harness/workflow/fe.md` "포커스 상태를 game
@@ -32,6 +33,15 @@ export interface UiStoreState {
    * 벗어난다 — 사용자가 "클릭해야 한다"를 알 방법이 화면에 있어야 한다. */
   pointerLocked: boolean
   setPointerLocked(locked: boolean): void
+  /** RQ-57 히트마커(원장 24cv) — `gameStore.hitMarker`의 TTL 유무를 그대로
+   * 반영한다(`PlayerControls`의 30Hz 루프). 카메라가 필요 없는 값이라
+   * boolean이면 충분하다. */
+  hitMarkerVisible: boolean
+  setHitMarkerVisible(visible: boolean): void
+  /** RQ-58 피격 방향(원장 24cv) — `gameStore.hitDirection`(원시 법선)을
+   * `@client/hud/hitDirectionEdge`로 변환한 결과. 신호가 없으면 `null`. */
+  hitDirectionEdge: HitDirectionEdge | null
+  setHitDirectionEdge(edge: HitDirectionEdge | null): void
 }
 
 export function createUiStore(): StoreApi<UiStoreState> {
@@ -40,6 +50,8 @@ export function createUiStore(): StoreApi<UiStoreState> {
     crosshairGapPx: CROSSHAIR.gapPx,
     nameplate: null,
     pointerLocked: false,
+    hitMarkerVisible: false,
+    hitDirectionEdge: null,
 
     setChatFocused(focused) {
       set({ chatFocused: focused })
@@ -69,6 +81,17 @@ export function createUiStore(): StoreApi<UiStoreState> {
     setPointerLocked(locked) {
       if (get().pointerLocked === locked) return
       set({ pointerLocked: locked })
+    },
+
+    // ADR-0001 프레임 예산 — 30Hz 루프가 매 틱 부르므로 값이 실제로 달라질
+    // 때만 set한다(crosshairGapPx·nameplate와 동일한 관례).
+    setHitMarkerVisible(visible) {
+      if (get().hitMarkerVisible === visible) return
+      set({ hitMarkerVisible: visible })
+    },
+    setHitDirectionEdge(edge) {
+      if (get().hitDirectionEdge === edge) return
+      set({ hitDirectionEdge: edge })
     },
   }))
 }

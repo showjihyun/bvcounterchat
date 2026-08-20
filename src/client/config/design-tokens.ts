@@ -187,6 +187,38 @@ export const SCENE = {
  * 상수다(ADR-0016 결정 2 — 피격 효과에 개수 상한을 두면 위반이므로 그
  * 상수는 "제거 규칙"이 아니라 "버퍼 보호"임을 그 파일이 스스로 밝힌다).
  */
+/**
+ * 히트마커(RQ-57, 원장 24cv) — 크로스헤어(RQ-54) 위에 겹치는 일시적 X 표시.
+ * `Crosshair.tsx`의 4선(`hud__crosshair-line`)과 대칭인 형태 — 두 짧은
+ * 대각선을 겹쳐 X를 만든다. 지속 시간은 **디자인 값이 아니라 튜닝값**이라
+ * 여기 없다 — 정본은 `@shared/config/effects-tuning`의
+ * `EFFECTS_TUNING.HIT_MARKER_DURATION_MS`(ADR-0016 결정 3, "지속 시간은
+ * 스펙이 규정하지 않은 구현 세부").
+ */
+export const HIT_MARKER = {
+  /** 대각선 한 변 길이(px) — 크로스헤어 선 길이(6px)보다 살짝 커서 겹쳐도
+   * 구분된다. */
+  sizePx: 14,
+  thicknessPx: 3,
+  /** `--danger`(빨강 계열) 재사용 — "명중=피해 확인"이라는 의미가
+   * 저HP·헤드샷과 같은 색 계열이라 새 색을 발명하지 않는다. */
+  color: COLOR.danger,
+} as const
+
+/**
+ * 피격 방향(RQ-58, 원장 24cv) — 화면 가장자리 방향성 그라데이션. 지속
+ * 시간은 튜닝값이라 여기 없다(정본은
+ * `EFFECTS_TUNING.HIT_DIRECTION_DURATION_MS`).
+ */
+export const HIT_DIRECTION = {
+  /** 가장자리에서 안쪽으로 번지는 폭 — 화면 짧은 변 대비 비율(%). 정밀
+   * 좌표가 아니라 "가장자리가 물든다"는 느낌만 준다(RQ-58 "정밀 각도·
+   * 좌표를 주지 않는다"). */
+  spreadPercent: 35,
+  color: COLOR.danger,
+  maxOpacity: 0.45,
+} as const
+
 export const DECAL = {
   /** 표면에서 띄우는 거리(m) — z-fighting 방지. `syncDecalInstances`의
    * `offsetM` 인자로 그대로 넘어간다. 탄흔·피격 효과 공용(같은 코드 경로). */
@@ -238,6 +270,12 @@ export function applyDesignTokens(root: HTMLElement): void {
     '--crosshair-thickness': `${CROSSHAIR.thicknessPx}px`,
     '--crosshair-gap': `${CROSSHAIR.gapPx}px`,
     '--chat-bottom-offset': `${CHAT.bottomOffsetPx}px`,
+    '--hit-marker-size': `${HIT_MARKER.sizePx}px`,
+    '--hit-marker-thickness': `${HIT_MARKER.thicknessPx}px`,
+    '--hit-marker-color': HIT_MARKER.color,
+    '--hit-direction-spread': `${HIT_DIRECTION.spreadPercent}%`,
+    '--hit-direction-color': HIT_DIRECTION.color,
+    '--hit-direction-max-opacity': `${HIT_DIRECTION.maxOpacity}`,
   }
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value)

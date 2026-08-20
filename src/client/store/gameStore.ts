@@ -5,10 +5,13 @@ import { UI } from '@shared/constants'
 import {
   advanceHitFeedback as advanceHitFeedbackState,
   applyHitEvent,
+  applyHitReaction,
   createHitFeedbackState,
   type BulletHole,
+  type HitDirectionSignal,
   type HitEffect,
   type HitEvent,
+  type HitMarkerSignal,
 } from '@client/effects/hitFeedback'
 import { EFFECTS_TUNING } from '@shared/config/effects-tuning'
 
@@ -109,6 +112,16 @@ export interface GameStoreState {
   /** RQ-71 피격 효과 — 위와 동일 층, target='player' 이벤트만 채운다.
    * 지속 시간(TTL)이 지나면 `advanceHitFeedback`이 제거한다. */
   hitEffects: readonly HitEffect[]
+  /** RQ-57 히트마커(원장 24cv) — 사수 자신에게만, 벽 명중은 제외(GA-122).
+   * `addHitEvent`가 위임하는 `applyHitReaction`이 채우고, TTL은
+   * `advanceHitFeedback`이 진행한다. 화면 가장자리 변환이 필요 없는 값이라
+   * (크로스헤어 위 고정 위치) scene 레이어는 이 값의 유무만 본다. */
+  hitMarker: HitMarkerSignal | null
+  /** RQ-58 피격 방향 원시 신호(원장 24cv) — 피격자 자신에게만. `normal`을
+   * 그대로 옮긴다(재계산 금지). 화면 가장자리로의 변환(카메라 yaw 필요)은
+   * scene 레이어(`PlayerControls`)가 `@client/hud/hitDirectionEdge`로 한다
+   * — 이 store는 카메라를 모른다. */
+  hitDirection: HitDirectionSignal | null
   setSelfSessionId(sessionId: string): void
   setSelfPredictedState(state: MoveState): void
   applyServerState(state: ServerStateSnapshot): void
@@ -119,7 +132,9 @@ export interface GameStoreState {
   setChatLog(messages: ChatMessage[]): void
   /** 서버 'hit' 브로드캐스트 1건을 반영한다(`connection.ts`가 구독). `nowMs`는
    * 호출자가 조달한다(ADR-0008 — 이 store 자신은 실시간 API를 호출하지
-   * 않는다). */
+   * 않는다). 탄흔·피격 효과 수집(`applyHitEvent`)과 히트마커·피격 방향
+   * 신호(`applyHitReaction`, RQ-57·58, 원장 24cv)를 함께 적용한다 —
+   * `selfSessionId`가 아직 없으면(접속 직전 방어적 가드) 후자는 건너뛴다. */
   addHitEvent(event: HitEvent, nowMs: number): void
   /** 피격 효과의 TTL 경과분을 제거한다(탄흔은 시간으로 사라지지 않는다 —
    * RQ-70). `nowMs`는 호출자(`connection.ts`의 `handleStateChange`, 서버 틱
@@ -154,7 +169,22 @@ export function createGameStore(): StoreApi<GameStoreState> {
     },
 
     addHitEvent(event, nowMs) {
-      set((state) => applyHitEvent(state, event, nowMs, EFFECTS_TUNING.HIT_EFFECT_DURATION_MS))
+      set((state) => {
+        const withCollectibles = applyHitEvent(state, event, nowMs, EFFECTS_TUNING.HIT_EFFECT_DURATION_MS)
+        // RQ-57·58(원장 24cv) — 관계 판정에는 자기 세션 ID가 필요하다.
+        // 접속 직후 극히 짧은 창(설정 전)을 방어적으로 건너뛴다 — 그 사이엔
+        // 'hit' 이벤트 자체가 발생할 수 없으므로(발사·피격 모두 입장 후에만
+        // 가능) 실질적으로 도달하지 않는 가드다.
+        if (!state.selfSessionId) return withCollectibles
+        return applyHitReaction(
+          withCollectibles,
+          event,
+          nowMs,
+          state.selfSessionId,
+          EFFECTS_TUNING.HIT_MARKER_DURATION_MS,
+          EFFECTS_TUNING.HIT_DIRECTION_DURATION_MS,
+        )
+      })
     },
 
     advanceHitFeedback(nowMs) {

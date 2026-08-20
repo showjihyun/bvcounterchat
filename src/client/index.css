@@ -92,6 +92,66 @@ body {
   left: var(--crosshair-gap-live, var(--crosshair-gap));
 }
 
+/* RQ-57 히트마커(원장 24cv) — 크로스헤어(RQ-54)와 같은 중심점 위에 겹치는
+   일시적 X 표시. 두 대각선(`transform: rotate(...)`으로 45°/-45°)이 X를
+   만든다 — `.hud__crosshair`가 4선으로 십자를 만드는 것과 같은 조립 방식.
+   신호 유무(`HitMarker.tsx`)만 이 CSS가 소비한다 — 크기·색·굵기는 전부
+   토큰(`--hit-marker-*`)에서 온다. */
+.hud__hit-marker {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.hud__hit-marker-line {
+  position: absolute;
+  top: calc(var(--hit-marker-size) / -2);
+  left: calc(var(--hit-marker-thickness) / -2);
+  width: var(--hit-marker-thickness);
+  height: var(--hit-marker-size);
+  background: var(--hit-marker-color);
+  box-shadow: var(--shadow-text);
+  transform-origin: center;
+}
+
+.hud__hit-marker-line--nwse {
+  transform: rotate(45deg);
+}
+
+.hud__hit-marker-line--nesw {
+  transform: rotate(-45deg);
+}
+
+/* RQ-58 피격 방향(원장 24cv) — 화면 가장자리 방향성 그라데이션. 정밀
+   좌표·화살표가 아니라 "그 가장자리가 물든다"는 느낌만 준다 — 폭·색·최대
+   불투명도는 토큰(`--hit-direction-*`)에서 온다. 가장자리 넷은 대칭
+   `linear-gradient` 방향만 다르다. */
+.hud__hit-direction {
+  position: absolute;
+  inset: 0;
+  /* 최대 불투명도를 요소 전체에 건다(개별 색 채널의 알파를 계산하지
+     않는다 — 구형 브라우저에서도 그대로 동작하는 단순한 형태를 택했다). */
+  opacity: var(--hit-direction-max-opacity);
+}
+
+.hud__hit-direction--top {
+  background: linear-gradient(to bottom, var(--hit-direction-color), transparent var(--hit-direction-spread));
+}
+
+.hud__hit-direction--bottom {
+  background: linear-gradient(to top, var(--hit-direction-color), transparent var(--hit-direction-spread));
+}
+
+.hud__hit-direction--left {
+  background: linear-gradient(to right, var(--hit-direction-color), transparent var(--hit-direction-spread));
+}
+
+.hud__hit-direction--right {
+  background: linear-gradient(to left, var(--hit-direction-color), transparent var(--hit-direction-spread));
+}
+
 /* RQ-56 이름표(원장 24ab) — 조준선이 향한 대상의 머리 위. 위치는 30Hz 루프가
    투영한 화면 좌표를 인라인으로 받는다(`Nameplate.tsx` 참고).
 
