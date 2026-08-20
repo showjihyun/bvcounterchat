@@ -4,7 +4,8 @@ import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 
 /**
- * RQ-34 사격 연습용 과녁 배치(원장 24cw) — `targetPlacement`의 순수 산술만
+ * RQ-34 사격 연습용 과녁 배치(원장 24cw) — **골든 GA-127**이 이 파일을 `verify`로
+ * 가리킨다. `targetPlacement`의 순수 산술만
  * 값으로 단언한다(렌더 계층 자체는 ADR-0008 §6 면제, `MapMeshes.tsx`가
  * `useFrame` 없이 이 함수를 정적으로 부른다).
  *
