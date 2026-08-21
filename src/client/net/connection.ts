@@ -50,6 +50,16 @@ interface PingPayload {
   seq: number
 }
 
+/** RQ-78/ADR-0014 결정 6 — 서버 `broadcast('gunshot', ...)` payload를
+ * 클라이언트에서 관측하기 위한 로컬 타입. `GameRoom.ts`의 서버 사본과
+ * 같은 shape다(`HitEvent`가 이미 세운 "서버·클라 각자 자신의 사본을
+ * 둔다" 선례와 동일한 레이어 경계, 서버는 `@client`를 import하지 않는다).
+ * `position`은 사수가 발사 시점에 서 있던 좌표 그대로다(재계산 없음). */
+export interface GunshotEvent {
+  shooterId: string
+  position: { x: number; y: number; z: number }
+}
+
 /**
  * 실제 시각(ms) 실측 — 이 모듈이 유일하게 성능 시계를 읽는 지점이다
  * (ADR-0008 정신: 순수 보간·예측 로직은 값 주입만 받고, 실시간 API 호출은
@@ -246,6 +256,15 @@ export interface GameConnection {
    * 입력 전송 인터벌을 자연히 정리한다.
    */
   onDisconnect(callback: () => void): () => void
+  /**
+   * RQ-78/ADR-0014 결정 6 — 서버 'gunshot' 브로드캐스트 구독. HUD 상태를
+   * 만들지 않는 순수 오디오 신호라 `store`를 거치지 않고 수신 즉시
+   * 콜백을 호출한다(`onDisconnect`와 동일한 구독 패턴 — `room.onMessage`가
+   * 이미 제공하는 구독 해제 함수를 그대로 넘긴다). 볼륨 판정(거리·자기
+   * 여부)과 실제 재생은 호출자(`PlayerControls.tsx`, 재생 배선 층)의
+   * 몫이다 — 이 함수는 payload를 그대로 전달할 뿐 가공하지 않는다.
+   */
+  onGunshot(callback: (event: GunshotEvent) => void): () => void
   disconnect(): Promise<void>
 }
 
@@ -471,6 +490,9 @@ export async function connectToGame(
       const handleLeave = (): void => callback()
       room.onLeave(handleLeave)
       return () => room.onLeave.remove(handleLeave)
+    },
+    onGunshot(callback: (event: GunshotEvent) => void): () => void {
+      return room.onMessage<GunshotEvent>('gunshot', callback)
     },
     async disconnect() {
       room.onStateChange.remove(handleStateChange)
