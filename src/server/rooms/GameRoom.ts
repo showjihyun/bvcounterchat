@@ -121,6 +121,20 @@ interface HitEvent {
   victimId?: string
 }
 
+/** RQ-78/ADR-0014 결정 6(2026-08-13 신설) — `broadcast('gunshot', ...)`
+ * payload. `HitEvent`가 이미 세운 "서버가 자신의 사본을 둔다" 선례와
+ * 동일(`@client`를 import하지 않는다, 레이어 경계).
+ *
+ * `position`은 발사 시점 사수의 `moveStates` 좌표 **그대로**다(RQ-61 —
+ * 재계산·클라 payload 재사용 금지). 조준 방향(`spreadDirection`)이나 눈높이
+ * 레이 원점(`ray.origin`)이 아니다 — "발사 시점의 위치"는 사수가 서 있는
+ * 곳이지 총구가 겨눈 방향이 아니다(`tests/integration/rq-78-gunshot-fire-
+ * event.test.ts` 상단 docblock, test-writer 계약). */
+interface GunshotEvent {
+  shooterId: string
+  position: Vec3
+}
+
 /**
  * RQ-40 채팅 브로드캐스트·이력 항목 공통 shape(test-writer 계약 §3.3,
  * `_workspace/RQ-40/01_test-writer_red.md`) — `broadcast('chat', ...)`와
@@ -726,6 +740,17 @@ export class GameRoom extends Room<GameState> {
     if (shouldStartReload(newMagazine, false)) {
       this.reloadStartedAtTick.set(shooterId, this.state.tick)
     }
+
+    // RQ-78/ADR-0014 결정 6: 여섯 게이트를 모두 통과하고 firedSinceSpawn·
+    // 탄약 소모(위)가 이미 커밋된 사실의 세 번째 소비자다 — 명중 판정(아래
+    // 레이캐스트·'hit' 브로드캐스트) **이전**에, 명중 여부와 무관하게
+    // 전원에게 보낸다. `shooterState`(위에서 이미 게이트 판정에 쓴 값)를
+    // 그대로 옮긴다 — 재계산하지 않는다(RQ-61).
+    const gunshotEvent: GunshotEvent = {
+      shooterId,
+      position: { x: shooterState.x, y: shooterState.y, z: shooterState.z },
+    }
+    this.broadcast('gunshot', gunshotEvent)
 
     // RQ-90: 클라이언트가 보낸 조준 방향(input.dirX/Y/Z)을 가공 없이 레이로
     // 쓰지 않는다 — 서버가 발급(또는 테스트가 강제)한 시드로 콘 편차를

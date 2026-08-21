@@ -24,6 +24,16 @@ import type { MoveInput } from '@shared/sim/movement'
 import { createFootstepAudioEngine } from '@client/audio/footstepAudioEngine'
 import { createFootstepPlaybackScheduler } from '@client/audio/footstepPlayback'
 import { createSelfFootstepTracker } from '@client/audio/selfFootstepTracker'
+import { createGunshotAudioEngine } from '@client/audio/gunshotAudioEngine'
+import { gunshotVolume, type GunshotVolumeTuning } from '@shared/sim/gunshotAudio'
+import { AUDIO_TUNING } from '@shared/config/audio-tuning'
+
+/** RQ-78/ADR-0014 결정 6 — 발사음 볼륨 판정 튜닝(`@shared/config/audio-
+ * tuning`의 프로덕션 값을 감싼다). 모듈 스코프 상수 — 렌더 루프(`useFrame`)
+ * 밖이라도 매 이벤트마다 새 객체를 만들 이유가 없다. */
+const GUNSHOT_VOLUME_TUNING: GunshotVolumeTuning = {
+  referenceDistanceM: AUDIO_TUNING.GUNSHOT_VOLUME_REFERENCE_DISTANCE_M,
+}
 
 interface PlayerControlsProps {
   store: StoreApi<GameStoreState>
@@ -174,6 +184,11 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 모듈 코멘트 — 브라우저 자동재생 정책, ADR-0014 「결과」).
     const footstepEngine = createFootstepAudioEngine()
     const footstepScheduler = createFootstepPlaybackScheduler(AUDIO.AUDIBLE_RANGE_M)
+    // RQ-78/ADR-0014 결정 6(원장 24cr 이하) — 발사음 재생 배선(결정 5
+    // 면제, 자동 테스트 없음 — 판정 자체는 `@shared/sim/gunshotAudio`가
+    // 이미 값으로 검증했다). 발소리와 같은 제스처(포인터 락 클릭) 안에서
+    // 연다 — 아래 `handleAudioGesture` 참고.
+    const gunshotEngine = createGunshotAudioEngine()
     // 자기 발소리 누적 — `interpolation.ts`의 `advanceFootstepAccumulator`
     // (원격 경로, GA-83)와 동일한 판정 순서를 로컬 예측 위치에 적용한다
     // (서버가 발소리 이벤트를 보내지 않으므로, ADR-0014 결정 1 — 자기
@@ -185,10 +200,35 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
     // 원격 발소리 거리 계산용 재사용 버퍼(프레임 예산 규율 — 이 루프는
     // 30Hz라도 같은 관례를 따른다, 아래 `anchorScratch`와 동일한 이유).
     const footstepPositionScratch: InterpolationPosition = { x: 0, y: 0, z: 0 }
-    function handleFootstepAudioGesture(): void {
+    function handleAudioGesture(): void {
       footstepEngine.open()
+      gunshotEngine.open()
     }
-    canvas.addEventListener('click', handleFootstepAudioGesture)
+    canvas.addEventListener('click', handleAudioGesture)
+
+    // RQ-78/ADR-0014 결정 6 — 서버 'gunshot' 브로드캐스트 수신 즉시(폴링
+    // 없이) 재생한다. 자기 발사면 `gunshotVolume`이 거리와 무관하게 항상
+    // 1을 낸다(GA-117) — 이 지점에서 별도로 분기하지 않는다(판정 로직을
+    // 중복하지 않는다). 원격이면 현재 자기 위치(예측이 아직 없으면 서버
+    // 스냅샷으로 폴백 — `useFrame`의 카메라 폴백과 동일한 이유)와의 3D
+    // 거리로 감쇠시킨다. 자기 위치를 아직 모르면(접속 직후 극히 짧은
+    // 창) 이번 발사음은 건너뛴다 — 의미 있는 거리를 계산할 수 없다.
+    const unbindGunshot = connection.onGunshot((event) => {
+      const isSelf = event.shooterId === connection.sessionId
+      if (isSelf) {
+        gunshotEngine.playBurst(gunshotVolume(Number.NaN, true, GUNSHOT_VOLUME_TUNING))
+        return
+      }
+      const state = store.getState()
+      const selfPos = state.selfPredictedState ?? (state.selfSessionId ? state.players.get(state.selfSessionId) : undefined)
+      if (!selfPos) return
+      const distanceM = Math.hypot(
+        event.position.x - selfPos.x,
+        event.position.y - selfPos.y,
+        event.position.z - selfPos.z,
+      )
+      gunshotEngine.playBurst(gunshotVolume(distanceM, false, GUNSHOT_VOLUME_TUNING))
+    })
 
     function handleFireDown(event: MouseEvent): void {
       // 주 버튼(좌클릭)만 발사한다 — 우클릭·휠클릭은 조준경(스펙 없음)이나
@@ -384,7 +424,8 @@ export function PlayerControls({ store, connection, uiStore }: PlayerControlsPro
       mouseLookRef.current = null
       movementTracker.dispose()
       canvas.removeEventListener('mousedown', handleFireDown)
-      canvas.removeEventListener('click', handleFootstepAudioGesture)
+      canvas.removeEventListener('click', handleAudioGesture)
+      unbindGunshot()
       window.clearInterval(movementIntervalId)
     }
   }, [gl, connection, uiStore, store])
