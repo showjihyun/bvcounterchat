@@ -1,7 +1,9 @@
-import { SCENE } from '@client/config/design-tokens'
+import { SCENE, TARGET } from '@client/config/design-tokens'
 import { PRODUCTION_GEOMETRY } from '@shared/sim/geometry'
 import { boxRenderBox, wallRenderBox } from '@client/scene/mapGeometry'
 import { ladderRailBoxes, ladderRungBoxes } from '@client/scene/ladderGeometry'
+import { targetPlacement } from '@client/scene/targetLayout'
+import { DEFAULT_HITBOX } from '@shared/config/combat-tuning'
 
 /**
  * 맵 정적 지오메트리 렌더(원장 24f — RQ-30 벽 · RQ-32 박스·사다리).
@@ -31,12 +33,14 @@ import { ladderRailBoxes, ladderRungBoxes } from '@client/scene/ladderGeometry'
  * 남아 있을 뿐이다. `PRODUCTION_GEOMETRY`는 모듈 상수라 리렌더 시에도 배열이
  * 새로 만들어지지 않는다.
  *
- * ⚠️ 오브젝트 수는 벽 4 + 박스 15 + **사다리마다 레일 2 + 가로대 여러 개**다
- * (원장 24t에서 사다리가 통짜에서 뼈대가 되며 늘었다). 가로대 수는 볼륨 높이와
- * `SCENE.ladderRungSpacingM`에서 유도되므로 **여기 총합을 적지 않는다** — 적으면
- * 튜닝값이 바뀔 때 조용히 거짓이 된다. 수십 개 수준이라 드로우콜이 문제되는
- * 규모가 아니어서 인스턴싱을 쓰지 않는다(`PlayerMeshes`와 같은 판단).
- * 그 전제가 깨지는 지점은 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
+ * ⚠️ 오브젝트 수는 벽 4 + 박스 15 + **사다리마다 레일 2 + 가로대 여러 개** +
+ * **과녁(RQ-34, 벽마다 링 `TARGET.ringRadiiM.length`개 = 4, 합 16)**이다
+ * (원장 24t에서 사다리가 통짜에서 뼈대가 되며 늘었고, 원장 24cw에서 과녁이
+ * 늘었다). 가로대 수는 볼륨 높이와 `SCENE.ladderRungSpacingM`에서
+ * 유도되므로 **여기 총합을 적지 않는다** — 적으면 튜닝값이 바뀔 때 조용히
+ * 거짓이 된다. 수십 개 수준이라 드로우콜이 문제되는 규모가 아니어서
+ * 인스턴싱을 쓰지 않는다(`PlayerMeshes`와 같은 판단). 그 전제가 깨지는
+ * 지점은 `fe.md`의 인스턴싱 규칙이 적용될 자리다.
  *
  * 렌더 계층 면제 대상(ADR-0008 §6) — 이 파일 자체는 테스트 없음. 치수 환산
  * 산술만 `@client/scene/mapGeometry`로 분리해 단위 테스트한다.
@@ -70,6 +74,38 @@ export function MapMeshes() {
             <boxGeometry args={size} />
             <meshStandardMaterial color={SCENE.wall} />
           </mesh>
+        )
+      })}
+      {/* RQ-34 사격 연습용 과녁(원장 24cw) — 네 벽 안쪽면에 동심원 표식 하나씩.
+          **판정에 참여하지 않는다** — 총알은 여전히 벽에 명중하고 탄흔(RQ-70)이
+          그 자리에 남는다(히트마커·점수·소리 없음, 문면 참고). 배치 산술(안쪽면
+          판정·중심 좌표·회전)만 순수 모듈(`@client/scene/targetLayout`)로 분리해
+          단위 테스트한다(`tests/unit/rq-34-target-layout.test.ts`) — 이 루프
+          자체는 벽·박스·사다리와 같은 렌더 계층 면제(ADR-0008 §6)다. */}
+      {PRODUCTION_GEOMETRY.walls.map((wall, wallIndex) => {
+        const { center, rotationY } = targetPlacement(wall, DEFAULT_HITBOX.eyeHeightM, TARGET.offsetM)
+        return (
+          <group key={`target-${wallIndex}`} position={center} rotation={[0, rotationY, 0]}>
+            {TARGET.ringRadiiM.map((radius, ringIndex) => {
+              // 인덱스는 `ringRadiiM`/`ringColors` 범위 안(0..length-1)만
+              // 돈다 — `.map` 콜백 자체가 그 보장이라 비어있지 않음 단언이
+              // 안전하다(`decalLayout.ts`의 `items[i]!`와 같은 관례).
+              const color = TARGET.ringColors[ringIndex]!
+              // 마지막 반지름은 밴드가 아니라 중심 원(불스아이) — 위
+              // TARGET.ringRadiiM 토큰 주석 참고.
+              return ringIndex === TARGET.ringRadiiM.length - 1 ? (
+                <mesh key={`ring-${ringIndex}`}>
+                  <circleGeometry args={[radius, TARGET.segments]} />
+                  <meshStandardMaterial color={color} />
+                </mesh>
+              ) : (
+                <mesh key={`ring-${ringIndex}`}>
+                  <ringGeometry args={[TARGET.ringRadiiM[ringIndex + 1]!, radius, TARGET.segments]} />
+                  <meshStandardMaterial color={color} />
+                </mesh>
+              )
+            })}
+          </group>
         )
       })}
       {/* RQ-33 고지대 플랫폼(원장 24y). ⚠️ **판정에 종류를 더하고 여기 안 더하면
