@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js'
 import { matchMaker } from 'colyseus'
 import { buildServer } from '@server/index'
 import { WEAPON } from '@shared/constants'
+import type { SpreadTuning } from '@shared/config/combat-tuning'
 import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
@@ -73,11 +74,63 @@ import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
  *
  * `tests/support/safe-zone.ts`의 `escapeSafeZone`(반경-방사 탈출, 여러
  * 파일이 이미 검증)로 사수 A만 Safe Zone 밖으로 옮긴다. B·C는 옮기지 않는다
- * — `UP_MISS_AIM`(수직 위, 다른 여러 파일이 이미 "항상 빗나감"으로 확립한
- * 방향)으로 쏘므로 B·C의 위치는 결과에 영향을 주지 않는다(맞힐 대상이 될
- * 근거가 없다). GA-116은 사수 하나만 필요해 별도 `it()`으로 분리한다(관측
- * 대상이 다르다 — GA-114는 세 클라이언트의 payload 일치, GA-116은 사수 자신의
- * 화이트박스 부기 셋).
+ * — `UP_MISS_AIM`(수직 위)으로 쏘므로 B·C의 위치는 결과에 영향을 주지
+ * 않는다(플레이어를 맞힐 대상이 될 근거가 없다 — 아래 REV의 확률적 요소는
+ * **벽**이지 플레이어가 아니다). GA-116은 사수 하나만 필요해 별도 `it()`으로
+ * 분리한다(관측 대상이 다르다 — GA-114는 세 클라이언트의 payload 일치,
+ * GA-116은 사수 자신의 화이트박스 부기 셋).
+ *
+ * ## REV(2026-08-21, CI 플레이키 진단·수정 — PR #91 CI run 32441143343,
+ * team-lead 지시)
+ *
+ * **증상**: `expect(hitA.received.length).toBe(0)`이 간헐적으로 실패(로컬
+ * 재현 3회 중 1회, `npx vitest run` 반복 실행)했다. GA-114의 given이
+ * "조준선이 벽·플레이어 어느 것도 향하지 않는다"인데, `UP_MISS_AIM`이 그
+ * 전제를 **결정론적으로** 성립시키지 못했다는 뜻이다.
+ *
+ * **진단(node 프로브, `raycastHitbox`·`findClosestWallHit`·`applySpread`를
+ * 실제 값으로 20~200만 회 반복 실행해 확인, 사수는 이 파일과 동일하게
+ * 스폰 인덱스 0 escape 좌표 `(28, 0, 0)`)**:
+ * 1. **플레이어 명중은 기하학적으로 불가능**(팀리드 분석과 일치, 확률 0/2,000,000
+ *    — B·C(스폰 인덱스 1·2)까지 수평 거리가 12~20m인데, 명중 판정에 필요한
+ *    수직 판별식이 그 거리에서 거의 항상 깊은 음수라 실패한다).
+ * 2. **범인은 벽이다.** `@shared/sim/walls`의 벽 4개는 **무한 높이 기둥**
+ *    (`minY`/`maxY` 없음, 파일 자체가 "2D(XZ) 전용"이라고 명시 — 실제 맵
+ *    지오메트리가 나올 때까지의 잠정 모델, RQ-30 이전 단계의 알려진 단순화).
+ *    `applySpread`는 `spreadTuningOverride`를 안 주면 **룸마다 새로
+ *    난수 발급되는 salt**(`spreadSalt = Math.floor(Math.random()*2**32)`,
+ *    `GameRoom.ts`)로 기본 콘(0.5°)만큼 방향을 흩뿌린다 — 그 결과
+ *    `dir.x`·`dir.z`가 정확히 0이 아니라 아주 작은(하지만 0이 아닌) 값이
+ *    되고, 레이가 충분히 먼 t(수백~수천, 즉 명중 높이가 수백~수천 미터가
+ *    되는 지점)까지 나아가면 그 미세한 수평 성분만으로도 XZ 평면상
+ *    WALL_EAST 등의 슬랩을 "관통"할 수 있다 — 벽에 높이 제한이 없으므로
+ *    이 우연한 관통도 유효한 `hit`(`target:'wall'`)이 된다. **실측 확률:
+ *    이 사수 좌표에서 200,000회 중 36,661회(18.331%)**가 벽 명중으로
+ *    떨어졌다(예: seed=1358723117 → `dir≈(-0.00499, 0.99999, -0.00107)`,
+ *    `point=(16, 2406.2, -2.58)` — WALL_EAST를 **높이 2406m**에서 "맞힌다").
+ *    18%는 국지적 CI 관측("3회 중 1회")과 이항분포로 정합적이다
+ *    (`P(≥1 실패 | 3회, p=0.183) ≈ 45%`).
+ * 3. **A의 좌표(스폰 인덱스 0, escape 후 `(28,0,0)`)가 이 확률을 특히 높인다**
+ *    — `z=0`이 WALL_EAST(`z∈[-5,5]`)의 중심과 정확히 정렬돼, 수평 성분이
+ *    아주 작아도(음수 x 방향) 그 z 구간 안에 들어가기 쉽다.
+ *
+ * **결론 — 구현 결함이 아니다.** `raycastHitbox`·`findClosestWallHit`·
+ * `applySpread` 전부 각자의 계약(플레이어 판정·벽 XZ 슬랩·콘 편차)대로
+ * 정확히 동작했다. "벽은 무한 높이"라는 **기존에 이미 문서화된, RQ-78과
+ * 무관한 단순화**가 이 테스트가 골랐던 "수직 위 = 항상 안전한 빗나감"이라는
+ * **전제를 깬 것**이다(`UP_MISS_AIM`을 쓰는 다른 파일들은 플레이어 HP만
+ * 관찰하고 `hit` 채널 전체를 무차별 관찰하지 않아 이 문제를 겪지 않았다).
+ * **수정**: 이 파일만 화이트박스로 `spreadTuningOverride = {coneRadiusRad:
+ * 0, ...}`를 강제해 스프레드 자체를 끈다 — `dir`이 정확히 `(0,1,0)`이 되면
+ * `dir.x===dir.z===0`이라 `intersectWallXZ`의 평행축 분기가 즉시
+ * `o.x`(=28)가 네 벽의 `[minX,maxX]`(전부 `|x|<=16`) **밖**임을 확인하고
+ * 무조건 `undefined`를 반환한다 — 확률이 아니라 **기하학적으로** 0%가
+ * 된다(위 진단의 "플레이어 명중 불가능" 결론과 같은 성격의 확정적 배제).
+ * `spreadTuningOverride`는 `rq-15-corpse-bullet-passthrough.test.ts`가 이미
+ * 확립한 화이트박스 필드다(그린필드 아님) — 이 파일이 처음 도입하는
+ * 계약이 아니다. **단언을 좁히지 않았다** — `hitA.received.length===0`은
+ * 그대로다, 단언이 재는 대상이 아니라 **테스트가 그 전제를 성립시키는
+ * 방식**만 고쳤다.
  *
  * ## 결정론 메모
  *
@@ -247,9 +300,13 @@ function waitForGunshotCount(
 }
 
 /** `rq-31-safe-zone-no-firing.test.ts`의 `FireGateTestSeam`과 동일한 근거 —
- * `magazines`·`firedSinceSpawn`은 기존 private 필드다(그린필드 아님). */
+ * `magazines`·`firedSinceSpawn`은 기존 private 필드다(그린필드 아님).
+ * `spreadTuningOverride`도 그린필드가 아니다 — `rq-15-corpse-bullet-
+ * passthrough.test.ts`가 이미 이 정확한 이름으로 화이트박스 결합하는
+ * 기존 필드다(위 REV 참고). */
 interface FireEventTestSeam extends SafeZoneEscapeSeam {
   magazines: Map<string, number>
+  spreadTuningOverride?: SpreadTuning
 }
 
 function getServerRoom(room: Room): FireEventTestSeam {
@@ -293,6 +350,13 @@ describe('RQ-78/GA-114: 여섯 게이트를 모두 통과하면 서버가 전원
         // 절 — 나머지 다섯은 신규 접속 상태에서 자연히 통과한다).
         const seam = getServerRoom(roomA)
         const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
+        // REV(위 docblock) — 스프레드를 완전히 꺼서 UP_MISS_AIM이 정확히
+        // (0,1,0)으로 판정되게 한다. 룸마다 새로 발급되는 난수 salt가 만드는
+        // 미세한 수평 편차가 무한 높이 벽 기둥을 우연히 관통해 이 given
+        // ("조준선이 벽·플레이어 어느 것도 향하지 않는다")을 확률적으로
+        // 깨는 것을 막는다 — A의 x(=28)가 네 벽의 [minX,maxX](|x|<=16) 밖이므로
+        // dir.x=dir.z=0이면 벽 명중이 기하학적으로 불가능해진다.
+        seam.spreadTuningOverride = { coneRadiusRad: 0, movingMultiplier: 1, airborneMultiplier: 1 }
         await sleep(TELEPORT_SETTLE_MS)
 
         const gunshotA = watchGunshot(roomA)
