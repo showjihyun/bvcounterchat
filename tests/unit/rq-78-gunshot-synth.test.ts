@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
+// F4(독립 평가, `_workspace/RQ-78-gunshot/03_evaluator_report.md` §8) —
+// 아래 두 신설 describe 전용. 기존 "오디오 로딩 경로 부재" 절의 임포트는
+// 건드리지 않는다(순증, ADR-0011 결정 3).
+import { existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { synthesizeGunshotBurst } from '@client/audio/gunshotSynth'
@@ -167,5 +171,68 @@ describe('RQ-78/GA-118: 오디오 로딩 경로 부재(보조 — 주 증거 아
     for (const pattern of forbiddenPatterns) {
       expect(pattern.test(source)).toBe(false)
     }
+  })
+})
+
+/**
+ * F4(독립 평가, `_workspace/RQ-78-gunshot/03_evaluator_report.md` §8 —
+ * "GA-118 보조 절의 범위가 `then`보다 좁다") — coder가 순증으로 추가한다
+ * (ADR-0011 결정 3, test-after 영역: `src/client/` 대상 테스트). 위
+ * "오디오 로딩 경로 부재" describe·`it` **한 글자도 건드리지 않는다** —
+ * 아래는 전부 신설 describe/it이다.
+ *
+ * 평가자가 짚은 사각 둘:
+ * ① `then`이 요구하는 "**발사음 경로**에 오디오 로딩 경로 0건"인데 기존
+ *    절은 `gunshotSynth.ts` 한 파일만 본다. `decodeAudioData`가 현실적으로
+ *    놓일 자리는 순수 함수인 그 파일이 아니라 `AudioContext`를 여는 재생
+ *    배선 `gunshotAudioEngine.ts`다(ADR-0014 결정 5 "재생 배선" 층) — 가장
+ *    걸릴 법한 파일이 스캔 밖에 있었다.
+ * ② `then`의 "(보조) 저장소에 녹음 샘플 파일 0건"에 대응하는 단언이
+ *    **0건**이었다(서술만 있었다).
+ *
+ * ⚠️ 이 두 describe도 **보조**다 — GA-118의 주 증거는 여전히 위
+ * "결정론"·"길이 공식"·"클리핑·유한성"·"엔벨로프" 네 그룹이다(파일 상단
+ * "밟지 않는 함정" 절 참고). 여기서 주 단언을 추가하지 않는다.
+ */
+describe('RQ-78/GA-118: 오디오 로딩 경로 부재 — 재생 배선까지 포함(F4 보조 — 주 증거 아님)', () => {
+  it('gunshotAudioEngine.ts(재생 배선) 소스에도 fetch·decodeAudioData·XMLHttpRequest·녹음 샘플 확장자 문자열이 없다', () => {
+    const testDir = dirname(fileURLToPath(import.meta.url))
+    const implPath = resolve(testDir, '../../src/client/audio/gunshotAudioEngine.ts')
+    const source = readFileSync(implPath, 'utf-8')
+
+    const forbiddenPatterns = [/fetch\s*\(/, /decodeAudioData/, /XMLHttpRequest/, /\.wav['"`]/, /\.mp3['"`]/, /\.ogg['"`]/]
+    for (const pattern of forbiddenPatterns) {
+      expect(pattern.test(source)).toBe(false)
+    }
+  })
+})
+
+describe('RQ-78/GA-118: 저장소에 녹음 샘플 오디오 파일이 0건이다(F4 보조 — 주 증거 아님)', () => {
+  it('src/(그리고 존재하면 public/)를 재귀 스캔해도 .wav·.mp3·.ogg·.flac·.m4a·.aac 확장자 파일이 하나도 없다', () => {
+    // ADR-0014 결정 2 "오디오 파일을 저장소에 두지 않는다"의 직접 단언 —
+    // 이전에는 서술만 있고 단언이 없었다(F4 ②). `src/`가 이 저장소의
+    // 실질적 유일한 소스 트리다 — `public/`은 아직 없지만(2026-08-21
+    // 실측) 생기면 함께 스캔되도록 존재 여부를 방어적으로 확인한다(디렉토리
+    // 부재는 ENOENT가 아니라 "그 트리에는 0건"으로 자연히 처리된다).
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+    const audioExtensionPattern = /\.(wav|mp3|ogg|flac|m4a|aac)$/i
+
+    const candidateDirs = ['src', 'public'].map((dir) => resolve(repoRoot, dir)).filter((dir) => existsSync(dir))
+    // src/는 항상 있어야 한다 — 후보가 0개면 스캔 자체가 공허해진다("아무
+    // 데도 안 봤으니 0건"이 되는 함정, GA-118 상단 "밟지 않는 함정" 절과
+    // 동일한 정신).
+    expect(candidateDirs.length).toBeGreaterThan(0)
+
+    const foundAudioFiles: string[] = []
+    for (const dir of candidateDirs) {
+      const entries = readdirSync(dir, { recursive: true, withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isFile() && audioExtensionPattern.test(entry.name)) {
+          foundAudioFiles.push(entry.name)
+        }
+      }
+    }
+
+    expect(foundAudioFiles).toEqual([])
   })
 })
