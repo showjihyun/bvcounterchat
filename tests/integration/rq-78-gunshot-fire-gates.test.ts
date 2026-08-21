@@ -8,21 +8,27 @@ import { CAPACITY, PLAYER, WEAPON } from '@shared/constants'
 import { escapeSafeZone, releaseSpawnProtectionAndEscape, type SafeZoneEscapeSeam } from '../support/safe-zone'
 
 /**
- * RQ-78 발사음 — GA-115: 서버가 사격을 수락하는 **여섯 게이트 중 어느
+ * RQ-78 발사음 — GA-115: 서버가 사격을 수락하는 **모든 게이트 중 어느
  * 하나라도** 걸리면 발사 이벤트가 **0건**이고 HP·탄약도 변하지 않는다.
  * 서버 판정 로직(ADR-0011: Colyseus 룸 경계, Red-first 영역).
  *
- * EARS(RQ-78) · ADR-0014 결정 6 실측(`GameRoom.ts:663-709`, 팀리드 지시
- * 그대로 재확인): 조기 return이 **여섯**이다.
+ * EARS(RQ-78, v2.12) · ADR-0014 결정 6 실측(`GameRoom.ts:686-728`, 팀리드
+ * 지시 그대로 재확인): `firedSinceSpawn` 갱신(`:732`) 이전의 조기 return이
+ * **여섯**이다. ⚠️ **이것이 `handleFire` 전체의 조기 return 개수는 아니다**
+ * — `firedSinceSpawn`·`consumeRound`·`broadcast('gunshot', ...)` **뒤**에
+ * 퇴화 조준 가드(`dirMagnitude`가 0에 가까우면 return, `:788`)가 하나 더
+ * 있다. 그 일곱 번째는 발사음 브로드캐스트 **뒤**라 이 파일의 관측 대상
+ * (발사 이벤트 발생 여부)과 무관하다 — 개수를 "여섯이 전부"로 못박지
+ * 않는다(ADR-0014 결정 6, PR #91 리뷰 blocker가 정확히 이 실수를 잡았다).
  *
  * | 줄 | 게이트 | 이 파일의 절 |
  * |---|---|---|
- * | `:674` | `!shooterPlayer` — 관전자(RQ-41) | "게이트 1" |
- * | `:675` | `!canAct(hp)` — 사망(RQ-15) | "게이트 2" |
- * | `:679` | `!canFire(...)` — 발사 간격 | "게이트 3" |
- * | `:699` | `!canFireAmmo(...)` — 탄약·재장전(RQ-11) | "게이트 4" |
- * | `:702` | `!shooterState` — 이동 상태 부재 | "게이트 5" |
- * | `:714` | `isWithinSafeZone(shooterState)` — Safe Zone(RQ-31) | "게이트 6" |
+ * | `:688` | `!shooterPlayer` — 관전자(RQ-41) | "게이트 1" |
+ * | `:689` | `!canAct(hp)` — 사망(RQ-15) | "게이트 2" |
+ * | `:693` | `!canFire(...)` — 발사 간격 | "게이트 3" |
+ * | `:713` | `!canFireAmmo(...)` — 탄약·재장전(RQ-11) | "게이트 4" |
+ * | `:716` | `!shooterState` — 이동 상태 부재 | "게이트 5" |
+ * | `:728` | `isWithinSafeZone(shooterState)` — Safe Zone(RQ-31) | "게이트 6" |
  *
  * 매핑된 골든: **GA-115** — given: 사수가 세이프존 안, **또는** 사망 상태
  * (RQ-15 `canAct` 거부), **또는** 탄창이 비었거나 재장전 중 / when: 사격 /
@@ -295,7 +301,7 @@ async function killPlayer(shooter: Room, victim: Room, baselineHp: number, aim: 
   expect(atDeath.hp).toBe(0)
 }
 
-describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이벤트는 0건이고 HP·탄약도 불변이다', () => {
+describe('RQ-78/GA-115: 모든 게이트 중 하나라도 걸리면 발사 이벤트는 0건이고 HP·탄약도 불변이다', () => {
   let server: RunningServer
 
   beforeAll(async () => {
@@ -307,7 +313,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   })
 
   it(
-    `게이트 1(관전자, RQ-41 · GameRoom.ts:674): 정원(${CAPACITY.PLAYERS}명)이 찬 뒤 입장한 관전자가 사격해도 gunshot이 0건이다 — 정상 플레이어는 같은 상황에서 정상적으로 gunshot을 만든다(공허화 방지)`,
+    `게이트 1(관전자, RQ-41 · GameRoom.ts:688): 정원(${CAPACITY.PLAYERS}명)이 찬 뒤 입장한 관전자가 사격해도 gunshot이 0건이다 — 정상 플레이어는 같은 상황에서 정상적으로 gunshot을 만든다(공허화 방지)`,
     async () => {
       const playerRooms: Room[] = []
       let spectatorRoom: Room | undefined
@@ -349,7 +355,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   )
 
   it(
-    '게이트 2(사망, RQ-15 canAct · GameRoom.ts:675): 시신 상태의 사수가 사격해도 gunshot이 0건이고 탄약도 불변이다 — 살아 있는 다른 플레이어는 같은 상황에서 정상적으로 gunshot을 만든다(공허화 방지)',
+    '게이트 2(사망, RQ-15 canAct · GameRoom.ts:689): 시신 상태의 사수가 사격해도 gunshot이 0건이고 탄약도 불변이다 — 살아 있는 다른 플레이어는 같은 상황에서 정상적으로 gunshot을 만든다(공허화 방지)',
     async () => {
       const roomA = await joinGame(newClient(server)) // 곧 시신이 될 사수
       const roomB = await joinGame(newClient(server)) // A를 죽이는 플레이어(RQ-17 — 아군 판정 없음)
@@ -390,7 +396,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   )
 
   it(
-    '게이트 3(발사 간격, GameRoom.ts:679): rate-limit(150ms) 안에서 즉시 재사격하면 두 번째 요청은 gunshot을 만들지 않는다 — 간격이 지난 뒤에는 다시 정상 발사된다',
+    '게이트 3(발사 간격, GameRoom.ts:693): rate-limit(150ms) 안에서 즉시 재사격하면 두 번째 요청은 gunshot을 만들지 않는다 — 간격이 지난 뒤에는 다시 정상 발사된다',
     async () => {
       const roomA = await joinGame(newClient(server))
 
@@ -427,7 +433,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   )
 
   it(
-    '게이트 4(탄약·재장전, RQ-11 canFireAmmo · GameRoom.ts:699): 재장전 요청 직후(2초 이내) 사격은 gunshot을 만들지 않는다 — 2초 경과 후에는 다시 정상 발사된다',
+    '게이트 4(탄약·재장전, RQ-11 canFireAmmo · GameRoom.ts:713): 재장전 요청 직후(2초 이내) 사격은 gunshot을 만들지 않는다 — 2초 경과 후에는 다시 정상 발사된다',
     async () => {
       const roomA = await joinGame(newClient(server))
 
@@ -462,7 +468,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   )
 
   it(
-    '게이트 5(이동 상태 부재, GameRoom.ts:702): moveStates 항목이 없는 사수는 사격해도 gunshot이 0건이다 — 상태를 복원하면 같은 세션이 다시 정상 발사된다',
+    '게이트 5(이동 상태 부재, GameRoom.ts:716): moveStates 항목이 없는 사수는 사격해도 gunshot이 0건이다 — 상태를 복원하면 같은 세션이 다시 정상 발사된다',
     async () => {
       const roomA = await joinGame(newClient(server))
 
@@ -494,7 +500,7 @@ describe('RQ-78/GA-115: 여섯 게이트 중 하나라도 걸리면 발사 이�
   )
 
   it(
-    '게이트 6(Safe Zone, RQ-31 · GameRoom.ts:714): 스폰 지점(세이프존) 안에서 사격해도 gunshot이 0건이고 탄약도 불변이다 — 세이프존을 벗어나면 즉시 정상 발사된다',
+    '게이트 6(Safe Zone, RQ-31 · GameRoom.ts:728): 스폰 지점(세이프존) 안에서 사격해도 gunshot이 0건이고 탄약도 불변이다 — 세이프존을 벗어나면 즉시 정상 발사된다',
     async () => {
       const roomA = await joinGame(newClient(server))
 

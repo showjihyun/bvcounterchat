@@ -11,12 +11,15 @@ import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
  * RQ-78 발사음 — 발사 이벤트 브로드캐스트(GA-114) + 세 부작용의 원자성
  * (GA-116). 서버 판정 로직(ADR-0011: Colyseus 룸 경계, Red-first 영역).
  *
- * EARS 전문(`harness/specs/requirements.md` RQ-78): "사격(RQ-10)이 서버에서
- * **실제로 처리되면** — **서버가 사격을 수락하는 모든 게이트**(사망 상태
- * RQ-15 · 발사 간격 · 탄약과 재장전 상태 RQ-11 · 세이프존 RQ-31)를 통과하면
- * — 시스템은 **명중 여부와 무관하게** 발사음을 재생해야 한다. 발사 사실은
- * **서버가 전원에게 이벤트로 전달**하며, 이벤트에는 **사수의 식별자와 발사
- * 시점의 위치**가 담긴다."
+ * EARS 전문(`harness/specs/requirements.md` RQ-78, v2.12): "사격(RQ-10)이
+ * 서버에서 **실제로 처리되면** — **서버가 사격을 수락하는 모든 게이트**
+ * (예: **관전자 RQ-41** · 사망 상태 RQ-15 · 발사 간격 · 탄약과 재장전 상태
+ * RQ-11 · 이동 상태 부재 · 세이프존 RQ-31)를 통과하면 — 시스템은 **명중
+ * 여부와 무관하게** 발사음을 재생해야 한다. 발사 사실은 **서버가 전원에게
+ * 이벤트로 전달**하며, 이벤트에는 **사수의 식별자와 발사 시점의 위치**가
+ * 담긴다." ⚠️ **괄호는 예시이고 개수를 적지 않는다**(ADR-0014 결정 6 —
+ * "개수를 박으면 게이트가 하나 늘 때 문면이 낡는다"). 아래 "게이트" 절도
+ * 같은 형식을 따른다.
  *
  * ADR-0014 결정 6: "그 시점은 새로 정의하지 않는다 — `handleFire`가 사격을
  * 수락하는 모든 게이트를 통과한 직후 `firedSinceSpawn`(RQ-16)을 세우고
@@ -26,18 +29,25 @@ import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
  * given: 사수가 세이프존 밖·탄약 있음·재장전 아님, 조준선이 벽·플레이어
  * 어느 것도 향하지 않음 / when: 사격 / then: 서버가 발사 이벤트를 전원에게
  * 보낸다. `hit`은 발생하지 않는다.
- * **GA-116** — given: 여섯 게이트를 모두 통과한 사격 / when: 처리 /
- * then: 발사 이벤트·`firedSinceSpawn=true`·탄약 1발 소모가 **같은 사건**으로
- * 일어난다(셋 중 하나만 일어나는 경로가 없다).
+ * **GA-116** — given: 서버가 사격을 수락하는 모든 게이트를 통과한 사격 /
+ * when: 처리 / then: 발사 이벤트·`firedSinceSpawn=true`·탄약 1발 소모가
+ * **같은 사건**으로 일어난다(셋 중 하나만 일어나는 경로가 없다).
  *
- * ## 여섯 게이트(팀리드 실측, `GameRoom.ts:663-709`) — 이 파일의 시나리오는
+ * ## 게이트(팀리드 실측, `GameRoom.ts:686-728`) — 이 파일의 시나리오는
  * 전부 통과시킨다
  *
- * `:674` 관전자(RQ-41) · `:675` 사망(RQ-15 `canAct`) · `:679` 발사 간격 ·
- * `:699` 탄약·재장전(RQ-11) · `:702` 이동 상태 부재 · `:714` 세이프존(RQ-31).
+ * `:688` 관전자(RQ-41) · `:689` 사망(RQ-15 `canAct`) · `:693` 발사 간격 ·
+ * `:713` 탄약·재장전(RQ-11) · `:716` 이동 상태 부재 · `:728` 세이프존(RQ-31).
  * 이 파일의 사수는 매번 새로 접속한 플레이어(탄창 가득·재장전 아님·사망
  * 아님·`moveStates` 존재·발사 간격 미소진)이고 Safe Zone만 화이트박스
- * 탈출로 벗어난다 — 나머지 다섯 게이트는 자연히 통과한다.
+ * 탈출로 벗어난다 — 나머지는 자연히 통과한다. ⚠️ **이 여섯이 `handleFire`의
+ * 조기 return 전부는 아니다** — `firedSinceSpawn` 갱신·`consumeRound`·
+ * `broadcast('gunshot', ...)`(아래 "호출 지점") **뒤**에 퇴화 조준 가드
+ * (`dirMagnitude`가 0에 가까우면 return, `:788`)가 하나 더 있다. 그 가드는
+ * 발사음 브로드캐스트보다 뒤에 있어 이 파일의 시나리오(브로드캐스트가
+ * 실제로 나가는가)와 무관하다 — 감추지 않고 적되, 개수를 "여섯이 전부"로
+ * 못박지 않는다(ADR-0014 결정 6, PR #91 리뷰 blocker가 정확히 이 실수를
+ * 잡았다).
  *
  * ## 이 파일이 확정하는 와이어 계약(test-writer 지정 — coder가 이대로
  * 구현하면 Green이 된다)
@@ -58,9 +68,9 @@ import { escapeSafeZone, type SafeZoneEscapeSeam } from '../support/safe-zone'
  *     position: { x: number; y: number; z: number }
  *   }
  *   ```
- * - **호출 지점**: `handleFire`의 여섯 번째 게이트(Safe Zone, `:714`) 통과
- *   **직후** — `firedSinceSpawn.set(shooterId, true)`(:718)과
- *   `consumeRound`(:724-728) **둘 다 실행된 뒤**, 명중 판정(조준 스프레드·
+ * - **호출 지점**: `handleFire`의 Safe Zone 게이트(`:728`) 통과
+ *   **직후** — `firedSinceSpawn.set(shooterId, true)`(:732)과
+ *   `consumeRound`(:738-742) **둘 다 실행된 뒤**, 명중 판정(조준 스프레드·
  *   레이캐스트·`hit` 브로드캐스트) **이전**. 순서 자체(`firedSinceSpawn` vs
  *   `consumeRound` vs `broadcast('gunshot', ...)` 셋의 상대 순서)는 이
  *   파일이 규정하지 않는다 — 셋 다 같은 동기 함수 호출 안에서 일어나
@@ -323,7 +333,7 @@ function readAmmo(seam: FireEventTestSeam, sessionId: string): number {
   return seam.magazines.get(sessionId) ?? WEAPON.MAGAZINE
 }
 
-describe('RQ-78/GA-114: 여섯 게이트를 모두 통과하면 서버가 전원에게 발사 이벤트를 보낸다(명중 여부 무관)', () => {
+describe('RQ-78/GA-114: 모든 게이트를 통과하면 서버가 전원에게 발사 이벤트를 보낸다(명중 여부 무관)', () => {
   let server: RunningServer
 
   beforeAll(async () => {
@@ -346,8 +356,8 @@ describe('RQ-78/GA-114: 여섯 게이트를 모두 통과하면 서버가 전원
         await waitForDefinedPlayer(roomB, roomB.sessionId)
         await waitForDefinedPlayer(roomC, roomC.sessionId)
 
-        // 여섯 게이트 중 세이프존만 화이트박스로 벗어난다(위 "여섯 게이트"
-        // 절 — 나머지 다섯은 신규 접속 상태에서 자연히 통과한다).
+        // 게이트 중 세이프존만 화이트박스로 벗어난다(위 "게이트" 절 — 나머지는
+        // 신규 접속 상태에서 자연히 통과한다).
         const seam = getServerRoom(roomA)
         const escapedA = escapeSafeZone(seam, roomA.sessionId, baselineA)
         // REV(위 docblock) — 스프레드를 완전히 꺼서 UP_MISS_AIM이 정확히
@@ -418,7 +428,7 @@ describe('RQ-78/GA-116: 발사 이벤트·firedSinceSpawn·탄약 소모가 같�
   })
 
   it(
-    'GA-116: 여섯 게이트를 통과한 사격 1회는 gunshot 이벤트 수신 시점에 firedSinceSpawn=true·탄약 1발 소모가 이미 함께 반영돼 있다',
+    'GA-116: 모든 게이트를 통과한 사격 1회는 gunshot 이벤트 수신 시점에 firedSinceSpawn=true·탄약 1발 소모가 이미 함께 반영돼 있다',
     async () => {
       const roomA = await joinGame(newClient(server))
 
